@@ -1,65 +1,70 @@
 # 01 – Bash-/Shell-Engineering-Review von `setup-coder.sh`
 
-Rolle: Bash-/Shell-Engineering-Reviewer.
-Geprüft: `setup-coder.sh` (844 Zeilen) inkl. der vier eingebetteten
-Wartungsskripte (`backup.sh`, `update.sh`, `reset-passwords.sh`,
-`reset-coder.sh`), die per Heredoc nach `/opt/coder/*.sh` geschrieben werden.
-`setup-coder.sh` selbst wurde **nicht** verändert.
+Rolle: Senior Bash / Shell Engineering Reviewer.
+Geprüft: `setup-coder.sh` (844 Zeilen, `set -euo pipefail`), inkl. der vier
+eingebetteten Wartungsskripte, die per Heredoc nach `/opt/coder/*.sh`
+geschrieben werden: `backup.sh`, `update.sh`, `reset-passwords.sh`,
+`reset-coder.sh`. Ebenfalls gesichtet: [AGENTS.md](../AGENTS.md) und
+[copilot-instructions.md](../copilot-instructions.md) als bestehende
+Repository-Instruktionen.
 
-Werkzeuge: manuelle Analyse, `shellcheck -s bash` (Version 0.11.0) gegen
-`setup-coder.sh` und gegen die vier extrahierten Heredoc-Inhalte, sowie
-gezielte Reproduktion einzelner `set -e`/`pipefail`-Fälle in einer isolierten
-Bash-Instanz.
+`setup-coder.sh` wurde **nicht** verändert. Es wurde ausschließlich diese
+Datei (`ai-review/01-bash.md`) bearbeitet.
 
-Alle als „Confirmed“ markierten Befunde wurden durch Lesen des Codes und/oder
-durch tatsächliche Reproduktion in einer Test-Shell verifiziert. Als
-„Assumption“ markierte Punkte sind plausible, aber nicht durch Ausführung auf
-dem echten Zielsystem bestätigte Risiken.
+## Methodik
+
+- Vollständige manuelle Lesung des Skripts (alle 844 Zeilen) und aller vier
+  eingebetteten Wartungsskripte.
+- Statische Analyse mit `shellcheck -s bash` (Version 0.11.0), einmal gegen
+  die Hauptdatei, einmal gegen jedes der vier extrahierten Heredoc-Skripte
+  (in temporäre Dateien unter `/tmp/sc-review/` kopiert, nur lokal, keine
+  Änderung am Repository).
+- Gezielte, isolierte Reproduktion einzelner `set -e`/`pipefail`- und
+  Quoting-Fragestellungen in einer separaten Bash-Instanz (kein Bezug zum
+  Zielsystem, keine produktiven Befehle).
+- Ein Live-Netzwerkcheck (`https://download.docker.com/linux/debian/dists/`)
+  zur Prüfung der Debian-13("trixie")-Repo-Verfügbarkeit für Docker.
+
+„Classification“ pro Befund:
+- **CONFIRMED**: Mechanismus wurde tatsächlich reproduziert (Code-Test oder
+  Tool-Lauf), nicht nur gedanklich hergeleitet.
+- **LIKELY**: Der Code-Fakt ist durch Lesen zweifelsfrei nachweisbar, das
+  konkrete Auslöse-Szenario auf dem Produktivsystem wurde aber nicht
+  ausgeführt/reproduziert.
+- **ASSUMPTION**: Plausible Vermutung ohne belastbaren Nachweis im Code oder
+  durch Test.
 
 ---
 
-## F-001 – `crontab -l | grep -v … | crontab -` bricht unter `set -e`+`pipefail` bei genau einem Treffer lautlos ab
+## F-001 – Crontab-Migrationspipeline bricht unter `set -e`+`pipefail` bei genau einem Treffer lautlos ab
 
 Severity: CRITICAL
 
 Location:
-- [setup-coder.sh](setup-coder.sh#L520-L525) (Schritt 6, Backup-Cronjob-Migration)
-- [setup-coder.sh](setup-coder.sh#L592-L596) (Schritt 7, Update-Cronjob-Migration)
-- Top-Level-`set -euo pipefail` in [setup-coder.sh](setup-coder.sh#L68)
+- [setup-coder.sh](../setup-coder.sh#L520-L525) – Schritt 6, `backup.sh`-Cron-Migration
+- [setup-coder.sh](../setup-coder.sh#L592-L596) – Schritt 7, `update.sh`-Cron-Migration
+- [setup-coder.sh](../setup-coder.sh#L68) – globales `set -euo pipefail`
 
 Problem:
 Beide Stellen migrieren einen alten `crontab -e`-Eintrag in die neue
-`/etc/cron.d/`-Datei mit dem Muster:
+`/etc/cron.d/`-Datei mit dem Muster `(crontab -l | grep -v X) | crontab -`.
+Ist `X` die **einzige** Zeile in der Root-Crontab – genau der Altlast-Fall,
+den der Code behandeln soll – liefert `grep -v` null Zeilen und beendet sich
+mit Exit-Code 1. Unter `pipefail` gilt für die gesamte Pipeline (inklusive
+der inneren Subshell-Pipe) als Exit-Code der am weitesten rechts stehende
+*nicht-null* Code über alle Glieder hinweg, nicht nur der des letzten Glieds.
+Der äußere `sudo crontab -` (rechtes Ende) liefert zwar 0, aber `grep -v`
+(Code 1) liegt weiter links und bestimmt trotzdem den Gesamtstatus. Unter
+`set -e` beendet das sofort das komplette `setup-coder.sh`, direkt nach der
+(inhaltlich bereits erfolgreich durchgeführten!) Crontab-Bereinigung, ohne
+jede Fehlermeldung.
 
-```bash
-if sudo crontab -l 2>/dev/null | grep -qF "/opt/coder/backup.sh"; then
-  (sudo crontab -l 2>/dev/null | grep -vF "/opt/coder/backup.sh") | sudo crontab -
-fi
-```
+Das widerspricht der Zusicherung im Kopfkommentar
+"Skript ist mehrfach ausführbar (idempotent)"
+([setup-coder.sh](../setup-coder.sh#L25)): Genau bei dieser
+Migrations-Konstellation ist ein Re-Run *nicht* harmlos.
 
-Ist der alte Cronjob-Eintrag die **einzige** Zeile in der Root-Crontab (das ist
-genau der dokumentierte Altlast-Fall, den dieser Code behandeln soll),
-liefert `grep -v` null Zeilen und beendet sich mit Exit-Code 1 (kein Treffer
-"ausgewählt"). Diese Teil-Pipeline steht in einer Subshell `( … )`, die selbst
-wieder in eine äußere Pipe zu `sudo crontab -` mündet. Mit `pipefail` gilt für
-die gesamte zusammengesetzte Pipeline: der Exit-Code ist der am weitesten
-rechts stehende *nicht-null* Code unter allen Pipeline-Gliedern – nicht nur
-der des letzten Glieds. Da `sudo crontab -` selbst erfolgreich mit Code 0
-endet, aber `grep -v` (Code 1) weiter links in der Kette liegt, wird der
-Gesamtstatus der Anweisung dennoch 1. Unter `set -e` beendet das
-das komplette `setup-coder.sh` sofort, ohne jede Fehlermeldung, direkt nach
-der (bereits erfolgreich durchgeführten!) Crontab-Bereinigung.
-
-Das widerspricht direkt der im Skriptkopf gemachten Aussage
-"Skript ist mehrfach ausführbar (idempotent) – einfach erneut laufen lassen"
-([setup-coder.sh](setup-coder.sh#L25)): Bei genau dieser Alt-Migrations-Konstellation
-ist ein Re-Run *nicht* harmlos, sondern bricht mitten in Schritt 6 bzw. 7 ab,
-sodass Schritt 7–10 (inkl. Passwort-Reset-Skript, Reset-Skript und
-Abschlusscheck) in diesem Lauf gar nicht mehr ausgeführt werden – ohne
-sichtbare Fehlermeldung, nur mit stillem Exit-Code 1 des Gesamtskripts.
-
-Evidence (reproduziert in isolierter Bash-Instanz, identisches Muster):
-
+Evidence (reproduziert):
 ```bash
 $ bash -c '
 set -euo pipefail
@@ -71,54 +76,41 @@ echo "after"
 '
 before
 ```
-
-`"after"` wird nie ausgegeben – die Shell wurde durch `set -e` beendet, exakt
-an der Stelle des beschriebenen Musters. Status: **Confirmed** (reproduziert).
+`"after"` erscheint nie – die Shell wurde durch `set -e` beendet.
 
 Impact:
-- Stiller Abbruch mitten im produktiven Setup-Lauf, ohne Fehlermeldung außer
-  dem nackten Exit-Code.
-- Bei Betroffenheit von Schritt 6 (Backup-Migration): Schritt 7–10 laufen in
-  diesem Aufruf nicht – `update.sh`, `reset-passwords.sh`, `reset-coder.sh`
-  werden nicht (neu) bereitgestellt, kein Abschlusscheck, keine
-  Zusammenfassung.
-- Bei Betroffenheit von Schritt 7 (Update-Migration): Schritt 8–10 laufen
-  nicht.
-- Widerspricht der dokumentierten Idempotenz-Zusicherung im Kopfkommentar.
+- Stiller Abbruch mitten im produktiven Setup-Lauf.
+- Bei Auslösung in Schritt 6: Schritte 7–10 (`update.sh`, `reset-passwords.sh`,
+  `reset-coder.sh`, Abschlusscheck) laufen in diesem Aufruf nicht.
+- Bei Auslösung in Schritt 7: Schritte 8–10 laufen nicht.
+- Widerspricht der dokumentierten Idempotenz-Zusicherung.
 
 Proposed change:
-Den Pipeline-Exitcode für den beabsichtigten "leer ist ok"-Fall explizit
-abfangen, z. B.:
+Den "0 verbleibende Zeilen"-Fall explizit tolerieren, z. B.
+`(sudo crontab -l 2>/dev/null | grep -vF "/opt/coder/backup.sh" || true) | sudo crontab -`,
+oder ohne verschachtelte Pipe/Subshell lösen (Zwischenergebnis in Variable,
+dann separater `crontab`-Aufruf).
 
-```bash
-(sudo crontab -l 2>/dev/null | grep -vF "/opt/coder/backup.sh" || true) | sudo crontab -
-```
-
-oder die Ersetzung ganz ohne Pipe/Subshell-Kombination lösen (z. B. Ergebnis
-zuerst in eine Variable/Datei schreiben, dann `crontab` separat aufrufen),
-damit `set -e`/`pipefail` nicht auf einen aus fachlicher Sicht harmlosen
-"0 verbleibende Zeilen"-Zustand reagieren.
-
-Regression risk: Gering – reine Fehlerbehandlungs-Korrektur, ändert das
-Verhalten im Erfolgsfall (Zeilen vorhanden) nicht.
+Regression risk: Gering – reine Fehlerbehandlungskorrektur, Verhalten im
+Fall "mehrere verbleibende Zeilen" bleibt unverändert.
 
 Test:
-1. `printf '* * * * * root /opt/coder/backup.sh\n' | sudo crontab -`
-   (simuliert exakt eine Alt-Zeile).
-2. `setup-coder.sh` (bzw. den migrierenden Code-Ausschnitt isoliert) mit
-   `bash -x` laufen lassen und beobachten, ob Schritt 7–10 weiterhin
-   ausgeführt werden.
-3. `echo $?` nach Skriptende prüfen (muss 0 sein, wenn keine anderen Fehler
-   vorliegen).
+1. `printf '* * * * * root /opt/coder/backup.sh\n' | sudo crontab -` (simuliert
+   genau eine Alt-Zeile) in einer Testumgebung.
+2. Den migrierenden Codeblock isoliert mit `bash -x` laufen lassen, prüfen ob
+   nachfolgende Schritte weiterhin ausgeführt werden, und `echo $?` prüfen.
+
+Classification: CONFIRMED (Mechanismus reproduziert, exakt dasselbe Muster
+wie im Skript).
 
 ---
 
-## F-002 – `.env`-Geheimnisdatei wird nicht atomar geschrieben; Idempotenz-Check prüft nur Existenz, nicht Integrität
+## F-002 – `.env`-Geheimnisdatei: kein atomares Schreiben, Idempotenz-Check prüft nur Existenz
 
 Severity: HIGH
 
 Location:
-- [setup-coder.sh](setup-coder.sh#L134-L152) (Schritt 2)
+- [setup-coder.sh](../setup-coder.sh#L134-L152) – Schritt 2
 
 Problem:
 ```bash
@@ -131,136 +123,129 @@ GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
 DOCKER_GID=${DOCKER_GID}
 EOF
   sudo chmod 600 /opt/coder/.env
-  ...
 ```
-`tee` schreibt direkt in die Zieldatei, kein Schreiben in eine temporäre Datei
-mit anschließendem atomarem `mv`. Wird der Prozess während des `tee`-Aufrufs
-unterbrochen (SIGINT/SIGTERM, Stromausfall, OOM-Kill, Verbindungsabbruch bei
-SSH-Sitzung), bleibt eine leere oder unvollständige `.env` zurück. Beim
-nächsten Lauf prüft `[ ! -f /opt/coder/.env ]` nur, **ob** die Datei
-existiert – nicht, ob sie vollständig/gültig ist. Der Zweig
-"existiert bereits – wird nicht überschrieben" greift dann fälschlich, und
-`docker compose up -d` in Schritt 3 startet mit fehlenden/leeren
-Umgebungsvariablen (`POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`,
-`DOCKER_GID`) weiter.
+`tee` schreibt direkt in die Zieldatei statt in eine temporäre Datei mit
+anschließendem atomarem `mv`. Wird der Prozess während des Schreibens
+unterbrochen (SIGINT/SIGTERM, SSH-Abbruch, OOM-Kill, Stromausfall), bleibt
+eine leere/unvollständige `.env` zurück. Der Idempotenz-Check
+`[ ! -f /opt/coder/.env ]` prüft nur Existenz, nicht Vollständigkeit/Gültigkeit
+– ein Re-Run akzeptiert die kaputte Datei stillschweigend als "bereits
+konfiguriert".
 
-Zusätzlich entsteht ein kurzes Zeitfenster zwischen dem Anlegen der Datei
-durch `sudo tee` (Rechte gemäß aktivem `umask`, bei root-Standard-umask 022
-also `644` – für alle lokalen Nutzer lesbar) und dem nachträglichen
-`sudo chmod 600`. In diesem Fenster liegen Postgres- und
-Grafana-Admin-Passwort im Klartext lesbar auf der Platte.
+Zusätzlich entsteht ein Zeitfenster zwischen Dateierzeugung durch `tee`
+(Rechte gemäß aktivem `umask`) und dem nachträglichen `chmod 600`, in dem die
+Klartext-Passwörter je nach Host-`umask` breiter lesbar sind als beabsichtigt.
 
-Evidence: Code-Lesung, kein produktiver Testlauf durchgeführt (Confirmed als
-Code-Fakt; Ausnutzbarkeit/Timing als Assumption, da abhängig von
-Systemlast/Signal-Timing).
+Evidence:
+- Code-Lesung bestätigt fehlendes Temp-Datei+`mv`-Muster und den reinen
+  Existenz-Check (CONFIRMED als Code-Fakt).
+- Lokal verifiziert, dass ein mit Standard-`umask 022` neu angelegtes File
+  vor einem expliziten `chmod` mit Modus `644` existiert:
+  ```
+  $ umask; bash -c 'umask 022; touch f; stat -c "%a" f'
+  0022
+  644
+  ```
+  (generischer Unix-Mechanismus, bestätigt das Zeitfenster-Argument, nicht
+  spezifisch auf dem Zielserver gemessen).
+- Die eigentliche Unterbrechung mitten im `tee`-Schreibvorgang auf dem
+  Zielsystem wurde nicht durchgeführt (kein produktiver Eingriff erlaubt).
 
 Impact:
 - Bei unterbrochenem Erstlauf: dauerhaft kaputte, aber "vorhandene" `.env`;
-  Re-Runs "reparieren" das Problem nicht automatisch, weil der Existenz-Check
-  greift. Widerspricht der Idempotenz-Zusicherung im Kopfkommentar.
-- Kurzes, aber reales Zeitfenster mit weltlesbaren Secrets auf dem Dateisystem.
+  `docker compose up -d` in Schritt 3 startet mit fehlenden/leeren
+  Umgebungsvariablen weiter.
+- Kurzes, reales Zeitfenster mit breiter lesbaren Secrets auf der Platte.
 
 Proposed change:
-- Secrets über `umask 077` (vor dem `tee`) oder direkt mit `install -m 600`
-  bzw. `mktemp` + `mv` (atomar, gleiche Zielverzeichnis-Partition) schreiben,
-  sodass die Datei nie mit falschen Rechten existiert.
-- Idempotenz-Check verschärfen, z. B. zusätzlich prüfen, dass alle drei
-  erwarteten Schlüssel (`POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`,
-  `DOCKER_GID`) nicht-leer in der Datei stehen, bevor sie als "bereits
-  vorhanden" akzeptiert wird.
+- Vor dem Schreiben `umask 077` setzen oder direkt mit `install -m 600` bzw.
+  `mktemp` (gleiche Zielpartition) + `mv` atomar schreiben.
+- Idempotenz-Check verschärfen: prüfen, dass alle drei erwarteten Schlüssel
+  nicht-leer vorhanden sind, statt nur Datei-Existenz.
 
-Regression risk: Gering bis mittel – Änderung der Schreibreihenfolge/Prüfung
-sollte den Erfolgsfall (frischer Server, kein Interrupt) nicht beeinflussen.
+Regression risk: Gering bis mittel – ändert Schreibreihenfolge/Prüfung, sollte
+den unveränderten Erfolgsfall nicht beeinflussen.
 
 Test:
-1. Skript mit `kill -TERM` exakt während des `.env`-`tee`-Aufrufs unterbrechen
-   (z. B. via `strace`/`sleep`-Injektion oder gezieltem `SIGSTOP` kurz vor dem
-   Schreiben) und prüfen, ob eine leere/unvollständige `.env` entsteht.
-2. Skript erneut laufen lassen und prüfen, ob es die defekte `.env`
-   akzeptiert oder repariert.
-3. `stat -c '%a' /opt/coder/.env` unmittelbar nach dem `tee`-Aufruf in einer
-   Testumgebung mit `umask 022` beobachten (vor `chmod`).
+1. Skript-Ausschnitt mit gezieltem Abbruch (`kill -TERM`) während des
+   `tee`-Aufrufs in einer Testumgebung ausführen, Zustand der `.env` danach
+   prüfen.
+2. `stat -c '%a'` unmittelbar nach `tee`, vor `chmod`, in einer
+   `umask 022`-Umgebung beobachten.
+
+Classification: LIKELY (Code-Defekt bestätigt gelesen und Umask-Mechanismus
+lokal reproduziert; die konkrete Unterbrechungs-Szene selbst nicht am Skript
+durchgespielt).
 
 ---
 
-## F-003 – Backups: kein atomares Schreiben, keine Integritätsprüfung, Widerspruch zur Backup-Policy in AGENTS.md
+## F-003 – Backups: kein atomares Schreiben, keine Integritätsprüfung – Widerspruch zur Backup-Policy in AGENTS.md
 
 Severity: HIGH
 
 Location:
-- [setup-coder.sh](setup-coder.sh#L503-L515) (eingebettetes `backup.sh`, Schritt 6)
-- [setup-coder.sh](setup-coder.sh#L546-L557) (Testlauf-Auswertung)
+- [setup-coder.sh](../setup-coder.sh#L503-L515) – eingebettetes `backup.sh`
+- [setup-coder.sh](../setup-coder.sh#L546-L557) – Testlauf-Auswertung in Schritt 6
 
 Problem:
 ```bash
 docker exec coder-postgres pg_dump -U coder coder | gzip > "${BACKUP_DIR}/coder_${TIMESTAMP}.sql.gz"
 ```
-Es wird direkt in den finalen Zieldateinamen geschrieben, nicht in eine
-temporäre Datei mit anschließendem atomarem `mv`. Bricht `pg_dump` mitten im
-Stream ab (DB-Verbindung weg, Container neu gestartet, Platte voll), bleibt
-eine unvollständige `.sql.gz`-Datei exakt unter dem für diesen Lauf
-vorgesehenen, eindeutigen Zeitstempel-Namen liegen – nicht unter einem
-`.tmp`-Namen, der sich leicht aussortieren ließe. `set -euo pipefail` sorgt
-zwar dafür, dass der `backup.sh`-Aufruf selbst mit Fehler endet (das Cronjob-
-Log bekommt also einen Fehler zu sehen), verhindert aber nicht, dass die
+Es wird direkt in den finalen, für diesen Lauf eindeutigen Zieldateinamen
+geschrieben statt in eine temporäre Datei mit anschließendem atomarem `mv`.
+Bricht `pg_dump`/`gzip` mitten im Stream ab, bleibt eine unvollständige Datei
+exakt unter dem "sauberen" Namen liegen. `set -euo pipefail` sorgt zwar dafür,
+dass `backup.sh` selbst mit Fehler endet, verhindert aber nicht, dass die
 kaputte Datei im Verzeichnis verbleibt.
 
-Die einzige Erfolgsprüfung im Skript ist:
-```bash
-LATEST_BACKUP=$(ls -t /opt/coder/backups/coder_*.sql.gz 2>/dev/null | head -n1 || true)
-if [ -n "${LATEST_BACKUP:-}" ]; then
-  ok "Testlauf erfolgreich, Backup-Datei angelegt: ${LATEST_BACKUP}"
-```
-Das prüft nur "existiert eine Datei", nicht "ist der Inhalt ein gültiges,
-wiederherstellbares Gzip/SQL-Dump" (z. B. via `gzip -t` oder testweisem
-Einspielen). Für die täglichen Cron-Läufe (`/etc/cron.d/coder-backup`) gibt
-es überhaupt keine automatisierte Validierung – nur das Umleiten von
-stdout/stderr in `/var/log/coder-backup.log`.
+Die einzige im Skript vorhandene Erfolgsprüfung ist Existenz der Datei
+(`ls -t … | head -n1`), nicht Inhaltsvalidität (kein `gzip -t`, kein
+Test-Restore). Für die täglichen Cron-Läufe existiert überhaupt keine
+automatisierte Validierung.
 
-Das steht in direktem Widerspruch zur in [AGENTS.md](AGENTS.md) festgelegten
-Projekt-Policy: "Ein erfolgreiches Backup-File ist kein ausreichender Beweis
-für ein erfolgreiches Backup. Restore-Tests sind erforderlich." – aktuell
-prüft weder das Setup-Skript noch der Cronjob mehr als "Datei existiert".
+Das steht im Widerspruch zur Policy aus [AGENTS.md](../AGENTS.md):
+"Ein erfolgreiches Backup-File ist keine ausreichende Evidenz für ein
+erfolgreiches Backup. Restore-Tests sind erforderlich" (sinngemäß, siehe
+Abschnitt "Backups").
 
-Evidence: Code-Lesung (Confirmed für das Fehlen von Atomarität/Validierung).
-Dass ein realer Absturz mitten im `pg_dump`-Stream in der Praxis auftritt, ist
-eine Annahme (plausibel, aber nicht auf dem Zielsystem reproduziert).
+Evidence: Code-Lesung bestätigt Fehlen von Temp+`mv` und von
+Integritätsprüfung (CONFIRMED als Code-Fakt). Ein tatsächlicher Abbruch
+mitten im `pg_dump`-Stream wurde nicht gegen das echte Zielsystem
+durchgespielt.
 
 Impact:
-- Ein fehlgeschlagener nächtlicher Cronjob kann eine defekte, aber
-  gleichnamige `.sql.gz`-Datei hinterlassen, die bei einem Restore-Versuch
-  Wochen später als "das letzte Backup" erscheint, aber unbrauchbar ist.
-- Widerspricht der ausdrücklichen Restore-Test-Anforderung aus AGENTS.md.
+- Ein fehlgeschlagener nächtlicher Cronjob kann eine defekte, aber gültig
+  benannte `.sql.gz`-Datei hinterlassen, die bei einem späteren Restore-
+  Versuch als "letztes Backup" erscheint, aber unbrauchbar ist.
+- Widerspricht der expliziten Restore-Test-Anforderung aus AGENTS.md.
 
 Proposed change:
-- In eine temporäre Datei im selben Verzeichnis schreiben (`*.sql.gz.tmp` /
-  `mktemp` im `BACKUP_DIR`) und erst nach Erfolg per `mv` atomar auf den
-  finalen Namen umbenennen.
-- Nach dem Schreiben `gzip -t` auf die fertige Datei anwenden, bevor sie als
-  Erfolg gewertet wird; bei Fehlschlag Datei löschen und Exit-Code ungleich 0
-  liefern.
-- Perspektivisch (nicht Teil dieses Befunds, nur Hinweis): regelmäßigen
-  Restore-Test gemäß AGENTS.md-Policy ergänzen.
+- In temporäre Datei im selben Verzeichnis schreiben, nach Erfolg per `mv`
+  atomar umbenennen.
+- Nach dem Schreiben `gzip -t` gegen die fertige Datei prüfen, bei Fehlschlag
+  Datei löschen und mit Exit-Code ≠ 0 abbrechen.
 
-Regression risk: Gering – zusätzlicher Validierungsschritt, ändert das
-Verhalten im Erfolgsfall nicht, außer minimal längerer Laufzeit.
+Regression risk: Gering – zusätzlicher Validierungsschritt, kein
+Verhaltensunterschied im Erfolgsfall außer minimal längerer Laufzeit.
 
 Test:
 1. `pg_dump` durch ein Fake-Kommando ersetzen, das nach N Bytes mit Fehler
-   abbricht (`head -c 1000; false`), backup.sh laufen lassen, prüfen ob eine
-   Datei mit dem "sauberen" Endnamen zurückbleibt.
-2. Nach vorgeschlagener Änderung denselben Testfall wiederholen: Datei darf
-   nicht unter dem finalen Namen erscheinen bzw. `gzip -t` muss den Fehler vor
-   dem `ok`-Report erkennen.
+   abbricht, `backup.sh` laufen lassen, prüfen ob eine Datei unter dem
+   finalen Namen zurückbleibt.
+2. Nach Änderung denselben Testfall wiederholen und verifizieren, dass keine
+   defekte Datei unter dem finalen Namen erscheint.
+
+Classification: LIKELY (Code-Fakt bestätigt, Fehlerszenario nicht gegen das
+reale System reproduziert).
 
 ---
 
-## F-004 – `reset-coder.sh`: Volume-Auswahl beim Löschen ist nicht auf das Coder-Compose-Projekt eingeschränkt und bricht bei Mehrfachtreffern
+## F-004 – `reset-coder.sh`: Volume-Filter nicht projektgebunden, Quoting bricht bei Mehrfachtreffern
 
 Severity: MEDIUM
 
 Location:
-- [setup-coder.sh](setup-coder.sh#L744-L753) (eingebettetes `reset-coder.sh`, Schritt 9)
+- [setup-coder.sh](../setup-coder.sh#L744-L753) – eingebettetes `reset-coder.sh`, Schritt 9
 
 Problem:
 ```bash
@@ -271,156 +256,165 @@ for VOL_LABEL in postgres_data grafana_data prometheus_data; do
   fi
 done
 ```
-Der Filter verwendet ausschließlich das Label
-`com.docker.compose.volume=<name>`, nicht zusätzlich
-`com.docker.compose.project=coder`. Docker Compose vergibt dieses Label rein
-nach dem kurzen Volume-Schlüssel aus der `docker-compose.yml`
-(`postgres_data`, `grafana_data`, `prometheus_data`), unabhängig vom
-Compose-Projektnamen. Läuft auf demselben Host irgendwann ein weiteres
-Compose-Projekt mit einem Volume, das zufällig denselben kurzen Namen trägt
-(diese drei Namen sind sehr generisch und in vielen Compose-Beispielen
-üblich), würde der Filter auch dessen Volume zurückliefern.
+Der Filter beschränkt sich auf `com.docker.compose.volume=<name>`, nicht
+zusätzlich auf `com.docker.compose.project=coder`. Compose vergibt dieses
+Label rein nach dem kurzen Volume-Schlüssel aus der jeweiligen
+`docker-compose.yml`, unabhängig vom Projektnamen. Ein zweites
+Compose-Projekt auf demselben Host mit einem gleichnamigen Volume (die drei
+Namen sind generisch) würde ebenfalls gefunden.
 
-Zusätzlich, unabhängig vom obigen Punkt: Liefert der Filter mehr als eine
-Zeile zurück, enthält `VOL_NAME` mehrere durch Zeilenumbruch getrennte
-Volume-Namen. `docker volume rm "${VOL_NAME}"` übergibt das wegen der
-Anführungszeichen als **ein** Argument mit eingebettetem Zeilenumbruch statt
-als mehrere Argumente – `docker volume rm` kennt kein Volume mit diesem Namen
-und bricht mit Fehler ab, was unter `set -euo pipefail` das gesamte
-`reset-coder.sh` beendet (mitten im destruktiven Reset-Vorgang, nachdem der
-Stack bereits per `docker compose down` gestoppt wurde).
+Unabhängig davon: Liefert der Filter mehrere Zeilen, enthält `VOL_NAME`
+mehrere durch Zeilenumbruch getrennte Namen. Wegen der Anführungszeichen wird
+das als **ein** Argument mit eingebettetem Zeilenumbruch an
+`docker volume rm` übergeben statt als mehrere Argumente – das schlägt fehl
+(kein Volume mit diesem Namen), was unter `set -euo pipefail` das gesamte
+`reset-coder.sh` mitten im destruktiven Reset abbricht (Stack bereits
+gestoppt).
 
-Evidence: Code-Lesung (Confirmed für fehlende Projekt-Einschränkung und für
-die Quoting-Schwäche bei Mehrfachtreffern). Ob auf dem konkreten
-Produktionsserver aktuell ein zweites Compose-Projekt mit kollidierendem
-Volume-Namen existiert, ist unbekannt/Annahme – aktuell vermutlich ein
-Einzelserver nur für Coder, daher geringe reale Trefferwahrscheinlichkeit.
+Evidence:
+- Code-Lesung bestätigt das Fehlen der Projekt-Einschränkung (CONFIRMED als
+  Code-Fakt).
+- Quoting-Mechanismus lokal reproduziert (ohne echtes Docker, generisches
+  Bash-Verhalten):
+  ```
+  $ bash -c '
+  fakecmd() { echo "called with $# arg(s): [$1]"; }
+  VOL_NAME=$(printf "vol_a\nvol_b\n")
+  fakecmd "${VOL_NAME}"
+  '
+  called with 1 arg(s): [vol_a
+  vol_b]
+  ```
+  Bestätigt: ein mehrzeiliges `VOL_NAME` wird als ein einzelnes Argument
+  übergeben.
+- Ob auf dem konkreten Produktionsserver aktuell ein zweites Compose-Projekt
+  mit kollidierendem Volume-Namen existiert, ist unbekannt (ASSUMPTION,
+  vermutlich Einzelserver nur für Coder → geringe reale
+  Trefferwahrscheinlichkeit für den Mehrfachtreffer-Fall).
 
 Impact:
-- Geringe, aber reale Möglichkeit, bei zukünftiger Erweiterung des Servers um
-  weitere Docker-Compose-Stacks fremde Volumes zu löschen.
+- Geringe, aber reale Möglichkeit, bei künftiger Erweiterung des Servers um
+  weitere Compose-Stacks fremde Volumes zu löschen.
 - Bei Mehrfachtreffern bricht das Reset-Skript mit Fehler ab statt sauber
   aufzuräumen.
 
 Proposed change:
-Filter zusätzlich auf das Projekt einschränken, z. B.
-`--filter "label=com.docker.compose.project=coder" --filter "label=com.docker.compose.volume=${VOL_LABEL}"`,
-und `VOL_NAME` als Array/Zeilen-für-Zeile verarbeiten (`while IFS= read -r vol; do docker volume rm "$vol"; done`),
+Filter zusätzlich auf `label=com.docker.compose.project=coder` einschränken
+und `VOL_NAME` zeilenweise verarbeiten (`while IFS= read -r vol; do … done`)
 statt als einzelnen quotierten String.
 
-Regression risk: Gering – schärfere Filterung und robustere Iteration ändern
-das Verhalten im Normalfall (genau ein Treffer pro Label) nicht.
+Regression risk: Gering – schärfere Filterung/robustere Iteration ändert den
+Normalfall (genau ein Treffer je Label) nicht.
 
 Test:
-1. Zwei Testvolumes mit demselben `com.docker.compose.volume`-Label, aber
+1. Zwei Testvolumes mit gleichem `com.docker.compose.volume`-Label, aber
    unterschiedlichem `com.docker.compose.project`-Label anlegen.
-2. `reset-coder.sh` (isoliert, gegen Test-Volumes) laufen lassen und prüfen,
-   welches/welche Volumes tatsächlich entfernt werden.
+2. `reset-coder.sh` isoliert gegen Test-Volumes laufen lassen und beobachten,
+   welche Volumes entfernt werden bzw. ob das Skript abbricht.
+
+Classification: LIKELY (Quoting-Mechanismus CONFIRMED reproduziert; fehlende
+Projektbindung CONFIRMED per Code-Lesung; tatsächliche Kollision auf dem
+Zielserver ASSUMPTION).
 
 ---
 
-## F-005 – `reset-passwords.sh`: Passwortwechsel in Postgres und Persistierung in `.env` sind nicht transaktional
+## F-005 – `reset-passwords.sh`: Passwortwechsel in Postgres und Persistierung in `.env` nicht transaktional
 
 Severity: MEDIUM
 
 Location:
-- [setup-coder.sh](setup-coder.sh#L635-L672) (eingebettetes `reset-passwords.sh`, Schritt 8)
+- [setup-coder.sh](../setup-coder.sh#L635-L672) – eingebettetes `reset-passwords.sh`, Schritt 8
 
 Problem:
-Die Reihenfolge ist: (1) `ALTER USER coder WITH PASSWORD …` gegen die laufende
-Postgres-Instanz ausführen, (2) Grafana-Admin-Passwort zurücksetzen, (3) erst
-danach `.env` per `sed -i` mit den neuen Werten aktualisieren, (4) den
-`coder`-Container mit `--no-deps` neu erstellen. Wird der Prozess zwischen
-Schritt (1) und Schritt (3) unterbrochen (Netzwerkabbruch der SSH-Sitzung,
-Ctrl-C, Absturz), ist das tatsächliche Postgres-Passwort bereits geändert,
-`.env` enthält aber weiterhin das **alte** Passwort. Ein späterer, davon
-unabhängiger `docker compose up -d` (z. B. nach Reboot oder durch
-`update.sh`) verbindet Coder dann mit dem falschen Passwort aus `.env`, und
-der Coder-Container kann die Datenbank nicht mehr erreichen – ohne dass
-`reset-passwords.sh` selbst dafür eine Wiederherstellungs- oder
-Warnmechanik anbietet.
+Reihenfolge: (1) `ALTER USER coder WITH PASSWORD …` gegen die laufende
+Postgres-Instanz, (2) Grafana-Admin-Passwort zurücksetzen, (3) erst danach
+`.env` per `sed -i` aktualisieren, (4) `coder`-Container mit `--no-deps` neu
+erstellen. Bricht der Prozess zwischen (1) und (3) ab (SSH-Abbruch, Ctrl-C,
+Absturz), ist das reale Postgres-Passwort bereits geändert, `.env` enthält
+aber weiterhin das alte. Ein späterer, unabhängiger `docker compose up -d`
+(Reboot, `update.sh`) verbindet Coder dann mit dem falschen Passwort – ohne
+dass das Skript dafür eine Erkennungs- oder Wiederherstellungslogik anbietet.
 
-Evidence: Code-Lesung (Confirmed für die fehlende Atomarität/Reihenfolge-
-Abhängigkeit). Dass ein Abbruch genau in diesem Fenster in der Praxis
-passiert, ist eine Annahme – das Fenster ist aber nicht extrem kurz (zwei
-`docker exec`-Aufrufe liegen dazwischen), reale Wahrscheinlichkeit also nicht
-vernachlässigbar bei manueller, interaktiver Ausführung über SSH.
+Evidence: Code-Lesung bestätigt die Reihenfolge-Abhängigkeit eindeutig
+(CONFIRMED als Code-Fakt). Ein Abbruch genau in diesem Fenster wurde nicht am
+echten System durchgespielt.
 
 Impact:
-- Inkonsistenter Zustand zwischen tatsächlichem DB-Passwort und dem in
-  `.env` gespeicherten Wert, ohne automatische Erkennung.
-- Wiederherstellung erfordert manuelles Nachvollziehen, welches Passwort
-  zuletzt tatsächlich gesetzt wurde.
+- Inkonsistenter Zustand zwischen tatsächlichem DB-Passwort und `.env`-Inhalt
+  ohne automatische Erkennung.
+- Wiederherstellung erfordert manuelles Nachvollziehen des zuletzt gesetzten
+  Passworts.
 
 Proposed change:
-`.env` unmittelbar **vor** dem `ALTER USER`-Aufruf mit dem neuen Passwort
-aktualisieren (oder zumindest so nah wie möglich davor), sodass im Fehlerfall
-eher `.env` und DB gemeinsam auf dem neuen Stand sind, oder ein Rollback-Pfad
-ergänzt wird, der bei einem Fehler nach Schritt (1) explizit auf die
-Inkonsistenz hinweist (z. B. durch eine `trap`, die bei vorzeitigem Abbruch
-nach dem `ALTER USER`, aber vor dem `sed -i`, eine deutliche Warnung auf
-stderr ausgibt).
+`.env` möglichst unmittelbar vor dem `ALTER USER`-Aufruf aktualisieren, oder
+einen klaren Hinweis/Trap ergänzen, der bei Abbruch zwischen (1) und (3)
+explizit auf die Inkonsistenz hinweist.
 
-Regression risk: Gering – Reihenfolgeänderung betrifft nur den Fehlerfall,
-der Erfolgspfad bleibt unverändert.
+Regression risk: Gering – Reihenfolgeänderung betrifft nur den Fehlerfall.
 
 Test:
-1. `reset-passwords.sh` mit einem künstlich verzögerten `sed -i` (z. B. Skript
-   kopieren und `sleep 5` vor den `sed`-Aufrufen einfügen) starten und in
-   diesem Fenster per `SIGTERM` abbrechen.
+1. Kopie von `reset-passwords.sh` mit künstlicher Verzögerung (`sleep 5`) vor
+   den `sed`-Aufrufen ausführen und in diesem Fenster per `SIGTERM`
+   abbrechen.
 2. Prüfen, ob `.env` noch das alte Passwort enthält, während Postgres bereits
-   das neue akzeptiert (`docker exec coder-postgres psql -U coder …` mit
-   beiden Passwörtern testen).
+   das neue akzeptiert.
+
+Classification: LIKELY (Reihenfolge-Fakt CONFIRMED per Code-Lesung, Abbruch-
+Szenario nicht praktisch reproduziert).
 
 ---
 
-## F-006 – ShellCheck-Befunde (Info/Warnung) und fehlender Zeilenumbruch am Dateiende
+## F-006 – ShellCheck-Befunde und fehlender Zeilenumbruch am Dateiende
 
 Severity: LOW
 
 Location:
-- [setup-coder.sh](setup-coder.sh#L111) – SC1091 (Info): `. /etc/os-release`
-  wird von ShellCheck nicht verfolgt. Kein echtes Problem, nur ein Hinweis;
-  Inhalt/Verhalten von `/etc/os-release` auf Debian 13 ist Standard.
-- [setup-coder.sh](setup-coder.sh#L543) – SC2034 (Warnung): `i` in
-  `for i in $(seq 1 30); do … done` wird nie gelesen, nur als Zähler für die
-  Anzahl der Wiederholungen benutzt.
-- [setup-coder.sh](setup-coder.sh#L548) – SC2012 (Info): `ls -t
-  .../coder_*.sql.gz | head -n1` statt `find`. Aktuell unkritisch, da die
-  Dateinamen ausschließlich vom Skript selbst über `TIMESTAMP=$(date
-  +%Y-%m-%d_%H%M)` erzeugt werden (keine Sonderzeichen/Zeilenumbrüche zu
-  erwarten).
-- Dateiende von `setup-coder.sh`: letzte Zeile (`fi`) hat keinen
-  abschließenden Zeilenumbruch (verifiziert mit `tail | cat -A`).
+- [setup-coder.sh](../setup-coder.sh#L111) – SC1091 (Info)
+- [setup-coder.sh](../setup-coder.sh#L543) – SC2034 (Warnung): `i` in
+  `for i in $(seq 1 30); do … done` wird nie gelesen
+- [setup-coder.sh](../setup-coder.sh#L548) – SC2012 (Info): `ls -t` statt
+  `find`
+- Dateiende von `setup-coder.sh`: letzte Zeile (`fi`) ohne abschließenden
+  Zeilenumbruch
 
-Problem: Rein stilistische/robustheitsbezogene Hinweise ohne aktuellen
+Problem: Stilistische/robustheitsbezogene Hinweise ohne aktuellen
 funktionalen Fehler.
 
-Evidence: `shellcheck -s bash setup-coder.sh` (Version 0.11.0), Ausgabe siehe
-oben; `tail -c` Prüfung auf fehlenden Zeilenumbruch. Confirmed.
+Evidence:
+```
+$ shellcheck -s bash setup-coder.sh
+setup-coder.sh:111 SC1091 (info) ...
+setup-coder.sh:543 SC2034 (warning): i appears unused ...
+setup-coder.sh:548 SC2012 (info): Use find instead of ls ...
+```
+plus `tail -5 setup-coder.sh | cat -A`, zeigt kein Zeilenende-Zeichen nach
+`fi` (kein abschließender Newline). Die vier extrahierten eingebetteten
+Skripte (`backup.sh`, `update.sh`, `reset-passwords.sh`, `reset-coder.sh`)
+wurden separat mit ShellCheck geprüft und sind **ohne** Beanstandungen.
 
-Impact: Minimal. Fehlender Zeilenumbruch kann bei manchen Tools/`cat`-
-Verkettungen zu verklebten Zeilen führen; die SC2034/SC2012-Hinweise sind
-Best-Practice-Verbesserungen ohne aktuellen Bug.
+Impact: Minimal. Kein aktueller Bug, reine Robustheits-/Stil-Hinweise.
 
 Proposed change:
-- `for i in $(seq 1 30)` zu `for _ in $(seq 1 30)` ändern (Absicht klarer).
-- Optional `find "${BACKUP_DIR}" -maxdepth 1 -name 'coder_*.sql.gz' -printf '%T@ %p\n' | sort -rn | head -n1 | cut -d' ' -f2-` statt `ls -t`.
-- Abschließenden Zeilenumbruch am Dateiende ergänzen.
+- `for i in $(seq 1 30)` zu `for _ in $(seq 1 30)` (Absicht klarer machen).
+- Optional `ls -t` durch `find`-basierte Lösung ersetzen.
+- Abschließenden Zeilenumbruch ergänzen.
 
-Regression risk: Keins (rein kosmetisch/robustheitssteigernd).
+Regression risk: Keins (rein kosmetisch).
 
-Test: `shellcheck -s bash setup-coder.sh` erneut laufen lassen, es sollte
-keine Warnungen mehr geben; `tail -c1 setup-coder.sh | xxd` zeigt `0a`.
+Test: `shellcheck -s bash setup-coder.sh` erneut ausführen, sollte keine
+Warnungen mehr liefern; `tail -c1 setup-coder.sh | xxd` zeigt `0a`.
+
+Classification: CONFIRMED (Tool tatsächlich ausgeführt, Ausgabe wie oben
+zitiert).
 
 ---
 
-## F-007 – `reset-passwords.sh`: altes Postgres-Passwort aus `.env` wird ungeprüft in einen Heredoc an die Container-Shell interpoliert
+## F-007 – `reset-passwords.sh`: altes Postgres-Passwort aus `.env` wird ungeprüft in Heredoc an Container-Shell interpoliert
 
 Severity: INFO
 
 Location:
-- [setup-coder.sh](setup-coder.sh#L635-L653) (eingebettetes `reset-passwords.sh`)
+- [setup-coder.sh](../setup-coder.sh#L635-L653) – eingebettetes `reset-passwords.sh`
 
 Problem:
 ```bash
@@ -431,64 +425,228 @@ export PGPASSWORD="${OLD_PG_PW}"
 psql -U coder -d coder -c "ALTER USER coder WITH PASSWORD '${NEW_PG_PW}';"
 INNER_EOF
 ```
-Der Heredoc ist unquotiert (`<<INNER_EOF`, nicht `<<'INNER_EOF'`), daher
-ersetzt die äußere (Host-)Shell `${OLD_PG_PW}` und `${NEW_PG_PW}` bereits vor
-dem Versand an die Container-`sh`. `NEW_PG_PW` stammt garantiert aus
-`openssl rand -hex …` (nur `0-9a-f`) und ist unkritisch. `OLD_PG_PW` stammt
-dagegen aus dem Inhalt von `.env` – das Skript selbst erzeugt dort ebenfalls
-nur Hex-Werte, aber falls `.env` jemals manuell mit einem Passwort editiert
-wurde, das ein `"`- oder `'`-Zeichen enthält, würde das die
-`export PGPASSWORD="…"`-Zeile bzw. den `psql -c "…"`-String syntaktisch
-aufbrechen (Fehler in der Container-Shell, kein Angriff auf den Host, da alles
-innerhalb des `docker exec`-Aufrufs bleibt).
+Der Heredoc ist unquotiert, daher expandiert die Host-Shell `${OLD_PG_PW}`
+und `${NEW_PG_PW}` bereits vor dem Versand an die Container-`sh`.
+`NEW_PG_PW` stammt garantiert aus `openssl rand -hex …` (nur `0-9a-f`) und ist
+unkritisch. `OLD_PG_PW` stammt aus dem Inhalt von `.env` – regulär ebenfalls
+nur Hex, aber falls `.env` jemals manuell mit einem `"`/`'`-haltigen Passwort
+editiert wurde, würde das die Anführungszeichen-Struktur der `export`- bzw.
+`psql -c`-Zeile aufbrechen (Fehler in der Container-Shell, kein
+Host-Angriff, da alles innerhalb des `docker exec`-Aufrufs verbleibt).
 
-Evidence: Code-Lesung. Confirmed als theoretische Schwachstelle; nicht
-ausnutzbar über den regulären Skript-Pfad, da `.env` ausschließlich von
-diesem Skript-Satz mit garantiert alphanumerischen Hex-Werten befüllt wird.
+Evidence: Code-Lesung, Quotierungsmechanik nachvollzogen (CONFIRMED als
+Code-Fakt für die Mechanik). Ob `.env` in der Praxis je manuell mit
+Sonderzeichen editiert wird, ist ASSUMPTION.
 
-Impact: Sehr gering im aktuellen Betrieb; reine Verteidigung-in-die-Tiefe-
-Lücke für den hypothetischen Fall einer manuell editierten `.env`.
+Impact: Sehr gering im Normalbetrieb; reine Verteidigung-in-die-Tiefe-Lücke
+für den hypothetischen Fall einer manuell editierten `.env`.
 
-Proposed change: Werte statt per String-Interpolation über Umgebungsvariablen
-an die Container-Shell übergeben (`docker exec -i -e OLD_PG_PW -e NEW_PG_PW
-coder-postgres sh -c '...'` mit `$OLD_PG_PW`/`$NEW_PG_PW` erst innerhalb der
-einfach gequoteten `-c`-Zeichenkette expandiert), um Interpolation in
-SQL-/Shell-Syntax generell auszuschließen.
+Proposed change: Werte über Umgebungsvariablen an die Container-Shell
+übergeben (`docker exec -i -e OLD_PG_PW -e NEW_PG_PW coder-postgres sh -c '...'`
+mit Expansion erst innerhalb einfach gequoteter `-c`-Zeichenkette), statt
+String-Interpolation vor dem Versand.
 
-Regression risk: Gering, betrifft nur Übergabemechanik der Werte.
+Regression risk: Gering, betrifft nur Übergabemechanik.
 
-Test: `.env` testweise mit `POSTGRES_PASSWORD=abc'def` befüllen (nur in
-Testumgebung!) und prüfen, ob `reset-passwords.sh` sauber fehlschlägt oder ob
-es zu unerwartetem SQL/Shell-Verhalten kommt.
+Test: `.env` testweise (nur in Testumgebung) mit `POSTGRES_PASSWORD=abc'def`
+befüllen und beobachten, ob `reset-passwords.sh` sauber fehlschlägt oder zu
+unerwartetem Shell-/SQL-Verhalten führt.
+
+Classification: LIKELY (Quotierungsmechanik CONFIRMED nachvollzogen, aber
+nicht mit echtem `docker exec` gegen eine Postgres-Instanz reproduziert).
+
+---
+
+## F-008 – Wiederholte externe `ufw status`-Aufrufe statt einmaliger Auswertung
+
+Severity: LOW
+
+Location:
+- [setup-coder.sh](../setup-coder.sh#L305-L336) – Schritt 4, Abschluss-Checks
+
+Problem:
+Im Anschluss an die Firewall-Konfiguration wird `sudo ufw status` bzw.
+`sudo ufw status verbose` insgesamt sieben Mal separat aufgerufen (einmal zur
+Anzeige, sechs weitere Male für einzelne `grep -q`-Prüfungen), obwohl eine
+einmalige Ausgabe in eine Variable ausreichen würde. Jeder Aufruf startet
+einen neuen `ufw`-Python-Prozess (spürbar langsamer als reine Textverarbeitung).
+
+Evidence: Code-Lesung, Anzahl der Aufrufe im entsprechenden Codeabschnitt
+ausgezählt (CONFIRMED als Code-Fakt für die Aufrufanzahl; die Aussage zur
+Performance-Relevanz ist ASSUMPTION, da nicht gemessen).
+
+Impact: Rein kosmetisch/geringfügig langsamer; kein funktionales Risiko,
+da `ufw status` zwischen den Aufrufen keinen sich ändernden Zustand hat (das
+Regelwerk wird in diesem Codeabschnitt nicht mehr verändert).
+
+Proposed change: Ausgabe einmal in eine Variable schreiben
+(`UFW_STATUS=$(sudo ufw status verbose)`) und alle nachfolgenden `grep`-
+Prüfungen gegen diese Variable laufen lassen.
+
+Regression risk: Keins, sofern die Variable vor der ersten Prüfung zuverlässig
+befüllt wird.
+
+Test: Anzahl der `ufw`-Prozessaufrufe vor/nach der Änderung zählen
+(`grep -c 'ufw status' setup-coder.sh`).
+
+Classification: CONFIRMED (Aufrufanzahl im Code nachgezählt).
+
+---
+
+## F-009 – Keine Formatvalidierung für `DOMAIN_CODER`/`ACME_EMAIL` vor Einbettung in generierte Konfigurationsdateien
+
+Severity: INFO
+
+Location:
+- [setup-coder.sh](../setup-coder.sh#L70-L76) – Default-Variablen
+- [setup-coder.sh](../setup-coder.sh#L163-L260) – Einbettung in
+  `docker-compose.yml`/Caddyfile
+
+Problem:
+`DOMAIN_CODER`, `ACME_EMAIL` und die Versions-Variablen werden per
+`: "${VAR:=default}"` gesetzt und ungeprüft in generierte
+Konfigurationsdateien (docker-compose.yml, Caddyfile) eingebettet. Es gibt
+keine Prüfung auf ein plausibles Domain-/E-Mail-Format. Da die Heredocs
+unquotiert sind, wird der Variablenwert nur als literaler Text eingesetzt
+(keine erneute Shell-Interpretation), ein Injection-Risiko über die
+generierten Dateien besteht dadurch nicht unmittelbar – ein fehlerhafter Wert
+würde aber erst spät auffallen: `docker compose config --quiet` in Schritt 3
+prüft nur YAML-Syntax, keine inhaltliche Plausibilität von Domain/E-Mail;
+ein tatsächlicher Fehler (z. B. ungültige Domain) würde frühestens beim
+Caddy-Zertifikatsversuch bzw. beim Health-Check in Schritt 10 sichtbar.
+
+Evidence: Code-Lesung (CONFIRMED als Code-Fakt für das Fehlen jeder
+Formatprüfung).
+
+Impact: Gering – betrifft nur den Aufrufenden selbst (bereits root/sudo),
+kein Risiko durch nicht vertrauenswürdige Dritte. Führt im Fehlerfall zu
+später und weniger eindeutiger Fehlermeldung statt eines frühen, klaren
+Abbruchs direkt nach der Variablenzuweisung.
+
+Proposed change: Optionale, einfache Sanity-Checks direkt nach den
+Default-Zuweisungen ergänzen (z. B. grobes Regex-Muster für Domain/E-Mail),
+die bei offensichtlich fehlerhaften Werten sofort mit klarer Meldung
+abbrechen.
+
+Regression risk: Gering, sofern die Prüfung großzügig genug ist, um gültige
+reale Domains/E-Mails nicht fälschlich abzulehnen.
+
+Test: Skript mit `DOMAIN_CODER=""` bzw. `ACME_EMAIL="ungueltig"` aufrufen und
+beobachten, an welcher Stelle der Fehler zum ersten Mal sichtbar wird.
+
+Classification: LIKELY (Fehlen der Prüfung CONFIRMED, das genaue spätere
+Fehlerbild wurde nicht end-to-end gegen einen echten Server durchgespielt).
+
+---
+
+## Bereits korrekt gelöste Punkte (positiv hervorzuheben)
+
+- **`set -euo pipefail` global sowie in allen vier eingebetteten Skripten** –
+  konsistent gesetzt, keine Lücke gefunden.
+- **`HTTP_CODE=$(curl …)` steht bewusst direkt in der `if`-Bedingung**
+  ([setup-coder.sh](../setup-coder.sh#L800-L811)), mit explizitem, korrektem
+  Kommentar, warum eine vorgelagerte separate Zuweisung unter `set -e` das
+  Skript beim ersten DNS-/Netzwerkfehler sofort und ohne Meldung beendet
+  hätte. Kommentar und Verhalten stimmen hier nachweislich überein.
+- **Healthcheck-Wartepolling** (`for i in $(seq 1 30); do [ … ] && break; sleep 2; done`,
+  [setup-coder.sh](../setup-coder.sh#L543-L545)) – geprüft und in einer
+  Test-Shell reproduziert: Dieses Muster ist unter `set -e` sicher, da ein
+  fehlschlagender, nicht-letzter Teil einer `&&`-Liste von `set -e`
+  ausgenommen ist. Kein Befund.
+- **`docker compose config --quiet` vor `docker compose up -d`**
+  ([setup-coder.sh](../setup-coder.sh#L263-L268)) – validiert Syntax/Variablen-
+  Interpolation frühzeitig, mit korrektem erklärendem Kommentar; reduziert das
+  Risiko kryptischer Fehler mitten in `up -d`.
+- **Idempotente Firewall-Regel-Bereinigung** vor Neuanlage
+  ([setup-coder.sh](../setup-coder.sh#L272-L276)) mit `|| true` sauber gegen
+  Fehlschlag auf vorherigen Läufen abgesichert.
+- **Reihenfolge der ufw-Regeln**: `ufw limit 22/tcp` wird gesetzt, bevor
+  `ufw --force enable` aufgerufen wird – verhindert ein versehentliches
+  Aussperren der SSH-Sitzung während der Firewall-Aktivierung.
+- **Passwortübergabe an `psql`/`grafana-cli` per STDIN-Heredoc statt als
+  `docker exec -e`-Argument** ([setup-coder.sh](../setup-coder.sh#L644-L657)) –
+  vermeidet, dass Klartext-Passwörter über `ps aux` auf dem Host sichtbar
+  werden; Kommentar beschreibt das korrekt.
+- **`reset-coder.sh` verlangt explizite interaktive Bestätigung** (`RESET`
+  eintippen) vor jeder destruktiven Aktion, bricht bei fehlgeschlagenem
+  Sicherheits-Backup ohne `--force` sauber ab, und lässt Zertifikate/Backups
+  bewusst unangetastet – Kommentar und Verhalten stimmen überein.
+- **`declare -a SUMMARY=()` und `"${SUMMARY[@]}"`** – Array wird korrekt
+  deklariert, angehängt und beim Ausgeben vollständig gequotet iteriert; keine
+  Word-Splitting-Probleme bei Einträgen mit Leerzeichen.
+- **`find … -mtime +14 -delete`** in `backup.sh` – Glob-Muster korrekt in
+  Anführungszeichen an `-name` übergeben, keine vorzeitige Shell-Expansion.
+- **`/etc/cron.d/coder-backup` statt Wurzel-Crontab-Fummelei** – eigene,
+  nachvollziehbare Datei statt fragilem Parsen/Überschreiben der gesamten
+  Root-Crontab; Kommentar begründet das nachvollziehbar korrekt.
+- **`backend=systemd` für fail2ban explizit gesetzt** statt `auto` – Kommentar
+  verweist korrekt auf bekanntes, dokumentiertes Verhalten auf
+  systemd-Distributionen.
+- **Kein `eval`, kein `curl | bash`/`curl | sh`, kein `rm -rf` mit
+  Variablen-Interpolation, kein `chmod 777`** an keiner Stelle im gesamten
+  Skript gefunden.
+- **Debian-13("trixie")-Kompatibilität des Docker-Repos**: Stichprobe gegen
+  `https://download.docker.com/linux/debian/dists/` zeigt aktuell einen
+  vorhandenen `trixie`-Zweig – zum Zeitpunkt dieser Analyse kein Problem
+  (aber ein extern veränderlicher Zustand, kein reiner Code-Fakt; sollte bei
+  künftigen Debian-Wechseln erneut geprüft werden).
 
 ---
 
 ## Nicht bestätigte Punkte / bewusst nicht als Befund aufgenommen
 
-- **Docker-Repository-Unterstützung für "trixie"**: Zeile
-  [setup-coder.sh](setup-coder.sh#L108-L112) verwendet
-  `$(. /etc/os-release && echo "$VERSION_CODENAME")` zur Auswahl der
-  Docker-APT-Distribution. Stichprobenartige Prüfung von
-  `https://download.docker.com/linux/debian/dists/` zeigt aktuell (Stand
-  dieser Analyse) einen vorhandenen `trixie`-Distributionszweig – aktuell kein
-  Befund, aber dies ist ein zeitabhängiger externer Zustand (kein Code-Fakt)
-  und sollte bei zukünftigen Debian-Major-Wechseln erneut geprüft werden.
 - **`set -Eeuo pipefail` vs. tatsächlich verwendetes `set -euo pipefail`**:
-  Das `-E`-Flag (`errtrace`) fehlt in allen fünf Skripten. Da nirgends ein
-  `trap … ERR` gesetzt ist, hat das Fehlen von `-E` aktuell keine
-  beobachtbare Auswirkung. Kein eigener Befund, da kein aktueller
-  Fehlerbehandlungscode davon betroffen ist – nur als Hinweis für den Fall,
-  dass künftig ein `ERR`-Trap ergänzt wird (dann würde `-E` benötigt, damit er
-  auch in Funktionen/Subshells greift).
-- **`[ … ] && break` in der Healthcheck-Warteschleife**
-  ([setup-coder.sh](setup-coder.sh#L543-L545)): geprüft und in einer
-  Test-Shell reproduziert – dieses Muster ist unter `set -e` **sicher**, da
-  ein fehlschlagender, nicht-letzter Teil einer `&&`/`||`-Liste laut
-  Bash-Semantik von `set -e` ausgenommen ist. Kein Befund.
+  Das `-E`-Flag fehlt in allen fünf Skripten. Da nirgends ein `trap … ERR`
+  gesetzt ist, hat das aktuell keine beobachtbare Auswirkung. Kein Befund,
+  nur ein Hinweis für den Fall, dass künftig ein `ERR`-Trap ergänzt wird.
+- **Geheimnisse werden einmalig im Klartext auf dem Terminal ausgegeben**
+  (`echo "Postgres-Passwort: …"`, Schritt 2 und in `reset-passwords.sh`) –
+  dies ist ein bewusster, dokumentierter Kompromiss (Admin muss neu erzeugte
+  Passwörter mindestens einmal sehen können) und kein Implementierungsfehler;
+  kein eigener Befund, da keine sinnvolle Alternative ohne separaten
+  Secrets-Store ersichtlich ist.
 
-Kein weiterer belastbarer Befund zu Word-Splitting, Globbing, allgemeinem
-Quoting oder Exit-Code-Weitergabe außerhalb der oben genannten Stellen
-gefunden; die übrige Variablennutzung ist durchgehend korrekt quotiert
-(`"${VAR}"`), und Kommandosubstitutionen außerhalb der genannten Fälle stehen
-korrekt entweder in `if`/`while`-Bedingungen oder sind explizit mit `|| true`
-abgesichert.
+Kein weiterer belastbarer Befund zu Word-Splitting, Globbing, Arrays,
+allgemeinem Quoting oder Signalbehandlung außerhalb der oben genannten
+Stellen gefunden. Die übrige Variablennutzung ist durchgehend korrekt
+quotiert (`"${VAR}"`), Kommandosubstitutionen stehen dort, wo sie unter
+`set -e` kritisch wären, korrekt in `if`/`while`-Bedingungen oder sind
+explizit mit `|| true` abgesichert.
+
+---
+
+## Summary
+
+- CRITICAL: 1
+- HIGH: 2
+- MEDIUM: 2
+- LOW: 2
+- INFO: 2
+
+(Gesamt: 9 Befunde)
+
+---
+
+## Top 10 Priorities
+
+1. **F-001** – Crontab-Migrationspipeline bricht unter `set -e`+`pipefail` bei
+   genau einem Treffer lautlos ab (CRITICAL, reproduziert).
+2. **F-002** – `.env`-Geheimnisdatei nicht atomar geschrieben, Idempotenz-
+   Check prüft nur Existenz (HIGH).
+3. **F-003** – Backups nicht atomar geschrieben, keine Integritätsprüfung,
+   Widerspruch zur AGENTS.md-Backup-Policy (HIGH).
+4. **F-004** – `reset-coder.sh`-Volume-Löschung nicht projektgebunden,
+   Quoting bricht bei Mehrfachtreffern (MEDIUM).
+5. **F-005** – `reset-passwords.sh`: DB-Passwortwechsel und `.env`-
+   Persistierung nicht transaktional (MEDIUM).
+6. **F-006** – ShellCheck-Warnungen (`SC2034`, `SC2012`) und fehlender
+   abschließender Zeilenumbruch (LOW).
+7. **F-008** – Sieben separate `ufw status`-Aufrufe statt einmaliger
+   Auswertung (LOW).
+8. **F-007** – Ungeprüfte Interpolation des alten Postgres-Passworts aus
+   `.env` in Heredoc an Container-Shell (INFO, defense-in-depth).
+9. **F-009** – Keine Formatvalidierung für `DOMAIN_CODER`/`ACME_EMAIL` vor
+   Einbettung in generierte Konfigurationsdateien (INFO).
+10. **Beobachtung ohne Einzelbefund**: Fehlendes `-E`-Flag in
+    `set -euo pipefail` – aktuell folgenlos, aber relevant, sobald künftig ein
+    `ERR`-Trap ergänzt wird (siehe Abschnitt "Nicht bestätigte Punkte").
