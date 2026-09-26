@@ -1,0 +1,20 @@
+# Secrets / runtime configuration
+.env
+*.env
+
+# Backups
+backups/
+*.sql
+*.sql.gz
+
+# Logs
+*.log
+
+# Local/editor files
+.vscode/
+.idea/
+.DS_Store
+
+# Temporary files
+*.tmp
+*.swp
