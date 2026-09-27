@@ -915,7 +915,10 @@ if ! gzip -t "${TMP}"; then
   logger -t coder-backup "FEHLGESCHLAGEN: gzip -t" || true
   exit 1
 fi
-if ! zcat "${TMP}" 2>/dev/null | head -c 4000 | grep -q "PostgreSQL database dump"; then
+# B2-001: Kopf in Variable lesen – direkte Pipe (zcat|head|grep) gäbe unter
+# pipefail Exit 141 (SIGPIPE) bei Dumps > ~64 KB und damit falschen Fail.
+HEADER="$(zcat "${TMP}" 2>/dev/null | head -c 4000 || true)"
+if ! printf '%s' "${HEADER}" | grep -q "PostgreSQL database dump"; then
   echo "backup.sh: FEHLGESCHLAGEN: kein SQL-Dump-Header (leer oder Fehlertext), keine Finaldatei angelegt." >&2
   logger -t coder-backup "FEHLGESCHLAGEN: kein SQL-Dump-Header" || true
   exit 1
