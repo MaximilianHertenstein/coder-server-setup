@@ -1,13 +1,18 @@
 # PLAN-v3 – Konsolidierter Implementierungsplan (nächste Version)
 
-Stand: 2026-09-27. Baseline: Branch `ai/implementation-v2`, HEAD `a09c591`
-(`setup-coder.sh` 1615 Newlines per `wc -l` / 1616 logische Zeilen – letzte
-Zeile `fi` ohne abschließenden Newline; alle Zeilenreferenzen unten beziehen
-sich auf diesen Stand), `ssh-harden.sh` (80 Zeilen), `RESTORE.md`
-(68 Zeilen), `templates/allowlist.md` (34 Zeilen), `tests/` leer.
-Setup-Diff `eadb61a..HEAD` ist leer (nur `ai-review/PLAN-v3.md` als Delta,
-verifiziert per `git diff eadb61a..HEAD --stat`); Freigabe-Protokoll hält
-`git rev-parse --short HEAD` + `git diff eadb61a..HEAD --stat` fest.
+Stand: 2026-09-27. Baseline: Branch `ai/implementation-v2`, Referenz-Commit
+`eadb61a` für alle Setup-Dateien (`setup-coder.sh` 1615 Newlines per `wc -l`
+/ 1616 logische Zeilen – letzte Zeile `fi` ohne abschließenden Newline; alle
+Zeilenreferenzen unten beziehen sich auf diesen Setup-Stand),
+`ssh-harden.sh` (80 Zeilen), `RESTORE.md` (68 Zeilen),
+`templates/allowlist.md` (34 Zeilen), `tests/` leer. Setup-Diff
+`eadb61a..HEAD` für Setup-Dateien ist leer (Plan-Delta nur `ai-review/*`,
+verifiziert per `git diff eadb61a..HEAD --stat -- setup-coder.sh
+ssh-harden.sh RESTORE.md templates/` muss leer sein; `git diff
+eadb61a..HEAD --stat` zeigt nur `ai-review/`); Freigabe-Protokoll hält
+`git rev-parse --short HEAD` + beide `--stat`-Ausgaben fest.
+Zeilenreferenzen bleiben gültig, solange der Setup-Diff leer ist –
+andernfalls Baseline neu verifizieren (kein HEAD-Chasing im Plantext).
 Geltungsbereich: ausschließlich Planung. Es wird nur diese Datei
 (`ai-review/PLAN-v3.md`) erstellt. Keine Implementierung, keine
 Produktivserver-Befehle, keine Secrets, `main` unverändert.
@@ -259,15 +264,35 @@ nicht zuverlässig, `limit 22/tcp` tritt weltweit daneben.
 Stelle: `setup-coder.sh` Z.564–581.
 
 Minimale sichere Änderung (benutzbarer Mechanismus, kein „Regel vorher
-sichern" als Handwedeln): Plan einhalten (Downgrade nur explizit). Exakter
-Detektor (Snapshot `UFW_OUT=$(sudo ufw status numbered)` + Fallback
-`sudo ufw status` ohne `numbered`): matcht restriktive Regeln in allen
-unterstützten Formaten – IPv4 + IPv6 (`(v6)`-Zeilen), `22/tcp`, `22` ohne
-Suffix, `OpenSSH`-Profilname, Quellen wie `10.16.0.0/12`, Formen
-`22 ALLOW <source>` / `22/tcp ALLOW <source>` / `allow from <source> to any
-port 22` / `OpenSSH ALLOW <source>` (je mit/ohne `(v6)`); Regex wörtlich im
-Implementierungs-PR mit UNIT-LIKE-Fixtures belegt. Verhalten: (A) weltweit
-offen (`22/tcp LIMIT Anywhere` / `ALLOW Anywhere`) → kein falscher Abort,
+sichern" als Handwedeln): Plan einhalten (Downgrade nur explizit). Detektor
+wörtlich, genau so zu implementieren (keine Wahl im Implementierungs-PR,
+POSIX-`grep -E`, kein `\S`/`\b` – verifiziert gegen reale `ufw status`/
+`numbered`-Zeilen):
+
+```bash
+UFW_OUT="$(sudo ufw status numbered 2>/dev/null || sudo ufw status 2>/dev/null || echo 'Status: inactive')"
+```
+
+Pfad C zuerst (UFW nicht aktiv / Befehl fehlt): `printf '%s\n'
+"${UFW_OUT}" | grep -qi 'Status:[[:space:]]*inactive'` → kein Abbruch,
+Hinweis + `ufw`-Setup-Pfad fährt fort. Pfad A/B danach (Kandidat minus
+weltweit; nicht-leer = restriktiv):
+
+```bash
+if printf '%s\n' "${UFW_OUT}" | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' | grep -Ev '[[:space:]]Anywhere([[:space:]\(]|$)' | grep -q .; then
+  : "Pfad B: restriktive Regel"
+fi
+```
+
+Abdeckung (Pflicht-Fixtures, UNIT-LIKE, alle gegen obige zwei Stufen):
+restriktiv → Treffer: `22/tcp ALLOW 10.16.0.0/12`, `22 ALLOW 192.168.1.0/24`
+(ohne `/tcp`, alter False-Negative), `OpenSSH ALLOW 10.0.0.0/8`,
+`numbered`-Formen (`[ 1] 22/tcp ALLOW IN 10.16.0.0/12`), `(v6)`-Zeilen inkl.
+IPv6-Quelle, `allow from <src> to any port 22`, `22/tcp LIMIT 192.168.1.5`;
+weltweit → kein Treffer: `22/tcp LIMIT Anywhere`,
+`22/tcp (v6) LIMIT Anywhere (v6)`, `22 ALLOW Anywhere`,
+`OpenSSH ALLOW Anywhere`; Negativ: `80/tcp`, `443/tcp`, `2222/tcp`, `122`
+dürfen nie matchen. Verhalten: (A) weltweit offen (`22/tcp LIMIT Anywhere` / `ALLOW Anywhere`) → kein falscher Abort,
 Lauf fährt fort; (B) restriktive Regel (Quelle ≠ Anywhere) → harter Abbruch
 Exit 1 mit Anleitung + vorher/nachher-`ufw status`-Protokoll, kein stilles
 Öffnen; (C) UFW nicht aktiv (`Status: inactive` / Befehl fehlt) → kein
@@ -278,7 +303,22 @@ NICHT still entfernt. Bypass-Mechanismus: `CODER_ALLOW_SSH_DOWNGRADE=yes`
 (explizit, kein Default) – Syntax: nur exakt `yes` (alles andere = Abbruch);
 Verhalten: Lauf fährt trotz restriktiver Regel fort, protokolliert
 vorher/nachher-`ufw status`, stellt nach Lauf die notierte restriktive Regel
-verifiziert wieder her (`ufw`-Befehl + Check im Protokoll);
+verifiziert wieder her – wörtliche Befehlsfolge (kein Auto-Restore ohne
+Verifikation, `NOTED_SRC` = Quelle wörtlich aus before.log, z. B.
+`10.16.0.0/12`):
+
+```bash
+TS="$(date +%Y%m%d-%H%M%S)"
+sudo ufw status numbered | tee "/var/log/coder-ssh-downgrade-${TS}.before.log"
+# ... Bypass-Lauf nur mit CODER_ALLOW_SSH_DOWNGRADE=yes ...
+NOTED_SRC="<Quelle wörtlich aus before.log>"
+sudo ufw allow from "${NOTED_SRC}" to any port 22 proto tcp
+sudo ufw status numbered | tee "/var/log/coder-ssh-downgrade-${TS}.after.log"
+grep -F "${NOTED_SRC}" "/var/log/coder-ssh-downgrade-${TS}.after.log" || exit 1
+```
+
+Ohne erfolgreichen `grep -F`-Check gilt die Wiederherstellung als
+fehlgeschlagen (Exit 1, kein stilles Grün);
 Sicherheitswirkung: Downgrade-Fenster ist explizit, zeitlich begrenzt und
 belegt – kein stilles weltweites Öffnen. Kein automatisches
 Wiederherstellen ohne Verifikation (mehr Mechanik = mehr Risiko).
@@ -564,7 +604,7 @@ Pflichtmatrix für die 17 geforderten Gegenstände:
 | PostgreSQL-Dump > 1 MB | UNIT-LIKE + VM (T-071b neu) | Headercheck gegen Fixture > 1 MB unkomprimiert + echten `backup.sh`-Lauf | groß → OK, leer/Fehlertext → Fail ohne Finaldatei |
 | SIGPIPE / pipefail | TEMPORARY LOCAL REPRO | exakte v2-Pipeline unter `pipefail`, `PIPESTATUS`-Protokoll (141-Nachweis) | nach Fix kein 141-Urteil mehr |
 | TLS SNI | TEMPORARY LOCAL REPRO + VM | lokaler TLS-Server mit SNI-Auswahl (Caddy-äquivalent) + B-021-Handshake-Serie auf Testdomain | SNI-Mechanik belegt, `--resolve` grün |
-| `--resolve` | VM + INTEGRATION | kanonische Probe an allen 3 Stellen (Update, Boot, Schritt 10 als Referenz) | gesund → 200, Coder gestoppt → rot |
+| `--resolve` (Update + Boot) + Real-DNS-Referenz (Schritt 10) | VM + INTEGRATION | Update + Boot via `--resolve` (Domain-SNI), Schritt 10 Real-DNS-Referenz ohne `--resolve` (B2-002/C-004 normativ) | gesund → 200, Coder gestoppt → rot |
 | Update Gate gesund | VM + INTEGRATION (T-090) | Update auf gesundem Stack | Gate grün + `HEALTH_CODE=200`-Protokoll |
 | Update Gate krank | VM + INTEGRATION (T-091/T-050) | Bad-`CODER_VERSION` / gestoppter Coder | Gate rot, Exit 1 mit Hinweis |
 | Boot Gate gesund | VM + INTEGRATION (T-110) | gesunder Boot | `BOOT-GATE GRÜN` im laufenden Log (nicht kumulativ) |
@@ -1100,7 +1140,9 @@ grünem Vergleich wird umgestellt; Hashstore-Format und 600-Modus bleiben.
 
 1. Keine neue Abstraktion ohne entfernte echte Duplikation (Helfer erst ab
    drittem Verwender; Heredoc-/Laufzeitgrenzen schlagen DRY – C-006/C-008/
-   C-009-Präzedenz).
+   C-009-Präzedenz; Ausnahme: lokale Funktion im selben Heredoc/Skript wie
+   C-001 `require_containers` bei 2 Call-Sites ist zulässig, braucht keinen
+   dritten Verwender).
 2. Keine neue Prüfung ohne konkretes Fehler-/Angriffsszenario (jede
    `ok`/`warn`/`fail`-Zeile nennt Reparaturanleitung; Prüfung ohne
    Fehlerfall-Namen wird abgelehnt – C-014-Standard).
