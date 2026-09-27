@@ -766,7 +766,7 @@ DOMAIN=$(awk -F'[ ,{]+' '/\*.*\{/ {print $1; exit}' /opt/coder/Caddyfile 2>/dev/
 if [ -n "${DOMAIN:-}" ]; then
   CODE="000"
   for _ in $(seq 1 30); do
-    if CODE=$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Host: ${DOMAIN}" "https://127.0.0.1/healthz" 2>/dev/null) && [ "${CODE}" = "200" ]; then
+    if CODE=$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/healthz" 2>/dev/null) && [ "${CODE}" = "200" ]; then
       break
     fi
     sleep 10
@@ -1112,12 +1112,13 @@ if [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)
   GATE_OK=false
 fi
 # B-009: /healthz-200 via Caddy (TLS-Smoke): prüft Caddy-TLS + Reverse-Proxy +
-# Coder-App in einem Schritt. Apex aus Caddyfile (erste Server-Adresse), Host-
-# Header gegen 127.0.0.1 (kein DNS nötig). Timeout 60 s: deckt On-Demand-
-# Erstverzögerung (5-30 s) ab, ohne legitime Updates rot zu melden.
+# Coder-App in einem Schritt. Apex aus Caddyfile (erste Server-Adresse), SNI-
+# korrekte lokale Probe per --resolve (SNI + Host = Domain, Verbindung lokal).
+# Timeout 60 s: deckt On-Demand-Erstverzögerung (5-30 s) ab, ohne legitime
+# Updates rot zu melden.
 GATE_DOMAIN=$(awk -F'[ ,{]+' '/\*.*\{/ {print $1; exit}' /opt/coder/Caddyfile 2>/dev/null || true)
 if [ -n "${GATE_DOMAIN:-}" ]; then
-  if HEALTH_CODE=$(curl -sk --max-time 60 -o /dev/null -w "%{http_code}" -H "Host: ${GATE_DOMAIN}" "https://127.0.0.1/healthz" 2>/dev/null); then
+  if HEALTH_CODE=$(curl -sk --max-time 60 -o /dev/null -w "%{http_code}" --resolve "${GATE_DOMAIN}:443:127.0.0.1" "https://${GATE_DOMAIN}/healthz" 2>/dev/null); then
     :
   else
     HEALTH_CODE="000"
