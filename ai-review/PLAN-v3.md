@@ -1,8 +1,13 @@
 # PLAN-v3 – Konsolidierter Implementierungsplan (nächste Version)
 
-Stand: 2026-09-27. Baseline: Branch `ai/implementation-v2`, HEAD `eadb61a`
-(`setup-coder.sh` 1616 Zeilen), `ssh-harden.sh` (80 Zeilen), `RESTORE.md`
+Stand: 2026-09-27. Baseline: Branch `ai/implementation-v2`, HEAD `a09c591`
+(`setup-coder.sh` 1615 Newlines per `wc -l` / 1616 logische Zeilen – letzte
+Zeile `fi` ohne abschließenden Newline; alle Zeilenreferenzen unten beziehen
+sich auf diesen Stand), `ssh-harden.sh` (80 Zeilen), `RESTORE.md`
 (68 Zeilen), `templates/allowlist.md` (34 Zeilen), `tests/` leer.
+Setup-Diff `eadb61a..HEAD` ist leer (nur `ai-review/PLAN-v3.md` als Delta,
+verifiziert per `git diff eadb61a..HEAD --stat`); Freigabe-Protokoll hält
+`git rev-parse --short HEAD` + `git diff eadb61a..HEAD --stat` fest.
 Geltungsbereich: ausschließlich Planung. Es wird nur diese Datei
 (`ai-review/PLAN-v3.md`) erstellt. Keine Implementierung, keine
 Produktivserver-Befehle, keine Secrets, `main` unverändert.
@@ -115,19 +120,31 @@ Stelle: `setup-coder.sh` Z.1115–1130 (eingebettetes `update.sh`),
 Z.765–782 (eingebettetes `boot-check.sh`). Schritt-10-Probe Z.1559–1571
 (echtes DNS+SNI) ist korrekt und bleibt Referenz.
 
-Minimale sichere Änderung: SNI = Domain setzen, Verbindung lokal halten –
-an beiden Stellen identisch (kanonische Probe, siehe C-004):
+Minimale sichere Änderung – drei Fälle wörtlich getrennt (kein Copy-Paste
+von 60 s in den Boot-Loop, kein `--resolve` in Schritt 10):
+
+- SCHRITT 10 (Z.1559–1571, Referenz, unverändert): echter DNS-Pfad, Domain
+  als SNI, kein `--resolve`, `--max-time 10`. Darf NICHT auf `--resolve`
+  umgestellt werden (sonst entfällt Real-Pfad/DNS-Coverage).
+- UPDATE (Z.1115–1130, single-shot):
 
 ```bash
 curl -sk --max-time 60 -o /dev/null -w "%{http_code}" \
   --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/healthz"
 ```
 
-(`--connect-to` äquivalent; genau eine Variante wählen.) Timeouts bleiben
-unterschiedlich (Update 60 s wegen On-Demand-Erstverzögerung 5–30 s, Boot
-5-Min-Fenster Z.768–773). WARN-statt-Fail bei unparsbarer Domain bleibt.
-Keine neue Mechanik, keine `ask`- oder DNS-01-Änderung in dieser Phase
-(D-TLS bleibt Entscheidung).
+  (`--connect-to` äquivalent; genau eine Variante wählen.) 60 s wegen
+  On-Demand-Erstverzögerung 5–30 s.
+- BOOT (Z.765–782, bestehende 30×10-Loop): `--resolve "${DOMAIN}:443:127.0.0.1"`
+  mit Domain als SNI, `--max-time 10`, innerhalb der bestehenden
+  Poll-Schleife (kein Fail, WARN bei unparsbar).
+
+Überall SNI = Domain, nirgends SNI = `127.0.0.1` (kein `-H Host:` gegen
+`https://127.0.0.1`). Nach dem Fix: Gate-Mechanismus erzeugt keine
+`127.0.0.1`-bezogenen On-Demand-TLS-Versuche mehr (Beleg: Caddy-Log-Grep
+`obtaining certificate` ohne `127.0.0.1`). WARN-statt-Fail bei unparsbarer
+Domain bleibt. Keine neue Mechanik, keine `ask`- oder DNS-01-Änderung in
+dieser Phase (D-TLS bleibt Entscheidung).
 
 Erwartetes Verhalten: gesunder Stack → `HEALTH_CODE=200`, Gate grün;
 gestoppter Coder → rot; keine On-Demand-Versuche für SNI `127.0.0.1` mehr
@@ -137,9 +154,10 @@ Regression Risk: mittel ohne Handshake-Nachweis. Sehr langsame Netze können
 trotz 60 s rot melden – dann zu Recht rot (Gate), kein stilles Grün.
 Freigabe nur nach Test-VM-Handshake (gesund + krank).
 
-Test: T-090 erweitert (Update gesund → grün mit `HEALTH_CODE=200`-Protokoll),
-T-091 (Coder gestoppt → rot), T-110 (gesunder Boot → `BOOT-GATE GRÜN`).
-Kategorie: VM + INTEGRATION. Reine `awk`-Parsing-Belege zählen nicht.
+Test: T-090 (gesund → grün mit `HEALTH_CODE=200`-Protokoll), T-091 (Coder
+gestoppt → rot), T-110 (gesunder Boot → `BOOT-GATE GRÜN` im laufenden Log)
++ Caddy-Log-Grep (kein `127.0.0.1`-`obtaining`). Kategorie: VM +
+INTEGRATION. Reine `awk`-Parsing-Belege zählen nicht.
 
 ## B2-003 – Hex-Gate-Pingpong: Legacy-`.env` kann weder Setup noch Reset passieren
 
@@ -155,36 +173,75 @@ Heredoc (`<<INNER_EOF`, Z.1263/1271); Sonderzeichen/Quotes brechen
 `export`/`psql -c`-Zeile – das alte Passwort wird nie als reiner Env-Wert
 durchgereicht.
 
-Stelle: `setup-coder.sh` Z.241–253, Z.1202–1214 (eingebettetes
-`reset-passwords.sh`), Heredoc-Übergaben Z.1263–1283.
+Stelle: `setup-coder.sh` Z.241–253 (Setup-Gate), Z.1202–1214 (eingebettetes
+`reset-passwords.sh`, Reset-Gate), Heredoc-Übergaben Z.1263/1271/1281.
 
-Minimale sichere Änderung (eine der beiden, dokumentiert wählen, kein
-doppeltes Raten):
+Festgeschriebene Strategie (genau EINE, keine Wahl im Implementierungs-PR):
+Variante (a) – Reset migriert Legacy lesend, Setup bleibt fail-closed.
+`docker exec -e PGPASSWORD=...` wird NICHT verwendet (kein neues
+`docker inspect`-Leak, 02/F-015). Das bestehende STDIN-Prinzip bleibt.
 
-- (a) `reset-passwords.sh` akzeptiert altes Nicht-Hex-Passwort nur lesend
-  als `PGPASSWORD` (altes PW wird nie in SQL/URL interpoliert, nur als
-  Env-Wert übergeben – dafür Heredoc quoten (`<<'INNER_EOF'` + `docker exec
-  -e PGPASSWORD=...`-Trade-off dokumentieren: `ps`- vs. `inspect`-
-  Sichtbarkeit) und würfelt Hex neu; Setup-Gate bleibt fail-closed; oder
-- (b) dokumentierter manueller Migrationspfad (Hex per `openssl rand`
-  erzeugen, `.env` + `ALTER USER` + `grafana-cli` angleichen, Schrittfolge
-  mit `.env.bak`-Sicherung).
-
-In jedem Fall: Reset-Meldung darf nicht auf Reset verweisen. Fail-closed-
-Semantik (Exit 1 bei Nicht-Hex für Neues) und P-011 (nie still neuwürfeln
-bei unvollständiger `.env`) bleiben. DB-zuerst vs. `.env`-zuerst wird hier
-NICHT still umgestellt (D-Passwort-Reihenfolge, nur per Test-VM-Beweis).
+- Setup-Gate (Z.248–253): bleibt fail-closed für Nicht-Hex. Ersatztext
+  wörtlich: `Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter.`
+  `Reparatur: erst sudo /opt/coder/reset-passwords.sh laufen lassen`
+  `(migriert Legacy lesend nach Hex), danach Setup erneut.` – zulässig,
+  weil Reset nach diesem Fix Legacy lesend akzeptiert und daher NICHT
+  denselben Gate-Fehler ausgibt (kein Pingpong).
+- Reset-Gate (Z.1210–1214): wird aufgespalten in ALT lesend vs. NEU Hex.
+  ALT (`OLD_PG_PW` aus `.env`) darf Legacy sein – kein Fehler. Fail-closed
+  (Exit 1) bleibt für: unvollständige `.env` und für nicht-Hex NEU-Werte.
+  Die Reset-Fehlermeldung bei unvollständiger `.env` verweist auf die
+  Setup-Reparatur (fehlende Schlüssel ergänzen), NIEMALS auf
+  `sudo /opt/coder/reset-passwords.sh` selbst.
+- Postgres-Teil (Z.1263, ALT-Auth): Heredoc wird quotiert (`<<'INNER_EOF'`,
+  gegen äußeres `<<'EOF'` geprüft – implementierbar, keine Host-Expansion).
+  Das Alt-Passwort wird ausschließlich als Env-Wert via STDIN übertragen
+  (Host: `printf '%s' "$OLD_PG_PW" | docker exec -i coder-postgres sh -s`
+  + Container: `read -rs OLD_PG_PW; export PGPASSWORD="$OLD_PG_PW"`),
+  nie in SQL oder URL interpoliert, nie als `docker exec`-Argument
+  (weder `ps`- noch `inspect`-sichtbar). `ALTER USER` nutzt nur das
+  gewürfelte Hex-NEU-Passwort (Container-Variable, `[0-9a-f]`, kann
+  Shell-/SQL-Quoting nicht aufbrechen).
+- Postgres-Verifikation (Z.1271) und Grafana-Teil (Z.1281): bleiben
+  unquotiert, Begründung: ausschließlich Hex-NEU-Werte aus
+  `openssl rand -hex` (kein Legacy-Zeichenvorrat, keine
+  Interpolationsgefahr); ebenfalls ohne `docker exec -e` (kein
+  `inspect`-Leak).
+- Erlaubter Legacy-Fixture-Zeichenvorrat: alle druckbaren ASCII 0x20–0x7E
+  außer Newline (0x0A) und NUL – explizit inkl. `$`, Backtick, `"`, `'`,
+  Space, `!` (History-Expansion greift in nicht-interaktiven Skripten
+  nicht, dokumentiert), führendem `-` (stets via `printf '%s'` /
+  `grep --` / `cut -d= -f2-` verarbeiten, nie als Option). UTF-8 außerhalb
+  ASCII: nicht garantiert, wird als ungetestet abgewiesen.
+- Nicht unterstützte Zeichen (Newline/NUL in `.env`-Wert – kann in
+  einzeiliger `.env` ohnehin nur via Hand-Edit entstehen): harter Abbruch
+  Exit 1 mit Text `Fehler: .env-Wert enthält Newline/NUL – wird nicht`
+  `still getrimmt. Reparatur: .env-Wert manuell auf einzeiliges Hex`
+  `(openssl rand -hex 24/16) setzen, per ALTER USER + grafana-cli`
+  `angleichen (Schrittfolge im Runbook), danach Setup erneut.` Kein
+  stilles Trimmen, kein stilles Neuwürfeln (P-011 bleibt).
+- Exakter Fehler-/Migrationspfad: Legacy-`.env` → `reset-passwords.sh`
+  (liest ALT lesend, würfelt Hex NEU, schreibt `.env` atomar) → Setup-Re-Run
+  grün + Reset-Re-Run grün (jetzt Hex). Genau ein grüner Weg, kein
+  Reset→Reset-Verweis. DB-zuerst vs. `.env`-zuerst wird hier NICHT still
+  umgestellt (D-Passwort-Reihenfolge, nur per Test-VM-Beweis).
 
 Erwartetes Verhalten: Sonderzeichen-`.env` → genau ein definierter Weg
 führt zu zwei grünen Gates (Setup + Reset); Endlosschleife ausgeschlossen.
 
-Regression Risk: mittel. Falsche `docker exec -e`-Wahl exponiert Secrets
-via `inspect`; falsche Heredoc-Quotierung bricht weiter. Deshalb
-Sonderzeichen-Fixture (`Legacy$Pass!23`, Spaces, Quotes) als Pflicht.
+Regression Risk: mittel. `docker exec -e` ist verboten (sonst `inspect`-
+Leak); unquotierter ALT-Heredoc ist verboten (sonst Quote-Bruch). Deshalb
+Pflicht-Fixture unten.
 
-Test: Hex-Migrations-Test (B2-003): Legacy-`.env` durch beide Skripte,
-Protokoll schließt Pingpong aus. Kategorie: VM (echte DB + `ALTER USER`).
-Lokale Regex-Probe (UNIT-LIKE) zusätzlich, aber kein Ersatz.
+Test: Hex-Migrations-Test (B2-003, VM echte DB + `ALTER USER`): Legacy-`.env`
+mit den Werten `Legacy$Pass!23`, `a b` (Spaces), `a"b`, `a'b`, `a$b`,
+`` a`b `` (Backtick), `-führend` sowie ein Negativfall mit Newline im Wert
+(dokumentiert abgewiesen, kein stilles Trimmen) durch beide Gates → genau
+ein grüner Weg, danach beide Gates grün; während Rotation parallel
+`ps aux | grep -F` + `docker inspect coder-postgres coder-grafana | grep -F`
+auf Passwortfragmente (Grep nach Vollwert + nach 8-Zeichen-Präfix) – beide
+Grep müssen leer bleiben (kein `ps`-Leak, kein `inspect`-Leak). Lokale
+Regex-Probe (UNIT-LIKE) zusätzlich, aber kein Ersatz. Kategorie: VM.
 
 ## B2-004 – Re-Run warnt, löscht restriktive SSH-Regel aber trotzdem (Detektor lückenhaft)
 
@@ -201,27 +258,48 @@ nicht zuverlässig, `limit 22/tcp` tritt weltweit daneben.
 
 Stelle: `setup-coder.sh` Z.564–581.
 
-Minimale sichere Änderung: Plan einhalten (Downgrade nur explizit).
-Bei detektierter restriktiver Regel hart abbrechen mit Anleitung (Regel
-notieren, Setup mit angepasster Regel fahren) statt warnen + trotzdem
-öffnen. Detektor auf `ufw status numbered`-Formate erweitern
-(`22 ALLOW <ip>`, `OpenSSH`-Profil mit Quelle, `22/tcp` + `22` ohne Suffix).
-Kein automatisches Wiederherstellen ohne Verifikation in dieser Phase
-(mehr Mechanik = mehr Risiko). Bindungsregel-Kommentar und Review-Check
-bleiben.
+Minimale sichere Änderung (benutzbarer Mechanismus, kein „Regel vorher
+sichern" als Handwedeln): Plan einhalten (Downgrade nur explizit). Exakter
+Detektor (Snapshot `UFW_OUT=$(sudo ufw status numbered)` + Fallback
+`sudo ufw status` ohne `numbered`): matcht restriktive Regeln in allen
+unterstützten Formaten – IPv4 + IPv6 (`(v6)`-Zeilen), `22/tcp`, `22` ohne
+Suffix, `OpenSSH`-Profilname, Quellen wie `10.16.0.0/12`, Formen
+`22 ALLOW <source>` / `22/tcp ALLOW <source>` / `allow from <source> to any
+port 22` / `OpenSSH ALLOW <source>` (je mit/ohne `(v6)`); Regex wörtlich im
+Implementierungs-PR mit UNIT-LIKE-Fixtures belegt. Verhalten: (A) weltweit
+offen (`22/tcp LIMIT Anywhere` / `ALLOW Anywhere`) → kein falscher Abort,
+Lauf fährt fort; (B) restriktive Regel (Quelle ≠ Anywhere) → harter Abbruch
+Exit 1 mit Anleitung + vorher/nachher-`ufw status`-Protokoll, kein stilles
+Öffnen; (C) UFW nicht aktiv (`Status: inactive` / Befehl fehlt) → kein
+Abbruch, Hinweis + `ufw`-Setup-Pfad fährt fort. Re-Run-Pfad (B): abgebrochene
+restriktive Regel wird protokolliert, Setup wird mit dokumentierter
+angepasster Regel gefahren (Anleitung im Abbruchtext), die Härtung wird
+NICHT still entfernt. Bypass-Mechanismus: `CODER_ALLOW_SSH_DOWNGRADE=yes`
+(explizit, kein Default) – Syntax: nur exakt `yes` (alles andere = Abbruch);
+Verhalten: Lauf fährt trotz restriktiver Regel fort, protokolliert
+vorher/nachher-`ufw status`, stellt nach Lauf die notierte restriktive Regel
+verifiziert wieder her (`ufw`-Befehl + Check im Protokoll);
+Sicherheitswirkung: Downgrade-Fenster ist explizit, zeitlich begrenzt und
+belegt – kein stilles weltweites Öffnen. Kein automatisches
+Wiederherstellen ohne Verifikation (mehr Mechanik = mehr Risiko).
+Bindungsregel-Kommentar und Review-Check bleiben.
 
-Erwartetes Verhalten: restriktive Regel (beide Schreibweisen) + Re-Run →
-entweder Regel erhalten oder Lauf bricht ab; `ufw status` danach
-protokolliert; kein stilles weltweites Öffnen.
+Erwartetes Verhalten: restriktive Regel (alle unterstützten Formate) +
+Re-Run → entweder Regel erhalten oder Lauf bricht ab (oder expliziter
+Bypass mit Wiederherstellung); `ufw status` vorher/nachher protokolliert;
+kein stilles weltweites Öffnen.
 
 Regression Risk: gering (nur Fehlerpfad). Zu strenger Detektor könnte
-legitime Standard-Läufe abbrechen – deshalb beide Regelformate als
-Positiv-/Negativ-Fixture testen.
+legitime Standard-Läufe abbrechen – deshalb Positiv-/Negativ-Fixtures
+unten als Pflicht.
 
-Test: T-062 + Re-Run-Downgrade-Probe (VM): restriktive Regel setzen →
-Re-Run → Abbruch oder Erhalt; `ufw status` vorher/nachher im Protokoll.
-Detektor-Probe zusätzlich UNIT-LIKE (lokal gegen reale `ufw status`-
-Zeilenformate). Kategorie: VM + UNIT-LIKE.
+Test: T-062 + Re-Run-Downgrade-Probe (VM + UNIT-LIKE gegen reale
+`ufw status`-Zeilenformate beider Schreibweisen + weltweit-Negativ +
+IPv6-`(v6)` + No-UFW-Fall): restriktive Regel → Abbruch oder Erhalt mit
+vorher/nachher-Protokoll (bzw. Bypass nur mit `CODER_ALLOW_SSH_DOWNGRADE=yes`
++ verifizierter Wiederherstellung), weltweit offen → kein Abort, UFW
+inaktiv → definierter Pfad mit Hinweis; nie stilles Öffnen. Kategorie:
+VM + UNIT-LIKE.
 
 ## B2-006 – Reset-Pre-Check steht hinter `down`: bei Treffer ist der Stack halb zerlegt
 
@@ -271,21 +349,32 @@ B-007-Downgrade-Warnung.
 Stelle: `setup-coder.sh` Z.116–133 (Helper), 16 `note_drift`-Aufrufe,
 Commit-Schleife Z.1514–1521.
 
-Minimale sichere Änderung: Hash unmittelbar nach jeder Schreibstelle
-festschreiben (dort, wo heute `note_drift` steht), Schritt-10-Schleife
-entfernen. Keine neue Mechanik, nur Ortswechsel. Deterministische
-Regeneration (Heilung bleibt), WARN-Semantik (nie interaktiv stoppen),
-600-Modus des Hashstores, Abdeckung aller 15 Dateien bleiben.
+Minimale sichere Änderung: `remember_hash` unmittelbar NACH der jeweiligen
+erfolgreichen Schreib-/Installations-Sequenz, die die überwachte Datei
+tatsächlich erzeugt oder ersetzt (also nach `tee`/`mv`/`chmod`/`install`,
+NICHT an der `note_drift`-Zeile davor – `note_drift` steht heute VOR jedem
+`tee`, wörtlich umgesetzt würde der Hash der ALTEN Datei committet).
+Schritt-10-Schleife (Z.1514–1521) löschen. Keine neue Mechanik, nur
+Ortswechsel. Deterministische Regeneration (Heilung bleibt), WARN-Semantik
+(nie interaktiv stoppen), 600-Modus des Hashstores, Abdeckung aller 15
+Dateien bleiben.
+Residualkante (zulässig, dokumentiert): Kill zwischen erfolgreichem Write
+und `remember_hash` erzeugt einmalig eine Fehl-WARN im nächsten Lauf –
+kein Datenverlust, keine Fehlheilung; der folgende grüne Lauf heilt den
+Hashstore.
 
 Erwartetes Verhalten: Abbruch nach Schritt 2 → Heilungslauf ohne Fehlalarm
 für setup-eigene Residuen; echte Hand-Drift meldet weiter WARN.
 
 Regression Risk: mittel. Ortswechsel ohne Abbruch-Test vertauscht nur die
-Fehlalarm-Richtung. Deshalb T-026-Pflicht.
+Fehlalarm-Richtung. Deshalb T-026-Pflicht (beide Pfade unten).
 
-Test: T-026 erweitert (VM + UNIT-LIKE): Abbruch nach Schritt 2 simulieren
-(Datei neu, kein Hash-Commit) → Heilungslauf ohne Drift-WARN; echte
-Operator-Drift (Hand-Zeile) → WARN bleibt. Kategorie: VM.
+Test: T-026 erweitert (VM + UNIT-LIKE): (a) Abbruch nach Schritt 2
+simulieren (Datei neu, kein Hash-Commit) → Heilungslauf ohne Drift-WARN
+für setup-eigene Residuen; (b) echte Operator-Drift (Hand-Zeile) → WARN
+bleibt; (c) Residualpfad: Kill zwischen Write und `remember_hash`
+simulieren (Datei neu, Hash alt) → genau einmal Fehl-WARN, danach grüner
+Lauf heilt ohne Datenverlust. Kategorie: VM.
 
 ## B2-008 – Port-Preflight warnt bei jedem Re-Run vor den eigenen Containern
 
@@ -301,20 +390,34 @@ ihre Alarmfunktion.
 
 Stelle: `setup-coder.sh` Z.507–525.
 
-Minimale sichere Änderung: eigene Listener ausnehmen (Ports, die zu
-`coder-*`-Containern gehören, nicht warnen) oder nur Fremd-PIDs melden.
-Kleinste Variante: `ss -tlnp`-PIDs gegen `docker compose ps`-Ports
-abgleichen; nur Fremd-Listener → WARN mit Prozessname. Keine Ports aus der
-Prüfung streichen, nur Quelle filtern.
+Minimale sichere Änderung (exakte Implementierung, kein abstrakter Filter):
+TCP via `ss -tlnp`, UDP via `ss -ulnp` (getrennt – `ss -tlnp` allein ist
+TCP-only und sieht UDP 443/QUIC nie). Docker-Port-Bindings via
+`docker inspect --format '{{.HostConfig.PortBindings}}'` je Projekt-Container
+(`coder`, `coder-postgres`, `coder-caddy`, `coder-prometheus`,
+`coder-grafana`, `coder-node-exporter` – via `docker compose ps -q` im
+Projekt `coder` identifiziert, Name-Präfix `coder-*`). Vergleich: exakte
+Host-IP:Host-Port-Paare aus `inspect` gegen `ss`-Listener (Host-IP +
+Host-Port müssen beide übereinstimmen, z. B. `0.0.0.0:80`, `:::443`,
+`127.0.0.1:9090`). Unterdrückt werden dürfen NUR exakte Treffer
+(Listener gehört belegbar zu eigenem Compose-Container). Jeder andere
+Listener auf den geprüften Ports (80/tcp, 443/tcp, 443/udp, 9090/tcp,
+9100/tcp, 3001/tcp) → WARN mit Prozessname, auch bei Port-Gleichheit ohne
+IP-Gleichheit. Keine Ports aus der Prüfung streichen, nur exakte
+eigene Treffer filtern – kein breiter Filter, der echte Konflikte
+schluckt.
 
-Erwartetes Verhalten: Re-Run gesund → keine Port-WARN; Fremd-Listener auf 80
-→ WARN mit Prozessname.
+Erwartetes Verhalten: Re-Run gesund → keine Port-WARN; Fremd-Listener auf
+80/tcp → WARN mit Prozessname; Fremd-Listener auf 9090/tcp → WARN;
+fremder UDP-Listener auf 443 → WARN (via `ss -ulnp`).
 
 Regression Risk: gering. Zu aggressive Filterung könnte echte Konflikte
-schlucken – deshalb Positivprobe (Fremd-Listener) als Pflicht.
+schlucken – deshalb exakter IP:Port-Vergleich + Positivproben als Pflicht.
 
-Test: Re-Run-Probe (VM): gesund → keine WARN; Fremd-Listener auf 80 → WARN.
-Kategorie: VM.
+Test: Re-Run-Probe (VM): (1) gesund → keine WARN; (2) Fremd-Listener auf
+80/tcp → WARN; (3) Fremd-Listener auf 9090/tcp → WARN; (4) fremder
+UDP-Listener auf 443 → korrekt behandelt (WARN, nicht still). Kategorie:
+VM.
 
 ## B2-009 – RESTORE Pfad A ohne `ON_ERROR_STOP`: stiller Teil-Restore möglich
 
@@ -331,12 +434,25 @@ RTO-Zahl für kaputten Restore.
 
 Stelle: `RESTORE.md` Z.32–34 (Pfad A), Verifikation Z.38–40.
 
-Minimale sichere Änderung: `psql -v ON_ERROR_STOP=1` in Pfad A (Abbruch
-hart, Kette stoppt vor `up -d`) + Verifikationsschritt (Tabellenzahl /
-Probe-Login mit echter Datensicht, nicht nur `/healthz`).
+Minimale sichere Änderung: Pfad-A-Zeile wörtlich (Flag-Position exakt –
+`-v ON_ERROR_STOP=1` als `psql`-Option VOR `-U`, Abbruch hart, Kette stoppt
+vor `up -d`):
+`zcat coder_<TS>.sql.gz | sudo docker exec -i coder-postgres psql -v
+ON_ERROR_STOP=1 -U coder -d coder` (bei Fehler: Exit ≠ 0, kein `up -d`,
+kein grüner Restore). Verifikation nach Restore unterscheidet Liveness
+(`/healthz` 200, `SELECT 1`) von korrekt wiederhergestellten Daten:
+konkrete Datenprobe – vor Backup Testdatensatz anlegen (z. B. Tabelle
+`restore_probe(id serial primary key, marker text)` + Zeile
+`marker='RTO-PROBE-<datum>'`), nach Restore prüfen via
+`SELECT count(*) FROM restore_probe WHERE marker='RTO-PROBE-<datum>'`
+(muss `1` liefern) + Dashboard-Login zeigt Test-Datensatz (nicht nur 200).
+Leere/frisch erstellte DB (Zählung `0`) wird NICHT als Restore-Erfolg
+akzeptiert; defekter Dump (eine fehlerhafte `CREATE TABLE`-Zeile) muss rot
+abbrechen.
 
 Erwartetes Verhalten: defekter Dump (eine fehlerhafte `CREATE TABLE`-Zeile)
-→ Pfad A bricht rot ab statt grün durchzulaufen.
+→ Pfad A bricht rot ab statt grün durchzulaufen; Voll-Restore zeigt
+Testdatensatz, sonst rot.
 
 Regression Risk: gering. Zu strikte Verifikation könnte legitime Restores
 mit Warnungen rot melden – deshalb Verifikation als Datensicht (Zählung +
@@ -412,6 +528,22 @@ autoritative DNS-Probe, Reboot-/Handshake-/Restore-Nachweise.
 
 # Phase B – Automated Tests (Test-First)
 
+Test-Source-of-Truth (entschieden, keine zwei konkurrierenden Pläne):
+`ai-review/TEST_PLAN.md` bleibt die Master-Testmatrix. PLAN-v3 ergänzt nur
+die neuen B2-Delta-Tests bzw. markiert sie als Delta: T-071b
+(Groß-Dump > 1 MB), Gate-Handshake (T-090/T-091/T-110 inkl. T-110-rot),
+Hex-Migration (B2-003-Vollvorrat inkl. `$`/Backtick/Quotes/Space/
+führendes `-`/Newline-Abweisung + `ps`/`inspect`-Grep), T-026-erweitert
+(inkl. Residualpfad Kill-zwischen-Write-und-Hash), T-102-erweitert
+(Container-laufen-weiter), Downgrade-Probe (B2-004 inkl. IPv6/`numbered`/
+weltweit-Negativ/No-UFW), T-080-negativ (Defekt-Dump + Datenprobe),
+T-004-`caddy validate`. Ablage: neue B2-Tests werden in `tests/` als
+STATIC/UNIT-LIKE-Harness umgesetzt (inkl. T-007-Selbsttest), was nur auf
+der Test-VM möglich ist (Handshake, Full-Restore, Reboot, Destroy-Pfade)
+läuft ausschließlich dort mit Artefakt. `ai-review/TEST_PLAN.md` wird als
+Delta nachgezogen, bis dahin gilt die Phase-B-Matrix oben für den
+B2-Umfang.
+
 Grundsatz: Für jede relevante Änderung existiert ein Test. Ein Test, der
 lokal gefahrlos ausführbar ist, wird nicht auf die Test-VM verschoben.
 `tests/` ist heute leer – erster Schritt ist lokale Deckung für Phase A,
@@ -436,6 +568,7 @@ Pflichtmatrix für die 17 geforderten Gegenstände:
 | Update Gate gesund | VM + INTEGRATION (T-090) | Update auf gesundem Stack | Gate grün + `HEALTH_CODE=200`-Protokoll |
 | Update Gate krank | VM + INTEGRATION (T-091/T-050) | Bad-`CODER_VERSION` / gestoppter Coder | Gate rot, Exit 1 mit Hinweis |
 | Boot Gate gesund | VM + INTEGRATION (T-110) | gesunder Boot | `BOOT-GATE GRÜN` im laufenden Log (nicht kumulativ) |
+| Boot Gate krank (Negativprobe) | VM + INTEGRATION (T-110-rot) | kranker Boot (Postgres gestoppt / Coder gestoppt, abhängiger Dienst nicht gesund) | `BOOT-GATE ROT` + Exit 1, Beleg im laufenden `$OUT` (nicht kumulativ) |
 | Legacy `.env` Sonderzeichen | VM (B2-003) + UNIT-LIKE (Regex) | `Legacy$Pass!23`, Spaces, Quotes durch beide Gates | genau ein Weg grün, kein Pingpong |
 | Drift nach Abbruch | VM (T-026 erweitert) | Abbruch nach Schritt 2 → Heilungslauf | keine Fehl-WARN für setup-eigene Residuen; Hand-Drift → WARN |
 | UFW restriktive SSH-Regel | VM + UNIT-LIKE | beide `ufw status`-Formate (`22/tcp ... <ip>`, `22 ALLOW <ip>`) + Re-Run | Abbruch oder Erhalt, nie stilles Öffnen |
@@ -506,11 +639,23 @@ Subdomain + zwei Fake-Subdomains, je Subject/SAN/Issuer/Ablauf + Caddy-Log,
 Erst- vs. Zweit-Handshake-Latenz) · Workspace-Isolation (T-063-Selbsttest +
 T-064-Allowlist-Abhakung + T-126 Pfad-vs-Subdomain).
 
-Stop-Regel: B2-001/B2-002/B2-003, B-002-Pull-Probe, B2-009, B-004-Inventar +
-T-063-Protokoll + D-Socket-Frist, B2-004, Blocking-0-PLAN-Reparatur (dieser
-Plan repariert PLAN.md nicht rückwirkend, ersetzt ihn aber als
-Freigabe-Basis; T-006-Gate gilt ab hier gegen PLAN-v3) müssen grün sein,
-bevor irgendetwas in Richtung Produktion bewegt wird.
+Stop-Regel (nicht unterschiedlich interpretierbar – „offen" ist KEIN
+Freigabezustand für CRITICAL/HIGH): B2-001/B2-002/B2-003, B-002-Pull-Probe,
+B2-009, B-004-Inventar + T-063-Protokoll + D-Socket-Frist, B2-004,
+B-008-Offsite-Probe (T-082 nur aus Offsite + Runbook, RTO als Zahl im Repo)
++ B2-005-Limit-Doku + `logrotate` für `coder-tls.log`/`coder-boot.log` +
+T-125, Blocking-0-PLAN-Reparatur (dieser Plan repariert PLAN.md nicht
+rückwirkend, ersetzt ihn aber als Freigabe-Basis; T-006-Gate gilt ab hier
+gegen PLAN-v3) müssen grün sein, bevor irgendetwas in Richtung Produktion
+bewegt wird. Für CRITICAL/HIGH sicherheits- oder recoveryrelevante
+Entscheidungen (D-Socket, D-TLS, D-SSH, D-Offsite, B-008/Offsite-Recovery)
+gilt: entweder geschlossene Entscheidung mit Owner + Datum/Frist + Nachweis
+(Test-Protokoll), oder explizite Production-Sperre (kein Production-Lauf,
+im Gate-Protokoll vermerkt). `_offen_`/`_OPEN_` ohne Owner + Frist ist bei
+CRITICAL/HIGH kein gültiger Production-Freigabestatus (gilt nur für
+LOW/MEDIUM mit Verfallsdatum + Ticket). Ohne geklärten Production-Offsite
+(kein leerer Dauer-Default ohne Verfallsdatum + Ticket) und ohne gemessene
+RTO aus echtem Restore-Test keine Production-Freigabe.
 
 ---
 
@@ -667,9 +812,20 @@ Theater (C-013): beide Warnungen brauchen `check.sh`-Leser (Phase F).
 
 ## Backup-Freshness
 
-Frische-Prüfung (minimal `check.sh`, Cron täglich nach Backup, nur lesend):
-Alter/Größe des neuesten gültigen Backups + `df` (> 85 % → Warnung per
-`logger` + Exit ≠ 0) + `/healthz`-Status; eine Zeile ins Backup-Log. Kein
+Frische-Prüfung (`check.sh`, vollständig spezifiziert – kein pfadloses
+Skript, kein neuer SNI-Fehler): Pfad `/opt/coder/check.sh`, Besitzer
+`root:root`, Rechte `755`; Cron-Datei `/etc/cron.d/coder-freshness`,
+Ausführungszeit täglich `01:30` (nach 01:00-Backup); nur lesend, keine
+Eingriffe. Prüfungen: Alter/Größe des neuesten gültigen Backups (älter als
+26 h → Exit ≠ 0) + `df` (`> 85 %` → Warnung per `logger` + Exit ≠ 0,
+Schwelle bis D-Monitoring als WARN/UNVERMESSEN, kein Alertmanager) +
+`/healthz`-Status via kanonischer SNI-korrekter `--resolve`-Probe
+(`--resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/healthz"`,
+Domain als SNI, `--max-time 10` – dieselbe Strategie wie das korrigierte
+Update-Gate, nirgends SNI `127.0.0.1`); eine Zeile ins Backup-Log
+`/var/log/coder-backup.log` (rotiert via vorhandener `logrotate`, kein
+neues unrotiertes Log). Leser/Eigentümer: morgendlicher Operator-Check.
+Exit-Code: `0` nur wenn alle drei Prüfungen grün, sonst `≠ 0`. Kein
 Alertmanager in dieser Runde (Überbau; Schwellen erst nach Messung,
 D-Monitoring). `logrotate` für `coder-backup.log` vorhanden; für
 `coder-boot.log`/`coder-tls.log` nachziehen (B2-005-Nebenpunkt).
@@ -678,10 +834,13 @@ D-Monitoring). `logrotate` für `coder-backup.log` vorhanden; für
 
 Pfad A (Dump + originale `.env`): Setup auf frischer VM → `stop coder` →
 originale `.env` zurück (`cp -a`, `chmod 600`, `chown root:root`) → Dump
-via `dropdb --if-exists`/`createdb` + `zcat | psql -v ON_ERROR_STOP=1`
-(B2-009-Fix) → `up -d` → Postgres healthy → Datensicht-Verifikation
-(Tabellenzahl + Probe-Login mit echter Datensicht, nicht nur `/healthz`) →
-RTO stoppen. Pfad B (nur Dump, `.env` verloren): wie A, aber DB-Rolle behält
+via `dropdb --if-exists`/`createdb` + `zcat coder_<TS>.sql.gz | sudo docker
+exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder`
+(B2-009-Fix, Flag-Position exakt, Abbruch vor `up -d`) → `up -d` →
+Postgres healthy → Datensicht-Verifikation (Liveness `/healthz` + konkrete
+Datenprobe: `restore_probe`-Testzeile `RTO-PROBE-<datum>` per
+`SELECT count(*) ...` = 1 + Dashboard-Login zeigt Test-Datensatz; leere DB
+= rot) → RTO stoppen. Pfad B (nur Dump, `.env` verloren): wie A, aber DB-Rolle behält
 neues Setup-Passwort (`pg_dump` sichert keine Rollen-Passwörter, nur
 `pg_dumpall --globals` täte das) – konsistent ohne Abgleich; Grafana-Passwort
 neu notieren. Version-Gleichheit (Restore auf gleiche/kleinere Coder-Version;
@@ -738,16 +897,29 @@ Simplify). Reihenfolge = Wirkung pro geänderter Zeile (07-Analyse).
   aufrufen. Beide Prüfzeitpunkte + harter Abbruch bleiben. Test T-033-
   Äquivalent. Aufwand trivial, nach Phase A.
 - **C-003** (Apex-Parser `awk` identisch Boot Z.765 / Update Z.1115):
-  Parser durch `/opt/coder/.domain`-Datei ersetzen (Setup schreibt sie
-  deterministisch, beide Skripte lesen sie). WARN-statt-Fail bei
-  fehlender/unparsbarer Domain bleibt. Entfernt Duplikat ersatzlos +
-  B2-002-Nebenrisiko (divergierende Fixes). Test: Caddyfile-Spacing ändern →
-  beide Gates finden Apex oder melden WARN, nie falsches Grün.
-- **C-004** (drei `/healthz`-Proben, divergierende SNI-Semantik): kanonische
-  `--resolve`-Probe (B2-002-Fix) wörtlich an allen drei Stellen (Schritt 10
-  als Referenz, Update-Gate, Boot-Gate); nur Timeouts differieren (10 s /
-  60 s / 5-Min-Fenster). Kein Helper über Heredoc-Grenzen. Test T-090/T-110.
-  Höchste Wirkung, Bedingung Handshake-Test.
+  Entscheidung Variante A (Minimalvariante, festgeschrieben – keine
+  `.domain`-Datei): Apex-Parser zunächst beibehalten, doppelte Logik nur
+  sauber dokumentieren (Sync-Kommentar „mit Z.765/1115 synchron halten"),
+  solange es bei zwei Verwendern bleibt (Complexity-Regel 1: Helfer erst
+  ab drittem Verwender; Heredoc-/Laufzeitgrenzen schlagen DRY). Begründung:
+  eine neue State-Datei für zwei Verwender erzeugt stale-Source-Risiko
+  (`.domain` vs. live-Caddyfile bei Hand-Drift → Gates prüfen falsche
+  Domain), ohne ausreichenden Nutzen. Keine `.domain`-Datei in dieser
+  Runde. Falls künftig dennoch `.domain` (erst bei drittem Parser):
+  Quelle = `${DOMAIN_CODER}`, Schreibzeitpunkt = deterministisch in
+  Schritt 2, Rechte 644/root, Driftprüfung = als 16. Datei im Hashstore,
+  Missing-File = WARN-Fallback auf Live-`awk`, Domain-Wechsel =
+  Rewrite bei Env-Override, Hand-Edit der Caddyfile = WARN (nie falsches
+  Grün); Tests: Spacing-Change + Domain-Wechsel + gelöschte Datei +
+  hand-editierte Caddyfile. WARN-statt-Fail bei fehlender/unparsbarer
+  Domain bleibt. Test (Variante A): Caddyfile-Spacing ändern → beide
+  Gates finden Apex oder melden WARN, nie falsches Grün.
+- **C-004** (drei `/healthz`-Proben, divergierende SNI-Semantik): Drei-Fall-
+  Spec aus B2-002 wörtlich (Schritt 10 echter DNS+SNI 10 s als Referenz
+  unverändert; Update `--resolve` 60 s single-shot; Boot `--resolve`
+  `--max-time 10` in 30×10-Loop); überall SNI = Domain. Kein Helper über
+  Heredoc-Grenzen. Test T-090/T-091/T-110 + Caddy-Log-Grep. Höchste
+  Wirkung, Bedingung Handshake-Test.
 - **C-005** (`.env`-Gates doppelt Setup Z.241–253 / Reset Z.1202–1214):
   Regex-Paare + Reparaturweg synchronisieren; Reset-Meldung darf nicht auf
   Reset verweisen (B2-003-Fix). Fail-closed + P-011 bleiben. Test
@@ -804,7 +976,7 @@ Aufteilung geplant wird: eigene Phase, niemals nebenbei in derselben
 Änderung wie ein kritischer Fix (Regel 6 unten). Bis dahin Monolith behalten;
 C-001/C-003/C-004/C-005/C-007/C-011/C-013 werden innerhalb des Monolithen
 gefixt (kein Helper über Heredoc-Grenzen, nur identischer Code + Verweis-
-Kommentar oder `.domain`-Datei).
+Kommentar; C-003 ohne `.domain`-Datei, siehe Variante A oben).
 
 ---
 
@@ -850,10 +1022,11 @@ nie als Tatsache.
   `psql -v ON_ERROR_STOP=1` + Datensicht-Verifikation (B2-009), `.env`-
   Rückspielung, Versions-Gleichheits-Regel, erste echte RTO-Messung.
   Kein allgemeiner Betriebs-/Security-Inhalt (nur Verweise).
-- **docs/TROUBLESHOOTING.md** (neu, Auszug aus OPERATIONS für Druck/Notfall):
-  dieselbe 11-Fehler-Tabelle als eigenständige Datei (kein Duplikat pflegen:
-  eine Quelle, ein Verweis – gewählt wird OPERATIONS als Quelle, TROUBLE-
-  SHOOTING als Verweis oder umgekehrt, kein beidseitiges Kopieren).
+- **docs/TROUBLESHOOTING.md** (neu, Pointer-Datei für Druck/Notfall):
+  enthält ausschließlich Pointer/Navigation auf OPERATIONS.md, keine
+  duplizierte Fehler→Befehl-Tabelle (Single Source: OPERATIONS.md –
+  jetzt entschieden, nicht an den Implementierer delegiert; verifiziert
+  per `grep`-Guard „Tabelle in genau einer Datei").
 - **CHANGELOG.md** (neu, append-only): je Eintrag Datum, Commit,
   Komponenten-Versionen, Pre-Backup-Datei, Gate-Ergebnis, RTO/Login,
   Operator, geschlossene D-Punkte; Sperrvermerke (B2-001/B2-002/B2-003) +
@@ -863,18 +1036,32 @@ Verifikation je Datei: `test -f` + `grep`-Stichwort (`Architektur|
 Voraussetzung|Installation|Betrieb|Restore`, `generated-hashes`,
 `docker logs|journalctl|/var/log`, D-Tabelle mit `_offen_`-Zählung);
 `tail -5 CHANGELOG.md` zeigt letzten Update-Eintrag. Handover-Checkliste
-(D-001–D-015-Gegenstände: Zugang/Bestand, Voraussetzungen-Gate, Gesundheit
-lesend, Backup/Restore-Kern, Wartung erst nach 1–4, Entscheidungen/Doku)
-wird aus OPERATIONS verlinkt, nicht dupliziert.
+(Punkte 1–6 des Documentation/Handover-Reviews aus 08: Zugang/Bestand,
+Voraussetzungen-Gate, Gesundheit lesend, Backup/Restore-Kern, Wartung erst
+nach 1–4, Entscheidungen/Doku – D-001 bis D-015 sind Dokumentationsbefunde,
+NICHT die Checkliste) wird aus OPERATIONS verlinkt, nicht dupliziert.
 
 ---
 
 # Phase H – Generierte Dateien (Heredoc vs. Repository-Dateien)
 
-Betroffene Architektur (per Heredoc generiert): `docker-compose.yml`,
-`Caddyfile`, `prometheus.yml`, `backup.sh`, `update.sh`,
-`reset-passwords.sh`, `reset-coder.sh`, `boot-check.sh`, `check-tls.sh`,
-`ssh-harden.sh` (bereits Repo-Datei, Referenz für Stil).
+Vollständige Host-Dateiliste (alle 15 überwachten + Laufzeit-Dateien):
+`docker-compose.yml`, `Caddyfile`, `prometheus.yml`, `backup.sh`,
+`update.sh`, `reset-passwords.sh`, `reset-coder.sh`, `boot-check.sh`,
+`check-tls.sh`, `jail.local`, `52-coder-reboot`, Cron-Dateien
+(`coder-backup`, `coder-bootcheck`, `coder-tlscheck`),
+`logrotate`-Konfiguration (`coder-backup`), `ssh-harden.sh` (bereits
+Repo-Datei, Referenz für Stil).
+
+Entscheidung je Datei: `docker-compose.yml`, `Caddyfile`, `prometheus.yml`,
+`backup.sh`, `update.sh`, `reset-passwords.sh`, `reset-coder.sh`,
+`boot-check.sh`, `check-tls.sh` = Repo-Kandidaten für Phase B (eigener
+Migrationsschritt je Datei + Regressionstests); `jail.local`,
+`52-coder-reboot`, alle 3 Cron-Dateien, `logrotate`-Konfiguration = bleiben
+bis zur Budget-Reife Heredoc – Begründung: kleine, rechte-sensitive
+Host-Config mit eigenem Idempotenz-/Rechte-Retest pro Datei, kein akuter
+Ausfall wird durch ihren Auszug verhindert; voreiliger Auszug riskiert
+Escaping-/Rechte-Bruch für Review-Komfort.
 
 Bewertung (keine Stilentscheidung, mit C-012- und D-002-Anteil):
 
@@ -888,14 +1075,17 @@ Bewertung (keine Stilentscheidung, mit C-012- und D-002-Anteil):
   Domain-Expansion vs. `<<'EOF'` ohne) mit eigenem Fehlerrisiko für Secrets/
   URLs; Idempotenz-/Rechte-/Sourcing-Pfad muss neu bewiesen werden.
 
-Entscheidung: **A bis zur C-012-Budget-Reife (Tests auf VM grün + dritter
-Shared-Bedarf), dann B als eigene Phase.** Begründung: kein akuter Ausfall
-wird durch B verhindert; voreiliges B riskiert Secret-/URL-Bruch auf
-Produktion für Review-Komfort. Bis dahin: Ablageprinzip in README +
-OPERATIONS dokumentieren (Tabelle Quelle-Zeilenbereich → Zielpfad →
-„deterministisch regeneriert, Hand-Anpassung wird überschrieben (Drift-WARN
-via `.generated-hashes`)" → Prüfbefehl `compose config --quiet`/`caddy
-validate`/`bash -n`).
+Entscheidung: **A bis zur C-012-Budget-Reife, dann B als eigene Phase.**
+Budget-Trigger (nachvollziehbar, kein reines DRY): `tests/` auf VM grün UND
+ein dritter echter Standalone-Runtime-Verwender desselben Helper-Verhaltens
+(C-006/C-009-Präzedenzfälle – drei `.env`-Varianten, zwei Retries – sind
+ausdrücklich ausgenommen und lösen `lib.sh` NICHT aus; bis dahin kein
+`lib.sh`). Begründung: kein akuter Ausfall wird durch B verhindert;
+voreiliges B riskiert Secret-/URL-Bruch auf Produktion für Review-Komfort.
+Bis dahin: Ablageprinzip in README + OPERATIONS dokumentieren (Tabelle
+Quelle-Zeilenbereich → Zielpfad → „deterministisch regeneriert,
+Hand-Anpassung wird überschrieben (Drift-WARN via `.generated-hashes`)" →
+Prüfbefehl `compose config --quiet`/`caddy validate`/`bash -n`).
 
 Wenn B (eigene Phase, nie neben kritischem Fix): Migration mit
 Byte-/Output-Vergleich (`diff <(alt-generiert) <(neu-generiert)` bei
@@ -966,8 +1156,14 @@ VM-Protokoll-Eintrag (RTO-Zahl) vor dem nächsten Review.
 0. Dieser Plan (PLAN-v3) ist Freigabe-Basis (ersetzt die abgebrochene
    PLAN.md als Referenz; PLAN.md selbst wird als Entwurf markiert, nicht
    rückwirkend umgeschrieben).
-1. Phase A (B2-001 → B2-002 → B2-003 → B2-004/B2-006/B2-007/B2-008/B2-009;
-   jeweils einzeilig, kein Zusammenspiel) + lokale STATIC/UNIT-LIKE-Belege.
+1. Phase A in 8 Commits in Abhängigkeitsreihenfolge (keine Sammelzeile):
+   Commit 1 B2-001 → Commit 2 B2-002 → Commit 3 B2-003 → Commit 4 B2-006 →
+   Commit 5 B2-007 → Commit 6 B2-004 → Commit 7 B2-008 → Commit 8 B2-009;
+   je Commit genau ein B2-Fix + je ein lokales STATIC/UNIT-LIKE-Artefakt
+   (Datum, Commit, Exit-Codes) vor dem nächsten Commit – ein nachfolgender
+   Fix darf einen Fehler eines vorherigen Fixes nicht verdecken (z. B.
+   B2-007-Fehl-WARNs dürfen B2-004-Verifikation nicht übertönen).
+   Merge-Gate: T-071b + Handshake + Hex-Migration zuerst, dann Rest.
 2. Phase B (T-071b + Handshake + Hex-Migration zuerst – sie fangen B2-001–
    003; danach Restmatrix) auf Test-VM mit Artefakt.
 3. Phase C (VM-Gate grün) vor jedem Produktionsgedanken.
@@ -978,8 +1174,18 @@ VM-Protokoll-Eintrag (RTO-Zahl) vor dem nächsten Review.
 
 Done erst, wenn: alle MUST_FIX-Änderungen (Phase A + Blocking-A-Anteile)
 mit mindestens einem Test bestanden (Artefakt auf Test-VM); Static Gates
-(T-001/T-002/T-003/T-004/T-007) grün; alle D-Entscheidungen mit Eigentümer +
-Datum/Frist oder sichtbar `_offen_`; RTO als Zahl + Offsite-Probe grün;
+(T-001/T-002/T-003/T-004/T-007) grün; Phase-C-VM-Gate vollständig grün
+(Fresh Install, Second Run, Third Run, Interrupted Run, Reboot, Backup,
+Restore, Update, Rollback, Security Smoke, Caddy/TLS, Workspace-Isolation –
+je mit Artefakt Datum/VM/Commit/Tool-Versionen/Exit-Codes/Logs, nie
+Produktion); Phase-G-Dokumentationsgates grün (`test -f` je Datei +
+Stichwort-Greps + `_offen_`-Zählung + `tail -5 CHANGELOG.md` +
+`ls tests/` nicht-leer + datierter VM-Protokoll-Eintrag mit RTO-Zahl,
+C-015-Meta-Test); alle D-Entscheidungen mit Eigentümer + Datum/Frist –
+`_offen_` genügt nur für LOW/MEDIUM mit Verfallsdatum + Ticket, für
+CRITICAL/HIGH (D-Socket, D-TLS, D-SSH, D-Offsite, B-008) ist `_offen_`
+kein Freigabestatus (siehe Stop-Regel: geschlossene Entscheidung oder
+explizite Production-Sperre); RTO als gemessene Zahl + Offsite-Probe grün;
 Erstinventar + T-063-Protokoll + B-021-Handshake-Nachweis im Repo; keine
 Änderung ohne Test; kein Test „bestanden" ohne Artefakt; keine
 Produktivserver-Befehle in dieser Runde; bekannte Restrisiken (UFW-Umgehung
@@ -991,3 +1197,17 @@ keine Timer-/Template-Migration, kein Alertmanager, keine Digest-Umstellung,
 kein Monolith-Auszug, kein App/DB-Split als Default-Änderung ohne Beschluss).
 Der belastbarste nächste Stand entsteht aus kleinen gezielten Fixes +
 belegten Tests, nicht aus Umbauten.
+
+---
+
+# Plan Validation Requirements
+
+* `ai-review/PLAN-v3-REVIEW.md` ist vollständig berücksichtigt – kein
+  PV-001 bis PV-015 bleibt ohne Begründung offen.
+* BLOCKER (PV-002 Secret-Strategie, PV-004 Production-Stop/B-008) und alle
+  MUST_FIX (PV-003, PV-005) sind geschlossen.
+* Alle Änderungen sind testbar (je B2-Fix mindestens ein Test mit Artefakt;
+  neue `exit 1`-Pfade mit Positiv-/Negativ-Fixtures).
+* Keine Architekturentscheidung ist an den Implementierer delegiert
+  (Secret-Variante, `.domain` vs. Kommentar, H-Scope, TROUBLESHOOTING-Quelle,
+  TEST_PLAN-Source-of-Truth, Bypass-Syntax – alle oben entschieden).
