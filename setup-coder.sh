@@ -14,10 +14,16 @@
 # Wildcard-Subdomains bekommen ihr Zertifikat erst bei Bedarf (Caddy
 # On-Demand-TLS, offiziell von Coder empfohlen ohne eigenen DNS-Provider-API-
 # Zugang) - beim allerersten Aufruf einer neuen Workspace-App-URL dauert das
-# 5-30 Sekunden länger. Let's Encrypt begrenzt neue Zertifikate auf 50 pro
-# Woche pro registrierter Domain - für eine kleine Schulklasse unkritisch,
-# aber bei sehr vielen unterschiedlichen Workspace-URLs pro Woche im Hinterkopf
-# behalten.
+# 5-30 Sekunden länger. B-005 (ehrlich, kein "unkritisch"): On-Demand gilt hier
+# auch für die Apex-Domain selbst, nicht nur Wildcard. "ask http://example.com"
+# antwortet IMMER 200 – jeder Internet-Teilnehmer kann per SNI mit beliebigem
+# Hostnamen ein echtes Let's-Encrypt-Zertifikat auslösen (ohne Coder-Account).
+# Wochenbudget: 50 pro registrierter Domain "ghse-unterricht.de", GETEILT mit
+# allen anderen Schuldiensten derselben Domain – bei Erschöpfung bekommen
+# legitime neue Workspace-Apps kein Zertifikat (TLS-Fehler im Unterricht).
+# Erkennung: /opt/coder/check-tls.sh (wöchentlich per Cron, "obtaining
+# certificate" im Caddy-Log). Echter Fix (echter ask-Endpunkt vs. DNS-01-
+# Wildcard) nur per D-TLS-Entscheidung mit Frist – Mechanik bleibt bis dahin.
 #
 # Falls das beim Ausführen noch nicht steht: Der Stack startet trotzdem.
 # Caddy versucht im Hintergrund weiter, ein Zertifikat zu bekommen, und der
@@ -39,9 +45,12 @@
 # Coder-Updates laufen NICHT automatisch. update.sh liegt bereit, wird aber
 # manuell mit "sudo /opt/coder/update.sh" ausgeführt.
 #
-# CODER_VERSION: Das Image-Tag auf ghcr.io braucht das "v"-Präfix (v2.36.6,
-# nicht 2.36.6). Für eine neuere Version:
+# CODER_VERSION: Das Image-Tag auf ghcr.io trägt KEIN "v"-Präfix (2.36.6,
+# nicht v2.36.6) – maßgeblich ist der offizielle Pull-Befehl aus den
+# Release-Notes (docker pull ghcr.io/coder/coder:2.36.6). Git-Tag (mit "v")
+# ungleich Image-Tag (ohne "v"). Für eine neuere Version:
 # https://github.com/coder/coder/releases
+# Vor Merge neuer Version per "docker pull" beidseitig belegen.
 #
 # Versionierung: CODER_VERSION, PROMETHEUS_VERSION und GRAFANA_VERSION sind
 # exakte Versionen (ändern sich nie von selbst). CADDY_VERSION ist bewusst nur
@@ -74,7 +83,7 @@ set -euo pipefail
 # wurde.
 : "${DOMAIN_CODER:=coder.ghse-unterricht.de}"
 : "${ACME_EMAIL:=hert@ghse.de}"
-: "${CODER_VERSION:=v2.36.6}"             # https://github.com/coder/coder/releases prüfen
+: "${CODER_VERSION:=2.36.6}"              # https://github.com/coder/coder/releases prüfen
 : "${CADDY_VERSION:=2.10}"                # https://hub.docker.com/_/caddy/tags
 : "${PROMETHEUS_VERSION:=v3.14.0}"        # https://github.com/prometheus/prometheus/releases
 : "${GRAFANA_VERSION:=12.4.5}"            # https://github.com/grafana/grafana/releases
@@ -97,13 +106,58 @@ check_container_running() {
   fi
 }
 
+# B-012: Drift-Warnung (Caddy-P-025-Muster verallgemeinert). Alle generierten
+# Dateien werden deterministisch regeneriert (Heilung bleibt), aber nie still:
+# weicht eine Datei von der letzten Setup-Generation ab (Operator-Tuning wie
+# retention.size, Caddy-Snippets, recidive-Jails, Cron-Zeiten), steht das als
+# WARN in der SUMMARY. Erwartungswerte liegen in /opt/coder/.generated-hashes
+# (nur root, 600). Kein interaktiver Stopp (Idempotenz bleibt).
+HASHSTORE="/opt/coder/.generated-hashes"
+note_drift() {
+  local file="$1" label="$2" cur="" exp=""
+  cur=$(sudo sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
+  exp=$(sudo awk -v f="${file}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
+  if [ -n "${cur}" ] && [ -n "${exp}" ] && [ "${cur}" != "${exp}" ]; then
+    warn "Drift in ${label} (${file}): weicht von letzter Setup-Generation ab – wird deterministisch regeneriert, Hand-Anpassung geht verloren (B-012)"
+  fi
+}
+remember_hash() {
+  local file="$1" h=""
+  h=$(sudo sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
+  [ -n "${h}" ] || return 0
+  sudo touch "${HASHSTORE}" 2>/dev/null || true
+  sudo awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | sudo tee "${HASHSTORE}.tmp" > /dev/null || true
+  echo "${h}  ${file}" | sudo tee -a "${HASHSTORE}.tmp" > /dev/null
+  sudo mv "${HASHSTORE}.tmp" "${HASHSTORE}"
+  sudo chmod 600 "${HASHSTORE}"
+}
+
+# B-013: Retry max. 3 mit Schlaf + Ursachen-Log (Schulnetz!). Keine endlosen
+# Retries, keine Retry-Logik um LE-Ausstellung (Budget) – nur apt/curl/pull.
+# Gibt den finalen Exit-Code zurück (set -e bricht danach wie bisher ab).
+retry3() {
+  local attempt=1
+  while true; do
+    if "$@"; then
+      return 0
+    elif [ "${attempt}" -ge 3 ]; then
+      echo "FEHLER nach 3 Versuchen: $* – Ursache prüfen (Netz/DNS/Registry), dann Setup erneut." >&2
+      return 1
+    else
+      echo "Versuch ${attempt} fehlgeschlagen ($*), warte 10 s vor Wiederholung ..." >&2
+      sleep 10
+      attempt=$((attempt + 1))
+    fi
+  done
+}
+
 echo "############################################################"
 echo "# [1/10] Docker Engine installieren"
 echo "############################################################"
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg openssl
+retry3 sudo apt-get update
+retry3 sudo apt-get install -y ca-certificates curl gnupg openssl
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL --retry 3 --retry-delay 5 https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
 # K1/F-018 (billige Hälfte, kein Digest-Pin): Fingerprint des Docker-GPG-Keys
@@ -122,8 +176,8 @@ echo \
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+retry3 sudo apt-get update
+retry3 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 # GID der docker-Gruppe merken – wird gleich für den Docker-Socket-Zugriff
 # des Coder-Containers gebraucht (offizielles Coder-Docker-Setup verlangt das).
@@ -188,6 +242,15 @@ elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   && sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   && sudo grep -qE '^DOCKER_GID=[0-9]+$' /opt/coder/.env; then
   echo "/opt/coder/.env existiert bereits und ist vollständig – wird nicht überschrieben."
+  # B-014: Hex-Validierung fail-closed (auch im Setup-Re-Run). Nicht-Hex-Werte
+  # brechen ALTER USER/grafana-cli/Connection-URL still – Abweisung mit
+  # Reparaturweg statt Korruption.
+  if ! sudo grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
+    || ! sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
+    echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter (Sonderzeichen/Quotes brechen Reset/URL)." >&2
+    echo "Reparatur: sudo /opt/coder/reset-passwords.sh (würfelt belegbar sichere Hex-Passwörter), danach Setup erneut." >&2
+    exit 1
+  fi
 else
   echo "Fehler: /opt/coder/.env existiert, ist aber unvollständig (mindestens ein Schlüssel fehlt/leer)." >&2
   echo "Abbruch ohne Änderung – Passwörter werden NICHT neu gewürfelt (P-011: neu würfeln würde die Datenbank-Anmeldung zerstören)." >&2
@@ -227,6 +290,7 @@ fi
 # der Shell eingesetzt.
 # P-007: JSON-File-Logging ohne Limit wächst auf der Root-Partition unbegrenzt
 # (Plattenkiller Nr. 1). 10m x 3 pro Container als konservativer Standard.
+note_drift "/opt/coder/docker-compose.yml" "docker-compose.yml"
 sudo tee /opt/coder/docker-compose.yml > /dev/null <<EOF
 x-logging: &coder-logging
   driver: json-file
@@ -239,6 +303,9 @@ services:
     image: postgres:15-alpine
     container_name: coder-postgres
     restart: unless-stopped
+    # B-011: längere Shutdown-Gnade nur für Postgres (längere Checkpoint-/
+    # WAL-Phase bei Reboot 03:00). Keine pauschale Grace für alle Services.
+    stop_grace_period: 30s
     logging: *coder-logging
     environment:
       POSTGRES_DB: coder
@@ -398,6 +465,7 @@ EOF
 # Re-Run).
 CADDY_BEFORE=$(sudo sha256sum /opt/coder/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
 CADDY_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
+note_drift "/opt/coder/Caddyfile" "Caddyfile"
 sudo tee /opt/coder/Caddyfile > /dev/null <<EOF
 {
     on_demand_tls {
@@ -417,6 +485,7 @@ ${DOMAIN_CODER}, *.${DOMAIN_CODER} {
 EOF
 
 # prometheus.yml
+note_drift "/opt/coder/prometheus.yml" "prometheus.yml"
 sudo tee /opt/coder/prometheus.yml > /dev/null <<'EOF'
 global:
   scrape_interval: 15s
@@ -434,6 +503,26 @@ echo "############################################################"
 echo "# [3/10] Docker-Stack starten"
 echo "############################################################"
 cd /opt/coder
+
+# B-013-Preflights (lesend bis auf Daemon-Fail): belegter Port, toter Daemon und
+# volle Platte endeten bisher in set -e-Tod mit Roh-Fehlermeldung. Ports nur
+# WARN mit Prozess-Hinweis (eigene Container belegen 80/443 beim Re-Run zu
+# Recht); Daemon-Fail ist hart (früh + klar statt spät in Schritt 3); Platte
+# WARN ab 1 GB (grober Hinweis, kein Ersatz für D-Monitoring).
+if ! sudo docker info > /dev/null 2>&1; then
+  echo "Fehler: Docker-Daemon antwortet nicht (docker info). Erst Daemon heilen, dann Setup erneut." >&2
+  exit 1
+fi
+for _p in 80 443 9090 9100 3001; do
+  if sudo ss -tlnp 2>/dev/null | grep -Eq ":${_p}([^0-9]|$)"; then
+    warn "Port ${_p} belegt (B-013): $(sudo ss -tlnp 2>/dev/null | grep -E ":${_p}([^0-9]|$)" | head -n1 | tr -s ' ') – falls Fremd-Listener, vor 'up -d' aufräumen"
+  fi
+done
+if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' '); then
+  if [ "${_avail}" -lt 1073741824 ]; then
+    warn "Wenig Platte unter /opt/coder (${_avail} < 1 GB, grober Hinweis) – Images/Backups brauchen Luft (B-013)"
+  fi
+fi
 
 # Validiert YAML-Syntax und Variablen-Interpolation, bevor überhaupt etwas
 # gestartet wird - ein Fehler hier ist deutlich klarer als ein kryptischer
@@ -461,8 +550,20 @@ sudo docker compose ps
 echo "############################################################"
 echo "# [4/10] Firewall (ufw) + SSH-Schutz einrichten"
 echo "############################################################"
-sudo apt-get install -y ufw fail2ban
+retry3 sudo apt-get install -y ufw fail2ban
 
+# B-007: explizite Default-Policy (idempotent – gleicher Wert zweimal ist No-Op).
+# Verlass auf Debian-Defaults nach Härtungsdrift wäre stiller Schutzverlust.
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# B-007: Re-Run-Downgrade-Schutz. Eine restriktivere vorgefundene SSH-Regel
+# (z. B. 10.16.0.0/12-only durch den Operator) wird NICHT still gelöscht:
+# laute Warnung in SUMMARY, danach deterministische Regeneration (kein
+# interaktiver Stopp – Idempotenz bleibt, aber nichts wird heimlich weiter).
+if sudo ufw status 2>/dev/null | grep -Eq "22/(tcp|ssh).*(ALLOW|LIMIT).*([0-9]{1,3}\.)"; then
+  warn "Restriktivere SSH-Regel vorgefunden – Re-Run weitet SSH auf weltweit+limit aus (B-007). Falls gewollt: nach Lauf eigene Regel erneut setzen; falls nicht: Setup mit angepasster Regel fahren."
+fi
 # Falls ein früherer Lauf schon eine engere oder App-Profil-Regel angelegt
 # hat: entfernen, bevor die neue Regel gesetzt wird. --force unterdrückt die
 # interaktive "Proceed? (y|n)"-Rückfrage von ufw, die das Skript sonst hier
@@ -489,6 +590,7 @@ sudo ufw limit 22/tcp
 # P-025: Hash VOR dem Schreiben merken (Vergleich weiter unten entscheidet
 # zwischen reload/restart/start – blinder restart verwirft aktive Bans).
 JAIL_BEFORE=$(sudo sha256sum /etc/fail2ban/jail.local 2>/dev/null | cut -d' ' -f1 || true)
+note_drift "/etc/fail2ban/jail.local" "fail2ban-jail.local (Operator-Jails siehe B-012-Folge: Include-Datei)"
 sudo tee /etc/fail2ban/jail.local > /dev/null <<'EOF'
 [sshd]
 enabled  = true
@@ -515,17 +617,31 @@ fi
 # Hinweis: Docker trägt für per "ports:" veröffentlichte Container-Ports
 # (hier 80/443 von Caddy) eigene iptables-Regeln ein, die ufw dabei
 # üblicherweise umgehen – diese beiden Regeln sind also vor allem
-# Dokumentation, kein zusätzlicher Schutz. Der eigentliche Schutz für 80/443
+# Dokumentation, kein zusätzlicher Schutz (B-007: "ufw status grün" heißt für
+# künftige Container-Ports NICHT "geschützt"). Bindungsregel (Review-Check bei
+# jedem Compose-Change): neue "ports:"-Einträge NUR als "127.0.0.1:<port>:<port>"
+# binden; öffentliche Ports sind die Ausnahme und bleiben Caddy (80/443)
+# vorbehalten. DOCKER-USER ja/nein erst per D-Firewall-Entscheidung nach
+# Dual-Stack-Test (T-060) – kein Einbau ohne Nachweis.
+# Der eigentliche Schutz für 80/443
 # ist, dass dort ohnehin der öffentliche Coder-Zugang laufen soll. Bei
 # Prometheus/Grafana kommt der Schutz stattdessen daher, dass deren Ports nur
 # an 127.0.0.1 gebunden sind (siehe docker-compose.yml) – das wirkt unabhängig
 # von ufw/Docker-iptables. Für SSH gilt das NICHT: sshd ist ein normaler
 # Host-Dienst, kein Docker-Container, ufw/fail2ban greifen hier also wirklich.
+# B-007/IPv6: ufw wendet dieselbe Policy auf v4+v6 an, solange IPV6=yes in
+# /etc/default/ufw (Debian-Default). Pfad deklariert: Dual-Stack mit gleicher
+# Policy; bei "IPV6=no" gilt nur v4 (dann WARN unten). Kein stilles Umschalten.
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 sudo ufw allow 443/udp
 sudo ufw --force enable
 sudo ufw status verbose
+if grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
+  ok "ufw-IPv6-Pfad deklariert: IPV6=yes (gleiche Policy für v4+v6)"
+else
+  warn "ufw-IPv6-Pfad unklar (kein IPV6=yes in /etc/default/ufw) – Dual-Stack-Annahme gilt nicht, prüfen mit: grep IPV6 /etc/default/ufw (B-007)"
+fi
 
 if sudo ufw status | grep -q "Status: active"; then
   ok "ufw ist aktiv"
@@ -577,8 +693,8 @@ fi
 echo "############################################################"
 echo "# [5/10] Automatische Sicherheitsupdates einrichten"
 echo "############################################################"
-sudo apt-get update
-sudo apt-get install -y unattended-upgrades
+retry3 sudo apt-get update
+retry3 sudo apt-get install -y unattended-upgrades
 
 # Nicht-interaktive Aktivierung statt "dpkg-reconfigure -plow" (Dialog).
 # Schreibt /etc/apt/apt.conf.d/20auto-upgrades.
@@ -587,8 +703,13 @@ sudo dpkg-reconfigure -f noninteractive unattended-upgrades
 
 # Eigene Datei statt Änderung an der von dpkg verwalteten 50unattended-upgrades
 # (die würde beim nächsten Paket-Update sonst zu einem Konflikt-Dialog führen).
+note_drift "/etc/apt/apt.conf.d/52-coder-reboot" "52-coder-reboot"
 sudo tee /etc/apt/apt.conf.d/52-coder-reboot > /dev/null <<'EOF'
-// Automatischer Neustart bei Kernel-Updates, nachts um 03:00 Uhr
+// Automatischer Neustart bei Kernel-Updates, nachts um 03:00 Uhr.
+// B-011/D-Reboot-Fenster: 03:00 ist Default, kein abgestimmtes Betriebsfenster.
+// Vor Produktionsfreigabe mit Schulbetrieb abstimmen + im Wartungsplan
+// hinterlegen (laufende Workspaces/Sessions werden abgerissen). Boot-Gesundheit
+// prüft /opt/coder/boot-check.sh (lesend, @reboot, kein Eingriff).
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "03:00";
 EOF
@@ -611,9 +732,113 @@ else
   fail "Reboot-Konfiguration (52-coder-reboot) fehlt"
 fi
 
+# B-011: lesendes Boot-Gate (kein Eingriff, nur Logging). Docker startet nach
+# Reboot alle Container gleichzeitig per Daemon-Restart (depends_on gilt nur für
+# Compose-CLI) – Coder kann gegen unbereites Postgres crash-loopen. Dieses
+# Gate wartet bis zu 5 Minuten auf Gesundheit + /healthz und schreibt das
+# Ergebnis nach /var/log/coder-boot.log (+ logger). Auslösung per @reboot-Cron.
+note_drift "/opt/coder/boot-check.sh" "boot-check.sh"
+sudo tee /opt/coder/boot-check.sh > /dev/null <<'EOF'
+#!/bin/bash
+# boot-check.sh (B-011): lesendes Boot-Gate, kein Eingriff.
+# Aufruf: per @reboot-Cron oder manuell. Exit 1 bei rot (sichtbar im Cron-Log),
+# ändert aber nichts am Stack – nur Diagnose für den Morgen nach dem Reboot.
+set -uo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG="/var/log/coder-boot.log"
+OUT=$(mktemp)
+{
+echo "=== boot-check $(date -Is) ==="
+OK=true
+for c in coder-postgres coder coder-caddy coder-prometheus coder-node-exporter coder-grafana; do
+  if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
+    echo "ROT: Container ${c} läuft nicht nach Boot"
+    OK=false
+  else
+    echo "OK: ${c} läuft"
+  fi
+done
+if [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null || echo none)" != "healthy" ]; then
+  echo "ROT: Postgres nicht healthy nach Boot"
+  OK=false
+fi
+DOMAIN=$(awk -F'[ ,{]+' '/\*.*\{/ {print $1; exit}' /opt/coder/Caddyfile 2>/dev/null || true)
+if [ -n "${DOMAIN:-}" ]; then
+  CODE="000"
+  for _ in $(seq 1 30); do
+    if CODE=$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" -H "Host: ${DOMAIN}" "https://127.0.0.1/healthz" 2>/dev/null) && [ "${CODE}" = "200" ]; then
+      break
+    fi
+    sleep 10
+  done
+  if [ "${CODE}" != "200" ]; then
+    echo "ROT: /healthz via Caddy antwortet ${CODE} statt 200 (5-Min-Fenster)"
+    OK=false
+  else
+    echo "OK: /healthz via Caddy 200"
+  fi
+else
+  echo "WARN: Apex nicht parsbar – TLS-Smoke übersprungen"
+fi
+if [ "${OK}" = "true" ]; then echo "BOOT-GATE GRÜN"; else echo "BOOT-GATE ROT – prüfen mit: docker logs coder / docker logs coder-postgres"; fi
+} > "${OUT}" 2>&1
+cat "${OUT}" >> "${LOG}" 2>/dev/null || true
+cat "${OUT}" | logger -t coder-boot || true
+# Auswertung des LAUFS (nicht des kumulativen Logs – alte GRÜN-Zeilen sähen
+# sonst einen aktuellen ROT-Lauf grün).
+if grep -q "BOOT-GATE GRÜN" "${OUT}"; then
+  rm -f "${OUT}"
+  exit 0
+else
+  rm -f "${OUT}"
+  exit 1
+fi
+EOF
+sudo chmod +x /opt/coder/boot-check.sh
+note_drift "/etc/cron.d/coder-bootcheck" "coder-bootcheck-Cron"
+sudo tee /etc/cron.d/coder-bootcheck > /dev/null <<'EOF'
+@reboot root /opt/coder/boot-check.sh >> /var/log/coder-boot.log 2>&1
+EOF
+sudo chmod 644 /etc/cron.d/coder-bootcheck
+if [ -x /opt/coder/boot-check.sh ] && [ -f /etc/cron.d/coder-bootcheck ]; then
+  ok "Lesendes Boot-Gate installiert (/opt/coder/boot-check.sh, @reboot)"
+else
+  fail "Boot-Gate fehlt (/opt/coder/boot-check.sh oder /etc/cron.d/coder-bootcheck)"
+fi
+
+# B-005-Erkennung: On-Demand-TLS-Ausstellungen zählen (lesend, kein Alertmanager).
+# "obtaining certificate" im Caddy-Log = genau eine LE-Ausstellung (auch fremd
+# ausgelöste). Wöchentlicher Lauf + logger, damit ein Budget-DoS auffällt, bevor
+# das 50/Woche-Budget von ghse-unterricht.de erschöpft ist. Nie Fail (nur
+# Diagnose); D-TLS-Entscheidung bleibt Eigentümer-Sache.
+note_drift "/opt/coder/check-tls.sh" "check-tls.sh"
+sudo tee /opt/coder/check-tls.sh > /dev/null <<'EOF'
+#!/bin/bash
+# check-tls.sh (B-005): zählt LE-Ausstellungen der letzten 7 Tage im Caddy-Log.
+# Lesend, Exit 0 immer. Auffällige Werte (> 20/Woche inkl. eigener Apps) dem
+# D-TLS-Eigentümer melden.
+set -uo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+COUNT=$(docker logs --since 168h coder-caddy 2>&1 | grep -c "obtaining certificate" || true)
+echo "TLS-Ausstellungen letzte 7 Tage (Caddy-Log, 'obtaining certificate'): ${COUNT}"
+logger -t coder-tls "Ausstellungen/7d: ${COUNT}" || true
+EOF
+sudo chmod +x /opt/coder/check-tls.sh
+note_drift "/etc/cron.d/coder-tlscheck" "coder-tlscheck-Cron"
+sudo tee /etc/cron.d/coder-tlscheck > /dev/null <<'EOF'
+30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1
+EOF
+sudo chmod 644 /etc/cron.d/coder-tlscheck
+if [ -x /opt/coder/check-tls.sh ] && [ -f /etc/cron.d/coder-tlscheck ]; then
+  ok "TLS-Erkennung installiert (/opt/coder/check-tls.sh, wöchentlich Mo 06:30)"
+else
+  fail "TLS-Erkennung fehlt (/opt/coder/check-tls.sh oder /etc/cron.d/coder-tlscheck)"
+fi
+
 echo "############################################################"
 echo "# [6/10] Tägliches Datenbank-Backup einrichten"
 echo "############################################################"
+note_drift "/opt/coder/backup.sh" "backup.sh"
 sudo tee /opt/coder/backup.sh > /dev/null <<'EOF'
 #!/bin/bash
 # Tägliches Postgres-Backup (F-005/F-008/F-009, mit P-013/P-017-Korrekturen).
@@ -632,23 +857,35 @@ BACKUP_DIR="/opt/coder/backups"
 TIMESTAMP=$(date +%Y-%m-%d_%H%M%S)
 mkdir -p "${BACKUP_DIR}"
 
-# Selbst-Lock auf derselben Datei wie in der Cron-Zeile: schützt auch
-# update.sh-Pre-Backup und manuelle Läufe, nicht nur Cron (F-009).
+# Einziger Selbst-Lock (.backup.lock, B-001): schützt Cron-, update.sh-
+# Pre-Backup- und manuelle Läufe gemeinsam. Die Cron-Zeile enthält bewusst
+# KEIN äußeres flock auf derselben Datei (verschachteltes flock -n würde
+# jeden Cron-Lauf in den Skip treiben).
 exec 9>"${BACKUP_DIR}/.backup.lock"
 if ! flock -n 9; then
-  echo "backup.sh: übersprungen, Vorgänger läuft noch (Lock ${BACKUP_DIR}/.backup.lock)." >&2
-  logger -t coder-backup "übersprungen, Vorgänger läuft noch" || true
+  LATEST_SKIP=$(ls -t "${BACKUP_DIR}"/coder_*.sql.gz 2>/dev/null | head -n1 || true)
+  if [ -n "${LATEST_SKIP:-}" ]; then
+    echo "backup.sh: übersprungen, Vorgänger läuft noch (Lock ${BACKUP_DIR}/.backup.lock). Letztes gültiges Backup: ${LATEST_SKIP} ($(stat -c %y "${LATEST_SKIP}" 2>/dev/null || echo unbekannt))." >&2
+    logger -t coder-backup "übersprungen, Vorgänger läuft noch; letztes gültiges Backup: ${LATEST_SKIP}" || true
+  else
+    echo "backup.sh: übersprungen, Vorgänger läuft noch (Lock ${BACKUP_DIR}/.backup.lock). KEIN gültiges Backup vorhanden!" >&2
+    logger -t coder-backup "übersprungen, Vorgänger läuft noch; KEIN gültiges Backup vorhanden" || true
+  fi
   exit 0
 fi
 
-# Mindestplatz vor dem Dump (P-007): klar abbrechen statt partieller Datei.
-# Konservativer Bodenwert (Dumps sind wenige MB); kein Ersatz für
-# Platten-Monitoring (siehe BLOCKER B-07/retention.size im Report).
+# B-016: stale Orphan-Sweep (nur eigenes Muster, älter als 24 h). SIGKILL/Reboot
+# umgehen trap EXIT – ohne Sweep blieben .tmp.*-Orphans (600/root) ewig liegen.
+find "${BACKUP_DIR}" -maxdepth 1 -name 'coder_*.sql.gz.tmp.*' -mmin +1440 -delete 2>/dev/null || true
+
+# Mindestplatz vor dem Dump (P-007/B-015): klar abbrechen statt partieller Datei.
+# 500-MB-Bodenwert ist konservativ, aber UNVERMESSEN (kein Ersatz für
+# Platten-Monitoring; retention.size/check.sh erst nach Messung, D-Monitoring).
 MIN_FREE_BYTES=524288000
 if FREE_BYTES=$(df --output=avail -B1 "${BACKUP_DIR}" 2>/dev/null | tail -n1 | tr -d ' '); then
   if [ "${FREE_BYTES}" -lt "${MIN_FREE_BYTES}" ]; then
     echo "backup.sh: zu wenig freier Platz in ${BACKUP_DIR} (${FREE_BYTES} < ${MIN_FREE_BYTES} Bytes), Abbruch ohne Datei." >&2
-    logger -t coder-backup "FEHLGESCHLAGEN: zu wenig Platz (${FREE_BYTES} Bytes frei)"
+    logger -t coder-backup "FEHLGESCHLAGEN: zu wenig Platz (${FREE_BYTES} Bytes frei)" || true
     exit 1
   fi
 fi
@@ -664,22 +901,38 @@ if docker exec coder-postgres pg_dump -U coder coder | gzip > "${TMP}"; then
   :
 else
   echo "backup.sh: pg_dump-Pipeline fehlgeschlagen, keine Finaldatei angelegt." >&2
-  logger -t coder-backup "FEHLGESCHLAGEN: pg_dump-Pipeline"
+  logger -t coder-backup "FEHLGESCHLAGEN: pg_dump-Pipeline" || true
   exit 1
 fi
 chmod 600 "${TMP}"
 
-# Verifikation (F-005, mit P-013): gzip-Integrität ist hart (Fail), Größe nur
-# Plausibilität (Warnung, kein Fail – frische DB ~1-2 KiB darf nicht scheitern,
-# legitime Verkleinerung ebenso; leeres stdin wird als Warnung sichtbar).
+# Verifikation (F-005, mit P-013/B-010): gzip-Integrität ist hart (Fail).
+# B-010: leeres stdin oder pg_dump-Fehlertext nach stdout ergibt valides gzip
+# ohne SQL-Semantik – daher SQL-Header als Fail-Kriterium (kein hartes
+# Größenlimit: frische/verkleinerte DB darf nicht scheitern).
 if ! gzip -t "${TMP}"; then
   echo "backup.sh: gzip-Integritätstest fehlgeschlagen, keine Finaldatei angelegt." >&2
-  logger -t coder-backup "FEHLGESCHLAGEN: gzip -t"
+  logger -t coder-backup "FEHLGESCHLAGEN: gzip -t" || true
+  exit 1
+fi
+if ! zcat "${TMP}" 2>/dev/null | head -c 4000 | grep -q "PostgreSQL database dump"; then
+  echo "backup.sh: FEHLGESCHLAGEN: kein SQL-Dump-Header (leer oder Fehlertext), keine Finaldatei angelegt." >&2
+  logger -t coder-backup "FEHLGESCHLAGEN: kein SQL-Dump-Header" || true
   exit 1
 fi
 DUMP_SIZE=$(stat -c %s "${TMP}")
 if [ "${DUMP_SIZE}" -lt 512 ]; then
   echo "backup.sh: Warnung: Backup ungewöhnlich klein (${DUMP_SIZE} Bytes) – ggf. leere DB, bitte prüfen." >&2
+fi
+# B-010: Vorwert-Vergleich als Warnung (kein Fail): halbierte Größe gegenüber
+# letztem gültigem Dump deutet auf Teilverlust, legitime Verkleinerung bleibt grün.
+PREV_DUMP=$(ls -t "${BACKUP_DIR}"/coder_*.sql.gz 2>/dev/null | head -n1 || true)
+if [ -n "${PREV_DUMP:-}" ]; then
+  PREV_SIZE=$(stat -c %s "${PREV_DUMP}" 2>/dev/null || echo 0)
+  if [ "${PREV_SIZE}" -gt 0 ] && [ "${DUMP_SIZE}" -lt "$((PREV_SIZE / 2))" ]; then
+    echo "backup.sh: Warnung: Backup deutlich kleiner als Vorgänger (${DUMP_SIZE} < ${PREV_SIZE}/2 Bytes) – bitte prüfen, kein Fail." >&2
+    logger -t coder-backup "Warnung: Dump stark verkleinert (${DUMP_SIZE} vs. ${PREV_SIZE} Bytes)" || true
+  fi
 fi
 
 mv "${TMP}" "${FINAL}"
@@ -717,7 +970,7 @@ fi
 # F-009(a): ohne Cron-Daemon läuft nie ein Backup, das Setup meldete trotzdem
 # [OK]. Paketname/Service ("cron"/"cron") für trixie – auf Minimal-Images
 # verifizieren (T-076, Test-VM).
-sudo apt-get install -y cron
+retry3 sudo apt-get install -y cron
 # "enable --now": enable ist idempotent, start ist No-Op wenn aktiv (kein
 # Ban-Verlust wie bei fail2ban-restart, P-025 betrifft nur fail2ban).
 sudo systemctl enable --now cron
@@ -726,15 +979,18 @@ sudo systemctl enable --now cron
 # nachvollziehbare Datei statt fragilem Parsen/Überschreiben der gesamten
 # Root-Crontab (Risiko, versehentlich andere Einträge zu verlieren). Das
 # Format braucht hier zusätzlich das Benutzerfeld ("root") vor dem Befehl.
-# flock -n (F-009): parallele Läufe (Cron 01:00 vs. update.sh-Pre-Backup vs.
-# manuell) trunkieren einander sonst per ">" dieselbe Minutendatei. Zweiter
-# Lauf wird in backup.sh sauber übersprungen. Absolute Pfade (P-017).
+# B-001: KEIN äußeres flock in der Cron-Zeile – backup.sh hält den einzigen
+# Selbst-Lock (.backup.lock). Ein äußeres "flock -n" auf derselben Datei würde
+# jeden Cron-Lauf deterministisch in den inneren Skip treiben (Exit 0 ohne
+# Backup). Absolute Pfade (P-017).
+note_drift "/etc/cron.d/coder-backup" "coder-backup-Cron"
 sudo tee /etc/cron.d/coder-backup > /dev/null <<'EOF'
-0 1 * * * root /usr/bin/flock -n /opt/coder/backups/.backup.lock /opt/coder/backup.sh >> /var/log/coder-backup.log 2>&1
+0 1 * * * root /opt/coder/backup.sh >> /var/log/coder-backup.log 2>&1
 EOF
 sudo chmod 644 /etc/cron.d/coder-backup
 
 # P-007: Backup-Log ohne Rotation wächst als Root-Log unbegrenzt.
+note_drift "/etc/logrotate.d/coder-backup" "coder-backup-logrotate"
 sudo tee /etc/logrotate.d/coder-backup > /dev/null <<'EOF'
 /var/log/coder-backup.log {
     weekly
@@ -785,24 +1041,53 @@ else
   fail "Testlauf von backup.sh ist fehlgeschlagen (z. B. weil Postgres noch nicht bereit war)"
 fi
 
+# B-008: Runbook auf dem Server ablegen, damit Verweise aus update.sh und
+# reset-coder.sh ("/opt/coder" auf dem Server) dort auflösen. Kein Dangling:
+# liegt RESTORE.md neben dem Setup, wird es kopiert; sonst WARN (kein Fail).
+SCRIPT_SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if [ -f "${SCRIPT_SRC_DIR}/RESTORE.md" ]; then
+  sudo cp -a "${SCRIPT_SRC_DIR}/RESTORE.md" /opt/coder/RESTORE.md
+  sudo chmod 644 /opt/coder/RESTORE.md
+  ok "Runbook nach /opt/coder/RESTORE.md abgelegt (B-008)"
+else
+  warn "RESTORE.md liegt nicht neben setup-coder.sh – kein Runbook auf Server abgelegt (B-008)"
+fi
+
 echo "############################################################"
 echo "# [7/10] Update-Skript bereitstellen (manuell, KEIN Cronjob)"
 echo "############################################################"
+note_drift "/opt/coder/update.sh" "update.sh"
 sudo tee /opt/coder/update.sh > /dev/null <<'EOF'
 #!/bin/bash
-# Manuelles Update: Images ziehen, Stack neu erstellen, alte Images pflegen.
-# F-012/P-020 (Minimal-Fix, K5): Health-Gate nach "up -d" (Fehl-Update fällt
-# selbst auf, nicht erst durch Nutzerbeschwerde) + Prune-Guard (altes Image
-# bleibt 24 h für Rollback) + ehrlicher Rollback-Kommentar (Garantie nur für
-# exakt Gepinnte). Keine app/db-Aufspaltung (Non-Goal bis D7, siehe Report).
+# Manuelles Update: Images ziehen, Stack neu erstellen. Kein Auto-Prune (B-003).
+# B-009: Health-Gate nach "up -d" (Container Running + Postgres healthy +
+# /healthz-200 via Caddy-TLS-Smoke, Timeout 60 s wegen On-Demand-Erstverzögerung
+# 5-30 s) + ehrlicher Rollback-Kommentar (Garantie nur für exakt Gepinnte).
+# Keine app/db-Aufspaltung (D-Update-Split, siehe Report).
+# sudo-Konvention: dieses Skript läuft als root (sudo-Aufruf/Cron) und nutzt
+# bewusst plaines "docker"; setup-coder.sh nutzt "sudo docker", weil es als
+# Nicht-root läuft. Kein funktionaler Unterschied, nur Aufrufkontext.
 set -euo pipefail
 cd /opt/coder
 
-# Vor jedem Update sicherheitshalber ein Backup ziehen (seit F-005 verifiziert)
+# Vor jedem Update sicherheitshalber ein Backup ziehen (seit F-005 verifiziert).
+# Bei Skip (Exit 0) meldet backup.sh selbst Alter des letzten gültigen Backups
+# (B-010) – hier kein zweiter Check, nur sichtbarer Hinweis im Log.
 echo "Ziehe Pre-Update-Backup..."
 /opt/coder/backup.sh
 
-docker compose pull
+# B-013: Pull-Retry max. 3 (Registry-/Schulnetz-Schluckauf), danach hart mit
+# Ursache statt set -e-Rohfehler. Kein Retry um LE (Budget, hier nicht betroffen).
+_pull_ok=false
+for _r in 1 2 3; do
+  if docker compose pull; then _pull_ok=true; break; fi
+  echo "pull-Versuch ${_r}/3 fehlgeschlagen, warte 10 s ..." >&2
+  sleep 10
+done
+if [ "${_pull_ok}" != "true" ]; then
+  echo "FEHLER: compose pull nach 3 Versuchen – Registry/Netz prüfen, dann erneut." >&2
+  exit 1
+fi
 docker compose up -d --remove-orphans
 
 # Health-Gate (F-012): Container müssen laufen, Postgres gesund sein –
@@ -823,24 +1108,46 @@ if [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)
   echo "FEHLER: Postgres nach Update nicht healthy – prüfen mit: docker logs coder-postgres" >&2
   GATE_OK=false
 fi
+# B-009: /healthz-200 via Caddy (TLS-Smoke): prüft Caddy-TLS + Reverse-Proxy +
+# Coder-App in einem Schritt. Apex aus Caddyfile (erste Server-Adresse), Host-
+# Header gegen 127.0.0.1 (kein DNS nötig). Timeout 60 s: deckt On-Demand-
+# Erstverzögerung (5-30 s) ab, ohne legitime Updates rot zu melden.
+GATE_DOMAIN=$(awk -F'[ ,{]+' '/\*.*\{/ {print $1; exit}' /opt/coder/Caddyfile 2>/dev/null || true)
+if [ -n "${GATE_DOMAIN:-}" ]; then
+  if HEALTH_CODE=$(curl -sk --max-time 60 -o /dev/null -w "%{http_code}" -H "Host: ${GATE_DOMAIN}" "https://127.0.0.1/healthz" 2>/dev/null); then
+    :
+  else
+    HEALTH_CODE="000"
+  fi
+  if [ "${HEALTH_CODE}" != "200" ]; then
+    echo "FEHLER: Caddy-TLS-Smoke rot – https://${GATE_DOMAIN}/healthz via 127.0.0.1 antwortet ${HEALTH_CODE} statt 200 (prüfen mit: docker logs coder-caddy; docker logs coder)" >&2
+    GATE_OK=false
+  else
+    echo "Caddy-TLS-Smoke grün: /healthz via Caddy antwortet 200."
+  fi
+else
+  echo "Warnung: Apex nicht aus Caddyfile parsbar – TLS-Smoke übersprungen (kein Fail)." >&2
+fi
 if [ "${GATE_OK}" != "true" ]; then
   echo "FEHLER: Update-Gate rot – Stack prüfen, ggf. Rollback (siehe Kommentar unten)." >&2
   exit 1
 fi
-echo "Update-Gate grün: alle Container laufen, Postgres healthy."
+echo "Update-Gate grün: alle Container laufen, Postgres healthy, /healthz via Caddy 200."
 
-# Prune-Guard (P-020): "-f" allein löschte SOFORT das alte Caddy-/Postgres-
-# Image (bewegliche Tags caddy:2.10/postgres:15-alpine werden nach pull
-# dangling). "until=24h" behält die Images von gestern für einen schnellen
-# Rollback; älteres wird weiter aufgeräumt. Plattenbudget beachten (P-007).
-docker image prune -f --filter "until=24h"
+# Kein Auto-Prune nach Update (B-003): "docker image prune --filter until=24h"
+# filtert nach Image-Erstellungsdatum, nicht nach Dangling-Zeitpunkt. Bewegliche
+# Tags (caddy:2.10, postgres:15-alpine) wären nach "pull" sofort dangling, aber
+# Wochen alt – und damit trotz "behält gestern" sofort gelöscht. Alte Images
+# sind der billigste Offline-Rollback; manuell und bewusst aufräumen
+# ("docker image prune"), nie automatisch nach Update.
 
-# Rollback-Hinweis (F-012, korrigiert): schnelles Zurück ("alte Version in
+# Rollback-Hinweis (F-012/B-003, korrigiert): schnelles Zurück ("alte Version in
 # setup-coder.sh setzen + Setup erneut") funktioniert OHNE erneuten Pull nur
 # für exakt gepinnte Images (Coder/Prometheus/Grafana – deren Tags ändern sich
 # nie von selbst). Für Caddy (Minor-Pin 2.10) und Postgres (15-alpine) holt
-# "pull" ggf. ein neueres Image; das alte ist nach 24-h-Fenster weg und muss
-# dann erneut gezogen werden. Bei Coder-Major-Updates mit Schema-Migrationen
+# "pull" ggf. ein neueres Image. Alte Images bleiben seit B-003 bis zu manuellem
+# "docker image prune" erhalten (kein Auto-Prune nach Update) – bei Platten-
+# engpass bewusst aufräumen. Bei Coder-Major-Updates mit Schema-Migrationen
 # kann ein Downgrade irreversibel sein – Major-Updates nur mit verifiziertem
 # Dump (siehe RESTORE.md) und einzeln fahren, nie zusammen mit DB-Update.
 #
@@ -874,6 +1181,7 @@ sudo crontab -l 2>/dev/null || echo "(keine Einträge - Backup läuft über /etc
 echo "############################################################"
 echo "# [8/10] Passwort-Reset-Skript bereitstellen"
 echo "############################################################"
+note_drift "/opt/coder/reset-passwords.sh" "reset-passwords.sh"
 sudo tee /opt/coder/reset-passwords.sh > /dev/null <<'EOF'
 #!/bin/bash
 # Setzt neue, zufällige Passwörter für den Postgres-Benutzer "coder" und den
@@ -893,6 +1201,15 @@ if [ ! -f .env ]; then
 fi
 if ! grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' .env || ! grep -qE '^DOCKER_GID=[0-9]+$' .env; then
   echo "Fehler: /opt/coder/.env ist unvollständig. Erst reparieren (setup-coder.sh meldet wie), dann erneut." >&2
+  exit 1
+fi
+# B-014: Hex-Validierung fail-closed. Nur [0-9a-f] ist durch ALTER USER
+# '${PW}', grafana-cli "..." und die Postgres-Connection-URL belegbar sicher;
+# Hand-Edits mit Sonderzeichen/Quotes würden dort still brechen. Abweisung mit
+# Anleitung statt stiller Korruption (Sonderzeichen-Probe: muss abweisen).
+if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' .env || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' .env; then
+  echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter (Sonderzeichen/Quotes brechen ALTER USER/grafana-cli/URL)." >&2
+  echo "Reparatur: sudo /opt/coder/reset-passwords.sh (würfelt belegbar sichere Hex-Passwörter), danach erneut." >&2
   exit 1
 fi
 
@@ -915,11 +1232,13 @@ chmod 600 "${ENV_BAK}"
 (ls -t .env.bak.* 2>/dev/null || true) | tail -n +2 | xargs -r rm -f
 echo "Sicherung der alten .env: ${ENV_BAK}"
 
-# Abbruch-Falle (F-010): weist bei Ctrl-C/SSH-Abbruch/Fehler den Weg, statt
-# still DB=neu/.env=alt zu hinterlassen. Re-Run heilt (würfelt erneut und
-# synchronisiert DB+Grafana+.env); .bak stellt den Vorzustand wieder her.
+# Abbruch-Falle (F-010/B-014): weist bei Ctrl-C/SSH-Abbruch/Fehler den Weg, statt
+# still DB=neu/.env=alt zu hinterlassen. Texte pro Fenster getrennt (PG vs.
+# Grafana vs. .env), damit der Zustand ohne Klartext-Log diagnostizierbar ist.
+# Re-Run heilt (würfelt erneut und synchronisiert DB+Grafana+.env); .bak stellt
+# den Vorzustand wieder her.
 PHASE="Vorbereitung"
-trap 'rc=$?; rm -f .env.tmp.??????; if [ "${rc}" -ne 0 ]; then echo "ABBRUCH in Phase [${PHASE}]. Möglicher Zustand: DB- und/oder Grafana-Passwort bereits neu, .env ggf. noch alt." >&2; echo "Reparatur: 1) Skript erneut laufen lassen (heilt in der Regel). 2) Falls DB-Login danach scheitert: altes Passwort aus ${ENV_BAK} per psql setzen (ALTER USER coder WITH PASSWORD ...). 3) Grafana ggf. erneut per grafana-cli angleichen." >&2; fi' EXIT
+trap 'rc=$?; rm -f .env.tmp.??????; if [ "${rc}" -ne 0 ]; then echo "ABBRUCH in Phase [${PHASE}]." >&2; case "${PHASE}" in Postgres-ALTER-USER|Postgres-Verifikation) echo "Fenster PG: DB-Passwort evtl. bereits neu, .env noch alt, Grafana noch alt." >&2;; Grafana-Reset) echo "Fenster Grafana: DB-Passwort bereits neu, Grafana evtl. neu, .env noch alt." >&2;; .env-Tausch|Coder-Recreate) echo "Fenster .env: DB+Grafana neu, .env evtl. bereits getauscht – Coder-Recreate ggf. unvollständig." >&2;; *) echo "Fenster Vorbereitung: noch nichts geändert (.bak liegt vor)." >&2;; esac; echo "Reparatur: 1) Skript erneut laufen lassen (heilt in der Regel). 2) Falls DB-Login danach scheitert: altes Passwort aus ${ENV_BAK} per psql setzen (ALTER USER coder WITH PASSWORD ...). 3) Grafana ggf. erneut per grafana-cli angleichen." >&2; fi' EXIT
 
 for c in coder-postgres coder-grafana; do
   if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
@@ -1006,6 +1325,7 @@ fi
 echo "############################################################"
 echo "# [9/10] Komplett-Reset-Skript bereitstellen"
 echo "############################################################"
+note_drift "/opt/coder/reset-coder.sh" "reset-coder.sh"
 sudo tee /opt/coder/reset-coder.sh > /dev/null <<'EOF'
 #!/bin/bash
 # Setzt die Coder-Installation zurück, als wäre sie neu installiert:
@@ -1024,6 +1344,12 @@ sudo tee /opt/coder/reset-coder.sh > /dev/null <<'EOF'
 #   --force: Reset auch durchführen, wenn das Sicherheits-Backup fehlschlägt
 #            (ohne --force bricht das Skript in diesem Fall ab, statt
 #            möglicherweise die einzige Datenrettung zu verlieren).
+#            B-020/Break-Glass: --force ist KEIN Komfort-Flag, sondern die
+#            bewusste Freigabe zur Zerstörung ohne Netz (Backup defekt oder
+#            kein Backup vorhanden). Wer: nur der dokumentierte Betreiber nach
+#            Kenntnisnahme des neuesten verfügbaren Backups (wird angezeigt).
+#            Nachweis: zweite Eingabe 'RESET-OHNE-BACKUP' (nicht per Pipe ohne
+#            Terminal fütterbar – P-019 verweigert Pipe ohne --force).
 # Danach: sudo ./setup-coder.sh erneut ausführen, um alles neu aufzubauen.
 set -euo pipefail
 cd /opt/coder
@@ -1112,6 +1438,10 @@ else
 fi
 
 echo "Stoppe Container (caddy_data/caddy_config bleiben unangetastet)..."
+echo "B-020: Falls im Inventar oben fremde Container standen (Workspace-Reste):"
+echo "jetzt Namen notieren – nach 'down' sind Compose-Container weg, verwaiste"
+echo "Workspace-Container stehen ggf. noch und müssen von Hand aufgeräumt werden"
+echo "(docker ps -a). Der Reset löscht sie NICHT automatisch."
 docker compose down --remove-orphans
 
 echo "Ermittle Datenbank-, Grafana- und Prometheus-Volumes (Projekt: ${PROJECT})..."
@@ -1137,6 +1467,19 @@ if [ -z "${VOLUMES_TO_DELETE//[$'\n ']/}" ]; then
   exit 1
 fi
 
+# B-016/B-020-Pre-Check (lesend, vor Zerstörung): hängt an einem zu löschenden
+# Volume noch ein Container (fremder Workspace, paralleler Lauf), bricht
+# "volume rm" unter set -e mitten in der Teillöschung ab – weder alt noch neu
+# lauffähig. Daher: Abbruch VOR dem ersten rm (fail-closed wie Leer-Guard).
+while IFS= read -r VOL_NAME; do
+  [ -n "${VOL_NAME}" ] || continue
+  if USERS=$(docker ps -aq --filter "volume=${VOL_NAME}" 2>/dev/null) && [ -n "${USERS:-}" ]; then
+    echo "Fehler: Volume ${VOL_NAME} wird noch von Container(n) benutzt: $(echo "${USERS}" | tr '\n' ' ')" >&2
+    echo "Abbruch VOR Volume-Löschung – nichts gelöscht, .env intakt ('docker compose up -d' stellt wieder her; Fremd-Container erst aufräumen)." >&2
+    exit 1
+  fi
+done <<< "${VOLUMES_TO_DELETE}"
+
 while IFS= read -r VOL_NAME; do
   [ -n "${VOL_NAME}" ] || continue
   docker volume rm "${VOL_NAME}"
@@ -1150,9 +1493,8 @@ echo "Reset abgeschlossen. Zum Neuaufbau:"
 echo "  sudo ./setup-coder.sh"
 echo "(erzeugt neue Passwörter und startet den Stack komplett neu)"
 echo ""
-echo "Falls vor dem Reset Workspace-Container liefen (siehe Inventar oben):"
-echo "sie stehen ggf. noch (verwaist). Prüfen und von Hand aufräumen:"
-echo "  docker ps -a"
+echo "Verwaiste Workspace-Container (Inventar vor 'down', B-020):"
+echo "  docker ps -a  # von Hand aufräumen, sonst Namens-/Port-Konflikte"
 echo "------------------------------------------------------------"
 EOF
 sudo chmod +x /opt/coder/reset-coder.sh
@@ -1166,6 +1508,17 @@ fi
 echo "############################################################"
 echo "# [10/10] Abschlusscheck & Zusammenfassung"
 echo "############################################################"
+
+# B-012: Erwartungswerte für den nächsten Re-Run-Driftvergleich festschreiben
+# (nach allen Schreibstellen, ein Block statt 15 Einzelstellen – gleiche Semantik).
+for _f in /opt/coder/docker-compose.yml /opt/coder/Caddyfile /opt/coder/prometheus.yml \
+  /etc/fail2ban/jail.local /etc/apt/apt.conf.d/52-coder-reboot \
+  /opt/coder/boot-check.sh /etc/cron.d/coder-bootcheck \
+  /opt/coder/check-tls.sh /etc/cron.d/coder-tlscheck \
+  /opt/coder/backup.sh /etc/cron.d/coder-backup /etc/logrotate.d/coder-backup \
+  /opt/coder/update.sh /opt/coder/reset-passwords.sh /opt/coder/reset-coder.sh; do
+  remember_hash "${_f}"
+done
 
 check_container_running "coder-postgres" "Postgres-Container"
 check_container_running "coder" "Coder-Container"
@@ -1217,6 +1570,18 @@ else
   warn "DNS: ${DOMAIN_CODER} löst noch nicht auf. Normal, solange DNS-Eintrag und Portweiterleitung/Reverse Proxy im Schulnetz noch nicht stehen – Skript nach der Einrichtung einfach erneut laufen lassen."
 fi
 
+# B-019: Wildcard-Probe getrennt von Apex, immer WARN (nie Fail – Setup soll bei
+# fehlender Weiterleitung starten, Kopfprinzip). Nur DNS-Resolve einer zufälligen
+# Subdomain (kein TLS-Handshake, kein LE-Budget). Limit: lokaler Resolver statt
+# autoritativem Server (kein dig garantiert); Negativprobe: fehlt Wildcard, kommt
+# WARN statt grünem Gesamt-OK. App-Smoke (T-124) erst nach erstem Workspace.
+WILDCARD_PROBE="setup-probe-${RANDOM}.${DOMAIN_CODER}"
+if getent hosts "${WILDCARD_PROBE}" > /dev/null 2>&1; then
+  ok "Wildcard-DNS löst auf (*.${DOMAIN_CODER} via ${WILDCARD_PROBE})"
+else
+  warn "Wildcard-DNS fehlt (*.${DOMAIN_CODER} löst nicht auf, Probe ${WILDCARD_PROBE}) – Workspace-Apps/Port-Forwarding scheitern ab Montag, Apex-OK gilt NICHT für Apps. DNS-Wildcard-Eintrag setzen, dann Setup erneut (B-019)."
+fi
+
 echo ""
 echo "============================================================"
 echo " Zusammenfassung"
@@ -1239,6 +1604,9 @@ if ! (sudo sshd -T 2>/dev/null | grep -qi '^passwordauthentication no' && \
   echo "!! erreichbar. Stelle sicher, dass das Login-Passwort stark ist, und richte"
   echo "!! einen SSH-Key ein, sobald möglich – dann Bescheid geben, damit"
   echo "!! PasswordAuthentication deaktiviert wird."
+  echo "!! Provisoriums-Alter (B-006/D-SSH): $(date -Is) – Passwort-Login noch aktiv;"
+  echo "!! Härtungstermin + Eigentümer + Zweit-Zugang als D-SSH-Entscheidung festhalten"
+  echo "!! (Härtung nur mit getestetem Key-Login + Zweit-Zugang via ssh-harden.sh)."
 fi
 
 if [ "${ERROR_COUNT}" -gt 0 ]; then

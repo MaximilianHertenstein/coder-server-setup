@@ -28,11 +28,13 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 1. `setup-coder.sh` auf frischer VM laufen lassen (erzeugt Stack + neue `.env`).
 2. Stack stoppen: `sudo docker compose -f /opt/coder/docker-compose.yml stop coder`
 3. Originale `.env` zurückspielen (`cp -a`, `chmod 600`, `chown root:root`).
-4. Dump einspielen:
-   `zcat coder_<TS>.sql.gz | sudo docker exec -i coder-postgres psql -U coder -d coder`
-   (Passwort aus `.env`; bei „bereits vorhanden"-Fehlern: Leer-Schema liegt vor,
-   weil Setup eine frische DB angelegt hat – Tabellen per Dump überschreiben
-   lassen, Fehlerprotokoll lesen statt `--clean` zu raten.)
+4. Dump einspielen (B-008: eine Variante, kein „Fehlerprotokoll lesen"):
+   `sudo docker exec coder-postgres dropdb -U coder --if-exists coder \
+     && sudo docker exec coder-postgres createdb -U coder -O coder coder \
+     && zcat coder_<TS>.sql.gz | sudo docker exec -i coder-postgres psql -U coder -d coder`
+   (Passwort aus `.env`; `dropdb`/`createdb` räumt das frische Leer-Schema weg,
+   statt an bestehendem `CREATE TABLE` zu scheitern. Alternative mit gleichem
+   Ergebnis: `pg_restore --clean --if-exists`, falls im Custom-Format gesichert.)
 5. `sudo docker compose -f /opt/coder/docker-compose.yml up -d`, Postgres
    healthy abwarten, Coder-Login prüfen (`/healthz` 200 + Dashboard-Login).
 6. Zeit stoppen = RTO, ins Protokoll (Datum, Versionen, Dump-Alter).
