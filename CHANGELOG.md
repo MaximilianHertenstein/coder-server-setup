@@ -14,6 +14,60 @@ Stand: 2026-09-28 · aktueller Quellstand: `git log -1 --oneline`
 
 ---
 
+## 2026-09-28 – VM-Testlauf auf dem Test-Host (Teil der Testmatrix) + Boot-Gate-Fix
+
+**Umfang:** erster Teil der bisher „nicht ausgeführten" VM-Matrix auf
+`2.29.11.30` (Debian 13, frischer Stand nach den vier Fixes oben); ein
+weiterer Defekt gefunden und behoben.
+
+- **Defekt 5 – Boot-Gate meldete jedes Mal fälschlich ROT.** Nach echtem
+  Reboot schrieb `/var/log/coder-boot.log`
+  „ROT: Postgres nicht healthy nach Boot", obwohl der Stack gesund war:
+  boot-check.sh liest den Health-Status ohne Wartezeit, direkt nach
+  @reboot ist er `starting` (gemessen: T+0 s `starting`, T+4 s `healthy`,
+  erster Probe nach `interval: 5s`). Fix: gebundene Warteschleife (24 ×
+  5 s = max 120 s), danach erst echtes ROT; bei healthy zusätzlich eine
+  OK-Zeile. Zweiter Reboot danach: **„OK: Postgres healthy nach Boot"**
+  (Abschnitt 17:48:03).
+- **Geändert:** `setup-coder.sh` (Herodoc von `boot-check.sh`);
+  **neu:** `tests/t-b2-010-boot-gate-health.sh` (13 Checks: Extraktion,
+  Statik, Fall „starting → healthy" → GRÜN/Exit 0, Fall „dauerhaft
+  starting" → ROT/Exit 1, Fake-`docker` mit Health-Sequenz).
+- **Tatsächlich ausgeführt am 2026-09-28 (Host + lokal):**
+  - Lokal: `bash -n` 0 Befunde, `shellcheck -S warning` unverändert (1×
+    SC2034), **9 Testskripte Exit 0, 266 PASS, 0 FAIL** (6/16/64/61/16/37/
+    28/25/13).
+  - Server: Lauf 7 → Exit 0, 0 FEHLER, Boot-Gate neu erzeugt, keine Drift.
+  - Geprüfte Matrix-Teile (jeweils ausgeführt): T-065 Rechte
+    (`.env` 600, `backups` 700, Dumps 600, Cron 644, Skripte 755,
+    `nobody` darf `.env` nicht lesen); T-066 kein Klartext-Passwort in
+    Backup-Log/Journal (Coder-Container-Env enthält die URL wie dokumentiert);
+    T-067 Log-Limits bei allen 6 Containern `10m × 3`; T-068 node-exporter
+    `pid: host` **ohne** `--collector.processes` (K3 bleibt offen); T-069
+    kein NOPASSWD für Wartungsskripte, kein Auto-Reset/-Update-Cron;
+    T-062/T-060 ufw active, 22/tcp LIMIT + 80/443/443-udp v4+v6,
+    Default deny; öffentlich nur 80/443/SSH, Prometheus/Grafana/
+    node-exporter loopback; T-070 Backups `gzip -t` OK (4 Dateien, je
+    ~73,9 kB, 600); T-075 Retention stückzahlbasiert `KEEP=14`; T-076
+    Cron aktiv, 01:00; T-077 logrotate weekly/8; T-090 `update.sh`:
+    Pre-Backup + Pull + `up -d` grün, **Gate rot mit Exit 1**
+    (Caddy-TLS-Smoke 000, weil hier kein Zertifikat möglich) – fail-closed
+    statt stilles Grün; T-106 Pipe ohne `--force` → Exit 1, nichts
+    gelöscht (5 Volumes, `.env`, 6 Container da); T-100 Backup-Fehlschlag
+    (Postgres gestoppt) → „Abbruch, ohne etwas zu löschen", Exit 1,
+    danach Postgres wieder healthy; T-110 Reboot → alle 6 Container,
+    ufw/cron/fail2ban/docker aktiv, `/healthz` intern OK, Boot-Log als
+    Zeuge geschrieben (jetzt mit OK-Zeile für Postgres).
+- **Offen/nicht ausgeführt:** T-063 Workspace-Selbsttest und
+  Template-Inventar (braucht User/Template in Coder), Restore-Probe mit
+  echter VM (T-080–T-083), vollständiger Reset-Pfad T-105,
+  DNS/ACME/Wildcard von außen (T-120–T-126) – auf diesem Host mangels
+  eigener Domain grundsätzlich nicht möglich; `healthz`-ROTs in den
+  Gates bleiben daher hier erwartbar. K3 (`pid: host`) unverändert offen.
+
+---
+
+
 ## 2026-09-28 – Erstlauf auf frischer Debian-13-VM: vier Defekte, behoben
 
 **Umfang:** erster echter Skriptlauf auf einem frisch neu aufgesetzten

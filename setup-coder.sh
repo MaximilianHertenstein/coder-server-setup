@@ -983,9 +983,22 @@ for c in coder-postgres coder coder-caddy coder-prometheus coder-node-exporter c
     echo "OK: ${c} läuft"
   fi
 done
-if [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null || echo none)" != "healthy" ]; then
-  echo "ROT: Postgres nicht healthy nach Boot"
+PG_HEALTH="none"
+# Postgres meldet "healthy" erst nach dem ersten Health-Probe (interval 5 s);
+# @reboot startet boot-check.sh Sekunden zuvor und läse ohne Wartezeit
+# "starting" – jedes Boot wäre ROT, obwohl der Stack gesund ist (Messung
+# 2026-09-28 auf dem Test-Host: T+0 s "starting", T+4 s "healthy"). Maximal
+# 120 s warten, danach ist das ROT echt (laufende DB wäre längst healthy).
+for _ in $(seq 1 24); do
+  PG_HEALTH="$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null || echo none)"
+  if [ "${PG_HEALTH}" = "healthy" ]; then break; fi
+  sleep 5
+done
+if [ "${PG_HEALTH}" != "healthy" ]; then
+  echo "ROT: Postgres nach Boot '${PG_HEALTH}' (120 s gewartet)"
   OK=false
+else
+  echo "OK: Postgres healthy nach Boot"
 fi
 DOMAIN=$(awk -F'[ ,{]+' '/\*.*\{/ {print $1; exit}' /opt/coder/Caddyfile 2>/dev/null || true)
 if [ -n "${DOMAIN:-}" ]; then
