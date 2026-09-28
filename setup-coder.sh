@@ -523,20 +523,111 @@ echo "# [3/10] Docker-Stack starten"
 echo "############################################################"
 cd /opt/coder
 
-# B-013-Preflights (lesend bis auf Daemon-Fail): belegter Port, toter Daemon und
-# volle Platte endeten bisher in set -e-Tod mit Roh-Fehlermeldung. Ports nur
-# WARN mit Prozess-Hinweis (eigene Container belegen 80/443 beim Re-Run zu
-# Recht); Daemon-Fail ist hart (früh + klar statt spät in Schritt 3); Platte
-# WARN ab 1 GB (grober Hinweis, kein Ersatz für D-Monitoring).
+# B-013-Preflights (lesend bis auf Daemon-Fail): toter Daemon und volle
+# Platte endeten bisher in set -e-Tod mit Roh-Fehlermeldung. Daemon-Fail ist
+# hart (früh + klar statt spät in Schritt 3); Platte WARN ab 1 GB (grober
+# Hinweis, kein Ersatz für D-Monitoring).
 if ! sudo docker info > /dev/null 2>&1; then
   echo "Fehler: Docker-Daemon antwortet nicht (docker info). Erst Daemon heilen, dann Setup erneut." >&2
   exit 1
 fi
-for _p in 80 443 9090 9100 3001; do
-  if sudo ss -tlnp 2>/dev/null | grep -Eq ":${_p}([^0-9]|$)"; then
-    warn "Port ${_p} belegt (B-013): $(sudo ss -tlnp 2>/dev/null | grep -E ":${_p}([^0-9]|$)" | head -n1 | tr -s ' ') – falls Fremd-Listener, vor 'up -d' aufräumen"
-  fi
+
+# B2-008: Der Port-Check matchte bislang nur den rohen ss-Output und warnte
+# deshalb bei jedem Re-Run zu Recht vor den eigenen Containern (Caddy 80/443,
+# 9090/9100/3001) – fünf WARN-Zeilen ohne Informationswert, in denen echte
+# Fremd-Konflikte untergingen. Jetzt: TCP (ss -tlnp) und UDP (ss -ulnp)
+# getrennt, denn ss -tlnp sieht UDP 443/QUIC nie. Eigene Bindings kommen aus
+# docker inspect je Projekt-Container (docker compose ps -q, Präfix coder-*),
+# der Vergleich ist exakt nach Host-IP:Host-Port (v4-Wildcard 0.0.0.0,
+# v6-Wildcard ::/*, Loopback/gebundene IPs nur identisch). Unterdrückt wird
+# ausschließlich ein exakter Treffer – jeder andere Listener auf den
+# geprüften Ports warnt mit Prozessname, auch bei Port-Gleichheit ohne
+# IP-Gleichheit.
+PORT_CHECK="80/tcp 443/tcp 443/udp 9090/tcp 9100/tcp 3001/tcp"
+OWN_PORT_KEYS=""
+for _cid in $(sudo docker compose ps -q 2>/dev/null || true); do
+  _cname="$(sudo docker inspect --format '{{.Name}}' "${_cid}" 2>/dev/null || true)"
+  _cname="${_cname#/}"
+  case "${_cname}" in
+    coder-*) ;;
+    *) continue ;;
+  esac
+  _pb="$(sudo docker inspect --format '{{.HostConfig.PortBindings}}' "${_cid}" 2>/dev/null || true)"
+  [ -n "${_pb}" ] || continue
+  # Go-formatiertes PortBinding: map[80/tcp:[{ 80}] 9090/tcp:[{127.0.0.1 9090}]]
+  # Leere Host-IP (wildcard) wird auf v4- UND v6-Wildcard aufgelöst.
+  _keys="$(printf '%s\n' "${_pb}" | awk '
+    {
+      line = $0
+      sub(/^map\[/, "", line)
+      sub(/\]$/, "", line)
+      while (match(line, /[0-9]+\/(tcp|udp):\[[^]]*\]/)) {
+        ent = substr(line, RSTART, RLENGTH)
+        line = substr(line, RSTART + RLENGTH)
+        i = index(ent, "/")
+        hp = substr(ent, 1, i - 1)
+        rest = substr(ent, i + 1)
+        j = index(rest, ":")
+        proto = substr(rest, 1, j - 1)
+        binds = substr(rest, j + 1)
+        sub(/^\[/, "", binds)
+        sub(/\]$/, "", binds)
+        while (match(binds, /\{[^}]*\}/)) {
+          b = substr(binds, RSTART + 1, RLENGTH - 2)
+          binds = substr(binds, RSTART + RLENGTH)
+          gsub(/^ +/, "", b)
+          gsub(/ +$/, "", b)
+          n = split(b, f, " +")
+          ip = (n >= 2) ? f[1] : ""
+          port = (n >= 2) ? f[2] : f[1]
+          if (ip == "" || ip == "0.0.0.0") printf "%s|v4*|%s\n", proto, port
+          if (ip == "" || ip == "::") printf "%s|v6*|%s\n", proto, port
+          if (ip != "" && ip != "0.0.0.0" && ip != "::") printf "%s|%s|%s\n", proto, ip, port
+        }
+      }
+    }' || true)"
+  OWN_PORT_KEYS="${OWN_PORT_KEYS}${_keys}"$'\n'
 done
+
+for _pr in tcp udp; do
+  if [ "${_pr}" = "tcp" ]; then
+    _ss_out="$(sudo ss -tlnp 2>/dev/null || true)"
+  else
+    _ss_out="$(sudo ss -ulnp 2>/dev/null || true)"
+  fi
+  while IFS= read -r _line; do
+    [ -n "${_line}" ] || continue
+    case "${_line}" in
+      State\ *) continue ;;
+    esac
+    _local="$(printf '%s\n' "${_line}" | awk '{print $4}')"
+    case "${_local}" in
+      *:*) ;;
+      *) continue ;;
+    esac
+    _port="${_local##*:}"
+    _ip="${_local%:*}"
+    _ip="${_ip#\[}"
+    _ip="${_ip%\]}"
+    case "${_ip}" in
+      0.0.0.0) _ip="v4*" ;;
+      "*" | "::") _ip="v6*" ;;
+    esac
+    case " ${PORT_CHECK} " in
+      *" ${_port}/${_pr} "*)
+        ;;
+      *)
+        continue ;;
+    esac
+    if printf '%s' "${OWN_PORT_KEYS}" | grep -qxF -- "${_pr}|${_ip}|${_port}"; then
+      continue
+    fi
+    _proc="$(printf '%s\n' "${_line}" | awk '{$1="";$2="";$3="";$4="";sub(/^ +/,"");print}')"
+    [ -n "${_proc}" ] || _proc="${_local} (Prozessname nicht lesbar)"
+    warn "Port ${_port}/${_pr} von fremdem Listener belegt (B2-008): ${_proc} – vor 'up -d' aufräumen"
+  done <<< "${_ss_out}"
+done
+
 if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' '); then
   if [ "${_avail}" -lt 1073741824 ]; then
     warn "Wenig Platte unter /opt/coder (${_avail} < 1 GB, grober Hinweis) – Images/Backups brauchen Luft (B-013)"
