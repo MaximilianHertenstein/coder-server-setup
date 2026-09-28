@@ -8,6 +8,37 @@ abgebrochen), `ai-review/PLAN-REVIEW.md` (P-001–P-025),
 
 Es wurde ausschließlich diese Datei erstellt/geändert. Keine Implementierung.
 
+## Ergänzung 2026-09-28 – Verhältnis zu `tests/` und PLAN-v3 (Quelle eindeutig)
+
+Diese Datei bleibt Master-Testmatrix (Entscheidung `ai-review/PLAN-v3.md`,
+Phase B, „Test-Source-of-Truth"). Das dort angekündigte B2-Delta wurde
+**nicht** in diese Datei nachgezogen – bis dahin gilt für den B2-Umfang
+zusätzlich die Phase-B-Matrix in PLAN-v3 (Übergangsregel steht dort, nicht
+hier). Zwei Quellen, klar zugeordnet:
+
+| Umfang | Wo |
+|---|---|
+| VM-/Integrationsmatrix (T-001 … T-126, mit VM-Artefakt-Pflicht) | diese Datei |
+| B2-Delta, lokal gefahrlos ausführbar (STATIC/UNIT-LIKE) | `tests/` – 8 Skripte, 251 Checks, Lauf 2026-09-28, 8× Exit 0 |
+| B2-Delta-Spezifikation (welcher Test welchen Fix deckt) | `ai-review/PLAN-v3.md`, Phase B |
+
+`tests/` ersetzt keinen VM-Test und belegt keinen Gesamtlauf; die
+VM-Pflichtigen Punkte stehen in `README.md`, Abschnitt „Nur auf einer
+Test-VM bzw. in Produktion zu verifizieren".
+
+Zwei gegenüber dem Stand vom 2026-09-26 abweichende Befunde, beide
+dokumentiert, kein neues Warning-Muster:
+
+- T-002, Hauptdatei: genau ein Befund (SC2034, `for i` in `setup-coder.sh`
+  Z.1247) statt der damals genannten Klasse SC1091/SC2034/SC2012.
+- T-002, Heredocs: zwei Warnungen statt „keine Meldungen" – SC2034 in
+  `update.sh` (vorbestehend) und SC2154 in `reset-passwords.sh`
+  (Fehlalarm, `rc` wird im `trap` zur Laufzeit zugewiesen); siehe
+  `ai-review/IMPLEMENTATION-REPORT.md`.
+
+Der Zeilenwert in der Kopfzeile (845) beschreibt den Stand vom 2026-09-26;
+`setup-coder.sh` hat am 2026-09-28 1881 Zeilen.
+
 ## Grundsätze
 
 1. **Nie auf Produktion.** Alle T-Tests laufen auf isolierter Test-VM

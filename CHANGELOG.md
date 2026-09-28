@@ -14,6 +14,42 @@ Stand: 2026-09-28 · aktueller Quellstand: `git log -1 --oneline`
 
 ---
 
+## 2026-09-28 – Release-QA (Doku-Fix, kein Code)
+
+**Umfang:** vollständige QA-Runde über den Branch-Stand; **keine** Änderung
+an `setup-coder.sh`, `ssh-harden.sh`, `tests/`, `ai-review/PLAN-v3*.md`.
+
+- **Geändert:** `ai-review/TEST_PLAN.md` – datierte Ergänzung, die die vom
+  Plan (Phase B, PV-015) zugesagte Delta-Verlinkung liefert: TEST_PLAN
+  bleibt die VM-Matrix, `tests/` ist der lokal ausführbare
+  B2-Delta-Harness, PLAN-v3 Phase B ist die B2-Spezifikation; dazu die
+  beiden gegenüber 2026-09-26 abweichenden, bereits dokumentierten
+  T-002-Befunde (SC2034 in `setup-coder.sh` Z.1247; SC2034/SC2154 in den
+  extrahierten Heredocs).
+  Ursache: das in PLAN-v3 angekündigte „Delta nachziehen" wurde nie
+  geschrieben, `TEST_PLAN` enthielt keinen Verweis auf `tests/`.
+- **Tatsächlich ausgeführt am 2026-09-28:** `git status`/`git diff` sauber
+  (Arbeitsverzeichnis unverändert, keine unverfolgten Dateien);
+  `bash -n` über `setup-coder.sh`, `ssh-harden.sh` und alle 8 Testskripte →
+  0 Befunde; `shellcheck -S warning -s bash` Hauptdatei → genau 1 Befund
+  (SC2034 Z.1247), `ssh-harden.sh` und `tests/*.sh` → 0 Befunde,
+  extrahierte Shell-Heredocs (4) → SC2034 `update.sh` + SC2154
+  `reset-passwords.sh` (beide dokumentiert); alle 8 Testskripte → 8× Exit 0,
+  251 `PASS`, 0 `FAIL` (je Datei: 6/16/64/61/16/37/26/25); Link-Check über
+  36 Markdown-Dateien → 0 tote Verweise; aus dem `docker-compose.yml`-
+  Heredoc extrahierte Datei (Platzhalter substituiert) →
+  `docker compose config --quiet` Exit 0; Token-/Key-/Private-Key-Muster-
+  Scan über alle verfolgten Dateien → kein Treffer; Dateirechte
+  (`tests/*` und `ssh-harden.sh` 755, `setup-coder.sh` 644 mit `chmod +x`
+  im README-Schnellstart) und kein Testrückstand im Arbeitsverzeichnis
+  geprüft.
+- **Nicht geprüft (keine Umgebung dafür):** alles unter VM-/Produktions-
+  Pflicht – siehe `README.md`, Abschnitt „Nur auf einer Test-VM bzw. in
+  Produktion zu verifizieren"; das Phase-C-VM-Gate und der RTO-Wert
+  bleiben offen.
+
+---
+
 ## 2026-09-28 – Dokumentationsabschluss
 
 **Umfang:** Dokumentation auf den tatsächlich implementierten Stand gebracht.
