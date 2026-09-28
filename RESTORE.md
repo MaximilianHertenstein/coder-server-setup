@@ -1,6 +1,6 @@
 # RESTORE.md – Wiederherstellungs-Runbook (F-003)
 
-Stand: 2026-09-26. Status: Verfahrenstiefe 1 (manuell, aber festgelegt).
+Stand: 2026-09-28. Status: Verfahrenstiefe 1 (manuell, aber festgelegt).
 Noch NICHT geprobt (keine Test-VM verfügbar) – RTO unbekannt, siehe BLOCKER.
 Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 
@@ -22,6 +22,22 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
    verschlüsseltem Offsite nach B-02) oder Wissen, dass ein Neuaufbau neue
    Passwörter würfelt (dann Pfad B unten).
 3. Frische Debian-13-VM + dieses Repo (getesteter Commit).
+4. **Restore-Sonde im Quellsystem vor dem zu probenden Backup** – ohne sie
+   meldet Pfad A Schritt 5 nachher rot (Zählung `0`/fehlende Tabelle gilt
+   nicht als Erfolg). Genau eine Zeile je Backup-Datum, Wiederholung
+   desselben Tages überschreibt statt zu verdoppeln:
+
+   `AAAA-MM-JJ` = Datum des Backup-Laufes, den man später einspielt.
+
+   ```bash
+   sudo docker exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder \
+     -c "CREATE TABLE IF NOT EXISTS restore_probe(id serial primary key, marker text)" \
+     -c "DELETE FROM restore_probe WHERE marker='RTO-PROBE-AAAA-MM-JJ'" \
+     -c "INSERT INTO restore_probe(marker) VALUES ('RTO-PROBE-AAAA-MM-JJ')"
+   ```
+
+   Erst danach das Backup anstoßen (automatischer Tageslauf oder
+   `backup.sh`), damit die Sonde im Dump steckt.
 
 ## Pfad A – Dump + originale `.env` vorhanden
 
@@ -31,13 +47,32 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 4. Dump einspielen (B-008: eine Variante, kein „Fehlerprotokoll lesen"):
    `sudo docker exec coder-postgres dropdb -U coder --if-exists coder \
      && sudo docker exec coder-postgres createdb -U coder -O coder coder \
-     && zcat coder_<TS>.sql.gz | sudo docker exec -i coder-postgres psql -U coder -d coder`
+     && zcat coder_<TS>.sql.gz | sudo docker exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder`
+   `ON_ERROR_STOP=1` steht als `psql`-Option **vor** `-U`: bei jedem SQL-Fehler
+   (fehlerhafte `CREATE TABLE`-Zeile, fehlende Extension, Versionsdrift) exitt
+   `psql` ≠ 0, die `&&`-Kette bricht ab. **STOPP bei Exit ≠ 0** – Fehlermeldung
+   lesen, Schritt 5 NICHT ausführen (kein `up -d`, kein grüner Restore). Bei
+   automatisierter Kette zusätzlich `set -o pipefail`, sonst läuft ein
+   fehlschlagendes `zcat` still durch.
    (Passwort aus `.env`; `dropdb`/`createdb` räumt das frische Leer-Schema weg,
    statt an bestehendem `CREATE TABLE` zu scheitern. Alternative mit gleichem
    Ergebnis: `pg_restore --clean --if-exists`, falls im Custom-Format gesichert.)
-5. `sudo docker compose -f /opt/coder/docker-compose.yml up -d`, Postgres
-   healthy abwarten, Coder-Login prüfen (`/healthz` 200 + Dashboard-Login).
-6. Zeit stoppen = RTO, ins Protokoll (Datum, Versionen, Dump-Alter).
+5. Stack hochfahren und **zweistufig** prüfen – Liveness ≠ wiederhergestellte
+   Daten: `sudo docker compose -f /opt/coder/docker-compose.yml up -d`, Postgres
+   healthy abwarten, dann:
+   - **Datenprobe (hart, Pflicht):**
+
+     `sudo docker exec coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder -tAc "SELECT count(*) FROM restore_probe WHERE marker='RTO-PROBE-AAAA-MM-JJ'"`
+
+     muss `1` liefern. `0` (leere bzw. frisch erzeugte DB), `>1` oder
+     psql-Fehler (Relation `restore_probe` fehlt, weil ohne Sonde gebackupt)
+     ⇒ **Restore NICHT anerkennen**, rot bleiben, Dump/Verfahren prüfen.
+   - **Liveness:** `/healthz` liefert 200, `SELECT 1` liefert `1`.
+   - **Inhalt:** Dashboard-Login zeigt die wiederhergestellten Bestandsdaten
+     aus dem Dump (Nutzer/Workspaces), nicht nur HTTP 200.
+   `SELECT 1`/`/healthz` allein sind **keine** Restore-Bestätigung.
+6. Zeit stoppen = RTO, ins Protokoll (Datum, Versionen, Dump-Alter,
+   Datenprobe = 1).
 
 ## Pfad B – nur Dump, `.env` verloren
 
@@ -63,6 +98,6 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 Nach jedem Coder-Major-Update und einmal pro Semester auf Test-VM proben,
 RTO-Zahl hier eintragen:
 
-| Datum | Coder-Version | Dump-Alter | RTO | Login ok |
-|---|---|---|---|---|
-| _offen_ | – | – | – | – |
+| Datum | Coder-Version | Dump-Alter | RTO | Datenprobe = 1 | Login ok |
+|---|---|---|---|---|---|
+| _offen_ | – | – | – | – | – |
