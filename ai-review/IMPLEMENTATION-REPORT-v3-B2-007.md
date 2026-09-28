@@ -67,7 +67,7 @@ alte Verhalten behauptet (Doku-Gate: Kommentare synchron halten).
 ## Testdefinition
 
 `tests/t-b2-007-drift-hash.sh` (neu, ausfuehrbar, nur /tmp, kein Docker,
-keine Produktion) – STATIC + UNIT-LIKE, 45 Checks:
+keine Produktion) – STATIC + UNIT-LIKE, 37 Checks:
 
 - Struktur: 15 `note_drift` + 15 `remember_hash`, je Pfad
   `note_drift < tee < remember_hash`, `chmod < remember_hash` wo vorhanden,
@@ -92,7 +92,7 @@ Setup-Abbruch auf Test-VM (a) Abbruch nach Schritt 2, (b) Hand-Drift,
 2. `setup-coder.sh` (Schritt 10): Hash-Schleife entfernt, durch
    Kommentar zum neuen Commit-Ort ersetzt.
 3. `setup-coder.sh` (B-012-Kommentar): Commit-Ort dokumentiert.
-4. `tests/t-b2-007-drift-hash.sh` (neu, ausfuehrbar, 45 Checks).
+4. `tests/t-b2-007-drift-hash.sh` (neu, ausfuehrbar, 37 Checks).
 5. `ai-review/IMPLEMENTATION-REPORT-v3-B2-007.md` (neu, diese Datei).
 
 Diff-Kontrolle: `git diff --numstat setup-coder.sh` = 28/10, ausschliesslich
@@ -112,7 +112,7 @@ Basis-Commit `7373bd2` + Arbeitskopie:
    identisch zur Baseline: kein neuer Befund.
 4. `shellcheck -S warning tests/t-b2-007-drift-hash.sh` -> keine Befunde
    (Exit 0).
-5. `./tests/t-b2-007-drift-hash.sh` -> Exit 0, 45x PASS,
+5. `./tests/t-b2-007-drift-hash.sh` -> Exit 0, 37x PASS,
    `T-B2-007: ALLE PRUEFUNGEN BESTANDEN`.
 6. Regressionslauf aller bisherigen Artefakte -> je Exit 0:
    `./tests/t-071b-headercheck.sh` (B2-001),
@@ -143,7 +143,7 @@ Tool-Versionen: bash 5.3.15, ShellCheck 0.11.0, Git-Basis `7373bd2`.
 # Files Changed
 
 - `setup-coder.sh` (M, 28/10, nur B2-007-Zonen)
-- `tests/t-b2-007-drift-hash.sh` (neu, ausfuehrbar, 45 Checks)
+- `tests/t-b2-007-drift-hash.sh` (neu, ausfuehrbar, 37 Checks)
 - `ai-review/IMPLEMENTATION-REPORT-v3-B2-007.md` (neu, diese Datei)
 
 # Related Finding
