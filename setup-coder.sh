@@ -1483,13 +1483,6 @@ else
   fi
 fi
 
-echo "Stoppe Container (caddy_data/caddy_config bleiben unangetastet)..."
-echo "B-020: Falls im Inventar oben fremde Container standen (Workspace-Reste):"
-echo "jetzt Namen notieren – nach 'down' sind Compose-Container weg, verwaiste"
-echo "Workspace-Container stehen ggf. noch und müssen von Hand aufgeräumt werden"
-echo "(docker ps -a). Der Reset löscht sie NICHT automatisch."
-docker compose down --remove-orphans
-
 echo "Ermittle Datenbank-, Grafana- und Prometheus-Volumes (Projekt: ${PROJECT})..."
 # F-004/P-016: Filter um project-Label eingeschränkt (generische volume-Namen
 # kollidieren sonst mit jedem zweiten Stack), Treffer anzeigen, zeilenweise
@@ -1509,22 +1502,44 @@ done
 
 if [ -z "${VOLUMES_TO_DELETE//[$'\n ']/}" ]; then
   echo "Fehler: kein einziges Compose-Volume für project=${PROJECT} gefunden (Label-Mismatch?)." >&2
-  echo "Abbruch VOR '.env'-Löschung – Stack ist gestoppt, aber Daten und .env sind intakt ('docker compose up -d' stellt wieder her)." >&2
+  echo "Abbruch – nichts angefasst: Stack läuft weiter, Volumes und .env sind unverändert." >&2
   exit 1
 fi
 
-# B-016/B-020-Pre-Check (lesend, vor Zerstörung): hängt an einem zu löschenden
-# Volume noch ein Container (fremder Workspace, paralleler Lauf), bricht
-# "volume rm" unter set -e mitten in der Teillöschung ab – weder alt noch neu
-# lauffähig. Daher: Abbruch VOR dem ersten rm (fail-closed wie Leer-Guard).
+# B-016/B-020-Pre-Check + B2-006 (lesend, VOR dem 'down'): hängt an einem zu
+# löschenden Volume noch ein Container (fremder Workspace, paralleler Lauf),
+# bricht "volume rm" unter set -e mitten in der Teillöschung ab – weder alt
+# noch neu lauffähig. Vor v2 stand "down" VOR diesem Check: bei Treffer war der
+# Stack bereits halb zerlegt (Container weg, Netz weg, Cron-Backup im Fenster
+# rot), obwohl Daten und .env intakt waren. Jetzt bricht das Skript ab, solange
+# ALLES noch läuft – Erwartung: belegtes Volume -> Abbruch vor 'down', alle
+# Container laufen weiter.
+# Projekt-eigene Container zählen NICHT als Beleg: 'down' stoppt sie selbst,
+# sie sind kein Hindernis für die spätere volume rm. Geprüft werden nur
+# Nicht-Projekt-Container (fremde Workspaces), die das Volume auch nach 'down'
+# weiterhin halten würden. Ohne diese Einschränkung würde jeder Re-Run auf
+# laufendem Stack abbrechen, weil coder-postgres postgres_data hält (gemessen:
+# "docker ps -a --filter volume=<name>" findet laufende Container). "-q"
+# fehlt absichtlich neben "--format": docker ignoriert --format bei -q
+# ("Ignoring custom format, because both --format and --quiet are set"), das
+# Label käme nie an und auch Projekt-Container würden als Beleg zählen.
 while IFS= read -r VOL_NAME; do
   [ -n "${VOL_NAME}" ] || continue
-  if USERS=$(docker ps -aq --filter "volume=${VOL_NAME}" 2>/dev/null) && [ -n "${USERS:-}" ]; then
+  if USERS=$(docker ps -a --filter "volume=${VOL_NAME}" \
+      --format '{{.ID}} {{.Label "com.docker.compose.project"}}' 2>/dev/null \
+      | awk -v p="${PROJECT}" '$2 != p {print $1}') && [ -n "${USERS:-}" ]; then
     echo "Fehler: Volume ${VOL_NAME} wird noch von Container(n) benutzt: $(echo "${USERS}" | tr '\n' ' ')" >&2
-    echo "Abbruch VOR Volume-Löschung – nichts gelöscht, .env intakt ('docker compose up -d' stellt wieder her; Fremd-Container erst aufräumen)." >&2
+    echo "Abbruch VOR 'docker compose down' – nichts angefasst: alle Container laufen weiter, Volumes und .env sind unverändert (fremde Container erst aufräumen, dann Reset erneut)." >&2
     exit 1
   fi
 done <<< "${VOLUMES_TO_DELETE}"
+
+echo "Stoppe Container (caddy_data/caddy_config bleiben unangetastet)..."
+echo "B-020: Falls im Inventar oben fremde Container standen (Workspace-Reste):"
+echo "jetzt Namen notieren – nach 'down' sind Compose-Container weg, verwaiste"
+echo "Workspace-Container stehen ggf. noch und müssen von Hand aufgeräumt werden"
+echo "(docker ps -a). Der Reset löscht sie NICHT automatisch."
+docker compose down --remove-orphans
 
 while IFS= read -r VOL_NAME; do
   [ -n "${VOL_NAME}" ] || continue
