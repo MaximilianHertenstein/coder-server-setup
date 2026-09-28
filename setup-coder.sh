@@ -242,13 +242,24 @@ elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   && sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   && sudo grep -qE '^DOCKER_GID=[0-9]+$' /opt/coder/.env; then
   echo "/opt/coder/.env existiert bereits und ist vollständig – wird nicht überschrieben."
-  # B-014: Hex-Validierung fail-closed (auch im Setup-Re-Run). Nicht-Hex-Werte
-  # brechen ALTER USER/grafana-cli/Connection-URL still – Abweisung mit
-  # Reparaturweg statt Korruption.
+  # B2-003: Newline/NUL im .env-Wert hart abweisen, bevor der Werteparitäts-
+  # Check grün meldet. Ein Hand-Edit kann den Wert über eine zweite Zeile
+  # fortsetzen; grep/cut und docker compose lesen dann nur die erste Zeile.
+  if [ "$(sudo sh -c 'LC_ALL=C tr -d -c "\000" < /opt/coder/.env | wc -c')" -ne 0 ] \
+    || sudo grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' /opt/coder/.env; then
+    echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
+    echo "Reparatur: .env-Wert manuell auf einzeiliges Hex (openssl rand -hex 24/16) setzen, per ALTER USER + grafana-cli angleichen (Schrittfolge im Runbook), danach Setup erneut." >&2
+    exit 1
+  fi
+  # B-014/B2-003: Hex-Validierung bleibt fail-closed (auch im Setup-Re-Run),
+  # Nicht-Hex-Werte brechen ALTER USER/grafana-cli/Connection-URL. Der Verweis
+  # auf reset-passwords.sh ist nach B2-003 ehrlich: jenes akzeptiert Legacy-
+  # .env lesend und würfelt Hex nach – genau ein grüner Weg statt Pingpong
+  # (zuvor wies Reset auf sich selbst und Setup auf Reset: beides Endstation).
   if ! sudo grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
     || ! sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
-    echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter (Sonderzeichen/Quotes brechen Reset/URL)." >&2
-    echo "Reparatur: sudo /opt/coder/reset-passwords.sh (würfelt belegbar sichere Hex-Passwörter), danach Setup erneut." >&2
+    echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter." >&2
+    echo "Reparatur: erst sudo /opt/coder/reset-passwords.sh laufen lassen (migriert Legacy lesend nach Hex), danach Setup erneut." >&2
     exit 1
   fi
 else
@@ -1207,15 +1218,20 @@ if ! grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' .env || ! grep -qE '^DOCKER_GID
   echo "Fehler: /opt/coder/.env ist unvollständig. Erst reparieren (setup-coder.sh meldet wie), dann erneut." >&2
   exit 1
 fi
-# B-014: Hex-Validierung fail-closed. Nur [0-9a-f] ist durch ALTER USER
-# '${PW}', grafana-cli "..." und die Postgres-Connection-URL belegbar sicher;
-# Hand-Edits mit Sonderzeichen/Quotes würden dort still brechen. Abweisung mit
-# Anleitung statt stiller Korruption (Sonderzeichen-Probe: muss abweisen).
-if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' .env || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' .env; then
-  echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter (Sonderzeichen/Quotes brechen ALTER USER/grafana-cli/URL)." >&2
-  echo "Reparatur: sudo /opt/coder/reset-passwords.sh (würfelt belegbar sichere Hex-Passwörter), danach erneut." >&2
+# B2-003: Newline/NUL im .env-Wert hart abweisen, kein stilles Trimmen. Ein
+# Hand-Edit kann den Wert über eine zweite Zeile fortsetzen; die "grep|cut"-
+# Zeile unten läse nur die erste Zeile und würde das alte Passwort still kürzen.
+if [ "$(LC_ALL=C tr -d -c '\000' < .env | wc -c)" -ne 0 ] \
+  || grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' .env; then
+  echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
+  echo "Reparatur: .env-Wert manuell auf einzeiliges Hex (openssl rand -hex 24/16) setzen, per ALTER USER + grafana-cli angleichen (Schrittfolge im Runbook), danach Setup erneut." >&2
   exit 1
 fi
+# B2-003: ALT (unten ausgelesen) darf Legacy sein – Sonderzeichen, Quotes,
+# Space, führendes "-", Backtick. Fail-closed bleibt für unvollständige .env
+# (oben) und für nicht-Hex NEU (unten, nach dem Würfeln). Die frühere Hex-
+# Prüfung der gesamten .env blockierte Legacy-Systeme vor JEDER Rotation, ohne
+# dass das Setup-Gate sie je durchließ: kein dokumentierter Ausweg.
 
 for c in coder-postgres coder-grafana; do
   if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
@@ -1256,18 +1272,44 @@ OLD_PG_PW=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
 # enthalten, das in der Postgres-Connection-URL Probleme machen würde.
 NEW_PG_PW=$(openssl rand -hex 24)
 NEW_GF_PW=$(openssl rand -hex 16)
+# B2-003: Fail-closed für nicht-Hex NEU, BEVOR DB/Grafana/.env angerührt wird.
+# openssl -hex liefert immer Hex; die Prüfung ist die harte Grenze, falls hier
+# je ein anderes Zeichenset gewählt würde (sonst brechen SQL-/Shell-Quoting und
+# die Postgres-Connection-URL still).
+case "${NEW_PG_PW}${NEW_GF_PW}" in
+  ''|*[!0-9a-f]*)
+    echo "Fehler: Neuwürfelung lieferte kein Hex – Abbruch ohne Änderung." >&2
+    exit 1
+    ;;
+esac
 
 echo "Setze neues Postgres-Passwort..."
 PHASE="Postgres-ALTER-USER"
-# Übergabe über STDIN statt "docker exec -e PGPASSWORD=...": Alles, was auf
-# der docker-exec-Kommandozeile steht, ist auf dem Host für jeden lokalen
-# Benutzer über "ps aux" sichtbar (Kommandozeilen-Argumente sind grundsätzlich
-# kein sicherer Weg für Geheimnisse). Per STDIN taucht weder das alte noch
-# das neue Passwort dort auf.
-docker exec -i coder-postgres sh <<INNER_EOF
-export PGPASSWORD="${OLD_PG_PW}"
-psql -U coder -d coder -c "ALTER USER coder WITH PASSWORD '${NEW_PG_PW}';"
+# B2-003: ALT darf Legacy sein (Sonderzeichen, Quotes, Space, führendes "-",
+# Backtick), NEU ist ausschließlich Hex. Secret-Architektur:
+# - ALT-Heredoc QUOTIERT: auf dem Host wird nichts expandiert, der Container-
+#   Text bleibt roher Skriptcode. Ein unquotiertes Heredoc (zuvor) hätte
+#   Legacy-Zeichen als Shell-Code geliefert: "$Pass" weg, Backtick ausgeführt,
+#   eingebrochenes Quote zerlegt die export-/psql-Zeile.
+# - Beide Passwörter ausschließlich als Env-Wert über STDIN
+#   (printf | ... sh -c -> read -> export). Nie in SQL/URL interpoliert, nie
+#   als docker-exec-Argument (statt "docker exec -e PGPASSWORD=..."), also
+#   weder über "ps aux" noch über "docker inspect" sichtbar.
+# - "sh -c" statt des im Plan genannten "sh -s": Skript und Daten dürfen nicht
+#   auf einem stdin liegen, sonst liefert die Shell die Datenzeilen an den
+#   Parser statt an "read". Gemessen in postgres:15-alpine (busybox ash):
+#   "sh -s" parst die Datenzeile als Kommando, rc=127; ein Heredoc als stdin
+#   lässt die Daten gar nicht erst ankommen. "read -rs" wird dort ebenfalls
+#   belegt (lokal geprüft).
+# - NEU wird als Container-Variable gelesen: [0-9a-f] kann Shell-/SQL-Quoting
+#   nicht aufbrechen.
+printf '%s\n' "${OLD_PG_PW}" "${NEW_PG_PW}" | docker exec -i coder-postgres sh -c "$(cat <<'INNER_EOF'
+read -rs OLD_PG_PW
+read -rs NEW_PG_PW
+export PGPASSWORD="$OLD_PG_PW"
+psql -U coder -d coder -c "ALTER USER coder WITH PASSWORD '$NEW_PG_PW';"
 INNER_EOF
+)"
 
 # Verifikation mit dem NEUEN Passwort (gleiches STDIN-Muster, kein ps-Leak):
 # schlägt das fehl, bricht das Skript ab, BEVOR .env angefasst wird.
