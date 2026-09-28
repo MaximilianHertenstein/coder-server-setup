@@ -112,6 +112,11 @@ check_container_running() {
 # retention.size, Caddy-Snippets, recidive-Jails, Cron-Zeiten), steht das als
 # WARN in der SUMMARY. Erwartungswerte liegen in /opt/coder/.generated-hashes
 # (nur root, 600). Kein interaktiver Stopp (Idempotenz bleibt).
+# Commit-Ort (B2-007): remember_hash steht unmittelbar NACH jedem
+# Schreib-/Chmod-Schritt der jeweiligen Datei, nicht hier vor dem Schreiben
+# und nicht mehr gebündelt in Schritt 10 – sonst committet ein abgebrochener
+# Lauf entweder den Hash der ALTEN Datei oder lässt veraltete Hashes zurück,
+# und der nächste Lauf meldet Operator-Drift für setup-eigene Residuen.
 HASHSTORE="/opt/coder/.generated-hashes"
 note_drift() {
   local file="$1" label="$2" cur="" exp=""
@@ -436,6 +441,7 @@ volumes:
   prometheus_data:
   grafana_data:
 EOF
+remember_hash "/opt/coder/docker-compose.yml"
 
 # Caddyfile – echtes, öffentlich vertrauenswürdiges Let's-Encrypt-Zertifikat,
 # inkl. Wildcard-Subdomain für Coder-Workspace-Apps (Port-Forwarding,
@@ -494,6 +500,7 @@ ${DOMAIN_CODER}, *.${DOMAIN_CODER} {
     }
 }
 EOF
+remember_hash "/opt/coder/Caddyfile"
 
 # prometheus.yml
 note_drift "/opt/coder/prometheus.yml" "prometheus.yml"
@@ -509,6 +516,7 @@ scrape_configs:
     static_configs:
       - targets: ['node-exporter:9100']
 EOF
+remember_hash "/opt/coder/prometheus.yml"
 
 echo "############################################################"
 echo "# [3/10] Docker-Stack starten"
@@ -611,6 +619,7 @@ maxretry = 5
 findtime = 10m
 bantime  = 1h
 EOF
+remember_hash "/etc/fail2ban/jail.local"
 # P-025: "restart" bei jedem Lauf verwirft aktive Bans (Angreifer per Re-Run
 # entbannt). Daher: nur bei geänderter jail.local neu laden (reload statt
 # restart, mit restart als Fallback), sonst nur sicherstellen, dass der Dienst
@@ -724,6 +733,7 @@ sudo tee /etc/apt/apt.conf.d/52-coder-reboot > /dev/null <<'EOF'
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "03:00";
 EOF
+remember_hash "/etc/apt/apt.conf.d/52-coder-reboot"
 
 sudo systemctl status unattended-upgrades --no-pager || true
 
@@ -806,11 +816,13 @@ else
 fi
 EOF
 sudo chmod +x /opt/coder/boot-check.sh
+remember_hash "/opt/coder/boot-check.sh"
 note_drift "/etc/cron.d/coder-bootcheck" "coder-bootcheck-Cron"
 sudo tee /etc/cron.d/coder-bootcheck > /dev/null <<'EOF'
 @reboot root /opt/coder/boot-check.sh >> /var/log/coder-boot.log 2>&1
 EOF
 sudo chmod 644 /etc/cron.d/coder-bootcheck
+remember_hash "/etc/cron.d/coder-bootcheck"
 if [ -x /opt/coder/boot-check.sh ] && [ -f /etc/cron.d/coder-bootcheck ]; then
   ok "Lesendes Boot-Gate installiert (/opt/coder/boot-check.sh, @reboot)"
 else
@@ -835,11 +847,13 @@ echo "TLS-Ausstellungen letzte 7 Tage (Caddy-Log, 'obtaining certificate'): ${CO
 logger -t coder-tls "Ausstellungen/7d: ${COUNT}" || true
 EOF
 sudo chmod +x /opt/coder/check-tls.sh
+remember_hash "/opt/coder/check-tls.sh"
 note_drift "/etc/cron.d/coder-tlscheck" "coder-tlscheck-Cron"
 sudo tee /etc/cron.d/coder-tlscheck > /dev/null <<'EOF'
 30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1
 EOF
 sudo chmod 644 /etc/cron.d/coder-tlscheck
+remember_hash "/etc/cron.d/coder-tlscheck"
 if [ -x /opt/coder/check-tls.sh ] && [ -f /etc/cron.d/coder-tlscheck ]; then
   ok "TLS-Erkennung installiert (/opt/coder/check-tls.sh, wöchentlich Mo 06:30)"
 else
@@ -969,6 +983,7 @@ if [ "${#NEWEST[@]}" -gt "${KEEP}" ]; then
 fi
 EOF
 sudo chmod +x /opt/coder/backup.sh
+remember_hash "/opt/coder/backup.sh"
 
 # Falls von einer früheren Skript-Version noch ein Eintrag in der
 # Root-Crontab existiert (dieses Skript nutzte anfangs "crontab -e"): erst
@@ -1002,6 +1017,7 @@ sudo tee /etc/cron.d/coder-backup > /dev/null <<'EOF'
 0 1 * * * root /opt/coder/backup.sh >> /var/log/coder-backup.log 2>&1
 EOF
 sudo chmod 644 /etc/cron.d/coder-backup
+remember_hash "/etc/cron.d/coder-backup"
 
 # P-007: Backup-Log ohne Rotation wächst als Root-Log unbegrenzt.
 note_drift "/etc/logrotate.d/coder-backup" "coder-backup-logrotate"
@@ -1016,6 +1032,7 @@ sudo tee /etc/logrotate.d/coder-backup > /dev/null <<'EOF'
 }
 EOF
 sudo chmod 644 /etc/logrotate.d/coder-backup
+remember_hash "/etc/logrotate.d/coder-backup"
 
 if [ -f /etc/cron.d/coder-backup ] && grep -qF "/opt/coder/backup.sh" /etc/cron.d/coder-backup; then
   ok "Täglicher Backup-Cronjob ist eingetragen (01:00 Uhr, /etc/cron.d/coder-backup)"
@@ -1172,6 +1189,7 @@ echo "Update-Gate grün: alle Container laufen, Postgres healthy, /healthz via C
 # Setup-Skript erneut ausführen, ein einfaches "update.sh" reicht dafür nicht.
 EOF
 sudo chmod +x /opt/coder/update.sh
+remember_hash "/opt/coder/update.sh"
 
 # Falls ein früherer Lauf einen automatischen Update-Cronjob angelegt hat:
 # entfernen, weil Updates jetzt bewusst manuell laufen sollen.
@@ -1361,6 +1379,7 @@ echo "  (stehen auch in /opt/coder/.env, nur für root lesbar)"
 echo "------------------------------------------------------------"
 EOF
 sudo chmod +x /opt/coder/reset-passwords.sh
+remember_hash "/opt/coder/reset-passwords.sh"
 
 if [ -x /opt/coder/reset-passwords.sh ]; then
   ok "reset-passwords.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-passwords.sh"
@@ -1559,6 +1578,7 @@ echo "  docker ps -a  # von Hand aufräumen, sonst Namens-/Port-Konflikte"
 echo "------------------------------------------------------------"
 EOF
 sudo chmod +x /opt/coder/reset-coder.sh
+remember_hash "/opt/coder/reset-coder.sh"
 
 if [ -x /opt/coder/reset-coder.sh ]; then
   ok "reset-coder.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-coder.sh"
@@ -1570,16 +1590,14 @@ echo "############################################################"
 echo "# [10/10] Abschlusscheck & Zusammenfassung"
 echo "############################################################"
 
-# B-012: Erwartungswerte für den nächsten Re-Run-Driftvergleich festschreiben
-# (nach allen Schreibstellen, ein Block statt 15 Einzelstellen – gleiche Semantik).
-for _f in /opt/coder/docker-compose.yml /opt/coder/Caddyfile /opt/coder/prometheus.yml \
-  /etc/fail2ban/jail.local /etc/apt/apt.conf.d/52-coder-reboot \
-  /opt/coder/boot-check.sh /etc/cron.d/coder-bootcheck \
-  /opt/coder/check-tls.sh /etc/cron.d/coder-tlscheck \
-  /opt/coder/backup.sh /etc/cron.d/coder-backup /etc/logrotate.d/coder-backup \
-  /opt/coder/update.sh /opt/coder/reset-passwords.sh /opt/coder/reset-coder.sh; do
-  remember_hash "${_f}"
-done
+# B-012/B2-007: Der Schritt-10-Block, der hier alle 15 Hashes auf einmal
+# nachgezogen hat, ist entfernt. remember_hash steht jetzt an jeder Schreib-
+# stelle direkt nach erfolgreichem tee/chmod – ein Abbruch vor Schritt 10
+# hinterlässt damit keine veralteten Hashes mehr, die im nächsten Lauf eine
+# Fehl-Warnung ("Operator-Drift") für setup-eigene Residuen auslösen.
+# Residueller, dokumentierter Restpfad: Kill genau zwischen Schreiben und
+# remember_hash -> einmalige Fehl-WARN im Folgelauf, kein Datenverlust,
+# der nächste grüne Lauf heilt den Hashstore.
 
 check_container_running "coder-postgres" "Postgres-Container"
 check_container_running "coder" "Coder-Container"
