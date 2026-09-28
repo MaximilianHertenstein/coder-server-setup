@@ -84,6 +84,26 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 3. Grafana-Admin-Passwort ist neu (Setup-Wert) – notieren, Dashboards ggf. neu.
 4. Verifikation + RTO wie Pfad A Schritt 5–6.
 
+## Negative Befunde und Fehlerfälle
+
+Nichts davon gilt als erfolgreicher Restore. Im Zweifel rot bleiben und
+das Protokoll führen, nicht die Prüfung streichen.
+
+| Befund | Bedeutung | Weitere Schritte |
+|---|---|---|
+| `gzip -t` des Dumps schlägt fehl | Dump defekt | Diesen Dump verwerfen, älteren Dump nehmen; Ursache klären (Platte, Abbruch) |
+| Import exitt ≠ 0 (`ON_ERROR_STOP=1`) | Dump/Schema/Versionsproblem | **STOPP**: kein Schritt 5, kein `up -d`, Fehlermeldung lesen, neuen Anlauf |
+| Datenprobe ≠ `1` (0, >1, psql-Fehler) | leer, doppelt oder ohne Sonde gebackupt | Restore nicht anerkennen, Dump/Verfahren prüfen, Sonde vor dem nächsten Probe-Backup setzen |
+| Postgres nach `up -d` nicht `healthy` | Stack nicht hochgefahren | `docker logs coder-postgres`; Liveness zählt hier nichts, erst recht nicht ohne Datenprobe |
+| `/healthz` 200, aber Dashboard zeigt keine Bestandsdaten | falscher/leerer Inhalt | Prüfen, welcher Dump eingespielt wurde; Login-200 ist **keine** Bestätigung |
+| `.env` fehlt oder ist unvollständig | Passwörter weg | Pfad B (Neuaufbau mit neuen Passwörtern) bzw. `.env.bak.*`; nicht still neu würfeln |
+| Coder-Version neu als die des Dumps | Schema-Migration evtl. irreversibel | Nur auf gleiche/kleinere Version zurück; Major-Wechsel einzeln mit frischem Dump |
+| Kein/kein belastbares Backup vorhanden | kein Restore möglich | Offsite-Status prüfen ([README.md](README.md)); ehrlich als Datenverlust führen, nichts beschönigen |
+
+Wiederherstellungen im laufenden Betrieb (`reset-passwords.sh`,
+`reset-coder.sh`) sind **kein** Ersatz für diesen Ablauf – sie erzeugen
+keinen Datenstand aus einem Dump.
+
 ## Coder-Migrationen / Workspace-Reste
 
 - Coder migriert sein Schema beim Start selbst; Downgrades können irreversibel
@@ -101,3 +121,15 @@ RTO-Zahl hier eintragen:
 | Datum | Coder-Version | Dump-Alter | RTO | Datenprobe = 1 | Login ok |
 |---|---|---|---|---|---|
 | _offen_ | – | – | – | – | – |
+
+## Verwandte Dokumentation
+
+- [README.md](README.md) – Einstieg, Voraussetzungen, was nur auf Test-VM/Produktion zu prüfen ist
+- [OPERATIONS.md](OPERATIONS.md) – Backup-Steckbrief, Logs, Wartung
+- [SECURITY.md](SECURITY.md) – Secrets-Rotation (`.env`, `reset-passwords.sh`)
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) – Abschnitt F (Restore-Fehlerbilder)
+- [CHANGELOG.md](CHANGELOG.md) – Stand dieser Datei und offene Punkte
+
+Diese Datei wird vom Setup nach `/opt/coder/RESTORE.md` kopiert
+(`B-008`), damit Verweise aus `update.sh` und `reset-coder.sh` auf dem
+Server auflösen. Quelle ist die Version im Repository.

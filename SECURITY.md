@@ -1,0 +1,278 @@
+# SECURITY.md – Härtung, Grenzen, offene Entscheidungen
+
+Stand: 2026-09-28. Diese Datei beschreibt den **tatsächlichen** Stand aus
+`setup-coder.sh` und `ssh-harden.sh` – inklusive dessen, was bewusst noch
+nicht gemacht ist. Provisorien sind als solche markiert.
+
+Grundmodell: Coder-Workspace-Nutzer gelten als **nicht vertrauenswürdig**.
+Der kritischste Punkt des Stacks ist der Docker-Socket im
+Coder-Container (Abschnitt 6). Prüfbefehle stehen jeweils daneben –
+Dokumentation ohne Nachweis zählt nicht.
+
+Einstieg: [README.md](README.md) · Betrieb: [OPERATIONS.md](OPERATIONS.md) ·
+Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+## 1. SSH
+
+**Ist-Zustand**
+
+- Port 22 ist von überall erreichbar (bewusst, damit Zugriff von zuhause
+  möglich ist; die Schulnetz-Infrastruktur muss 22 zusätzlich zu 80/443
+  weiterleiten).
+- Schutz: `ufw limit 22/tcp` (eingebautes Rate-Limiting von ufw) und
+  fail2ban als zweite Linie.
+- Passwort-Login ist **nicht** deaktiviert. Das Setup führt `ssh-harden.sh`
+  nicht aus; der Abschlusscheck meldet den Zustand bei jedem Lauf und
+  fordert auf, Key-Login zuerst zu testen.
+
+```bash
+sudo ufw status verbose                      # 22/tcp LIMIT?
+sudo fail2ban-client status sshd             # Jail aktiv, aktuelle Bans
+sudo sshd -T | grep -iE '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin)'
+sudo journalctl -u ssh -n 50 --no-pager
+```
+
+**Härtungspfad (`ssh-harden.sh`, vorbereitet, nicht automatisch)**
+
+Das Skript schreibt als Drop-In `/etc/ssh/sshd_config.d/60-coder-hardening.conf`:
+
+```
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+```
+
+Sicherheitsvorkehrungen im Skript selbst:
+
+1. Beide Flags müssen gesetzt sein
+   (`--i-have-key-access --i-have-second-access`) – sie bestätigen ein
+   **getestetes** Key-Login und einen Zweit-Zugang (Konsole/Proxmox/iDRAC).
+2. Ohne passenden Key in `/root/.ssh/authorized_keys` oder
+   `/home/<sudo-user>/.ssh/authorized_keys` gibt es einen Abbruch
+   (auch FIDO2- und Zertifikats-Keys werden erkannt).
+3. `sshd -t` muss sauber sein, sonst wird das Drop-In sofort entfernt.
+4. Nach `systemctl reload ssh` prüft das Skript die **effektive** Config
+   (`sshd -T`) – ist einer der drei Werte nicht `no`, meldet es Fehler und
+   nennt den Rollback: `sudo rm /etc/ssh/sshd_config.d/60-coder-hardening.conf && sudo systemctl reload ssh`.
+
+**Vor der Härtung**: Zweit-Zugang testen, Key-Login aus einem zweiten
+Fenster verifizieren, Termin + Eigentümer festhalten (D-SSH). Bis dahin
+gilt als Provisorium: starkes Passwort, fail2ban-Beobachtung, reduzierte
+Zugriffswege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
+(Tropfen-/Rollback-Verhalten ist hier nicht belegt).
+
+## 2. Secrets
+
+- `/opt/coder/.env`: `600`, `root:root`. Erzeugung atomar (Temp-Datei +
+  `install -m 600` + `mv`), kein 644-Fenster, bei Abbruch wird das
+  Temp-File entfernt.
+- Passwörter ausschließlich `openssl rand -hex` (24 bzw. 16 Bytes) –
+  hex kann die Postgres-Connection-URL und SQL-/Shell-Quoting nicht
+  aufbrechen.
+- Eine vorhandene, aber **unvollständige** `.env` wird nie still neu
+  gewürfelt (das würde die DB-Anmeldung zerstören) – das Setup bricht ab
+  und nennt die Reparatur.
+- Nicht-Hex-Werte in der `.env` führen zum Abbruch mit Verweis auf
+  `sudo /opt/coder/reset-passwords.sh` (migriert Legacy-Werte lesend nach
+  Hex).
+- Newline/NUL in `.env`-Werten wird hart abgewiesen, nicht still getrimmt.
+- Rotation: `reset-passwords.sh` zieht zuerst ein Backup, sichert die alte
+  `.env` (genau eine Generation), übergibt beide Passwörter über STDIN in
+  den Container – nicht als `docker exec`-Argument, damit sie weder in
+  `ps aux` noch in `docker inspect` auftauchen – und recreated nur den
+  Coder-Container (`--no-deps`).
+- Repository-Hygiene: `.gitignore` schließt `.env`, `*.env`, `*.sql`,
+  `*.sql.gz`, `*.log`, `backups/` aus. Kein Secret liegt im Repository.
+- Passwort-Ausgaben passieren nur im Terminal des Operators (Erstlauf,
+  Rotation) – sie gehören nicht in Protokolle, Tickets oder Doku.
+
+```bash
+sudo stat -c '%a %U:%G %n' /opt/coder/.env /opt/coder/backups
+sudo ls -la /opt/coder/.env.bak.* 2>/dev/null      # genau eine Generation
+git status --porcelain | grep -i env               # muss leer sein
+```
+
+## 3. TLS und SNI
+
+**Konfiguration**: Caddy terminiert TLS für `coder.…` und `*.coder.…`
+(Wildcard für Workspace-Apps/Port-Forwarding), Reverse-Proxy auf
+`coder:3000`, ACME-Account `ACME_EMAIL`. Wildcard-Zertifikate sind per
+HTTP-01 nicht möglich; ohne DNS-Provider-API-Token nutzt das Setup die von
+Coder empfohlene Lösung: **On-Demand-TLS**.
+
+**Bekannte Begrenzung (bewusst so umgesetzt, nicht versteckt)**
+
+- `ask http://example.com` beantwortet **jede** Anfrage mit 200. Jeder
+  Internet-Teilnehmer kann also per SNI mit einem beliebigen Namen, der auf
+  `*.coder.ghse-unterricht.de` passt, ein echtes Let's-Encrypt-Zertifikat
+  auslösen – ohne Coder-Account.
+- On-Demand gilt auch für die Apex-Domain, nicht nur für die Wildcard.
+- Das Wochenbudget (50 Ausstellungen pro registrierter Domain
+  `ghse-unterricht.de`) ist **geteilt** mit allen anderen Schuldiensten
+  derselben Domain. Bei Erschöpfung bekommen legitime neue Workspace-Apps
+  kein Zertifikat → TLS-Fehler im Unterricht.
+- Erster Handshake einer neuen Subdomain dauert 5–30 s länger; der
+  Handshake hängt zusätzlich an der Erreichbarkeit von `example.com`.
+- Der Schutz gegen Missbrauch liegt allein am Site-Block-Muster: Caddy
+  fragt nur für Namen an, die auf `*.coder.ghse-unterricht.de` passen.
+- Echter Fix (echter ask-Endpunkt statt `example.com` oder DNS-01-Wildcard)
+  ist eine offene Entscheidung (D-TLS) mit Frist – bis dahin bleibt die
+  Mechanik.
+
+**Erkennung**: `check-tls.sh` zählt `obtaining certificate` im Caddy-Log
+der letzten 7 Tage, schreibt nach `/var/log/coder-tls.log` und ins
+Journal; läuft montags 06:30. Exit-Code ist immer 0 (reine Diagnose).
+
+**Grenze dieser Erkennung**: Die Container-Logs sind auf 10 MB × 3 Dateien
+gedeckelt; das 7-Tage-Fenster passt bei hohem Logvolumen nicht hinein,
+Älteres ist rotiert und geht in der Zählung verloren. Der Befund dazu
+(B2-005) ist im Repository dokumentiert und **nicht** behoben – die Zahl
+ist also eine Untergrenze, kein Vollzählwerk.
+
+```bash
+grep -E '^IPV6=' /etc/default/ufw; sudo docker logs coder-caddy --since 168h 2>&1 | grep -c "obtaining certificate"
+sudo docker logs coder-caddy --tail=100 | grep -iE 'obtaining|error|acme'
+sudo /opt/coder/check-tls.sh
+```
+
+## 4. Firewall
+
+**Regeln (vom Setup gesetzt, idempotent)**
+
+| Regel | Wert |
+|---|---|
+| Default-Policy | `deny incoming`, `allow outgoing` (explizit gesetzt, nicht auf Debian-Default verlassen) |
+| SSH | `ufw limit 22/tcp` |
+| Web | `ufw allow 80/tcp`, `443/tcp`, `443/udp` (HTTP/3) |
+| Aktivierung | `ufw --force enable` |
+| IPv6 | gleiche Policy für v4+v6, solange `IPV6=yes` in `/etc/default/ufw`; sonst WARN und nur v4 |
+
+**Re-Run-Schutz**: Findet das Setup beim erneuten Lauf eine
+restriktivere SSH-Regel (Quelle ≠ Anywhere), bricht es **vor** dem ersten
+`delete` ab und nennt den Bypass
+`sudo env CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh`. Nur exakt `yes`
+löst den Bypass aus; die vorgefundene Regel wird danach quellengetreu
+wiederhergestellt und per `grep` gegen das After-Log verifiziert, sonst
+Exit 1. Before/After liegen unter
+`/var/log/coder-ssh-downgrade-<zeitstempel>.{before,after}.log`.
+
+**Was ufw hier nicht schützt** (vom Setup selbst so dokumentiert):
+Docker trägt für per `ports:` publizierte Container-Ports eigene
+iptables-Regeln ein, die ufw dabei üblicherweise umgehen. Für 80/443 ist
+das akzeptabel, weil dort ohnehin der öffentliche Coder-Zugang laufen
+soll; der Schutz der übrigen Dienste kommt deshalb **nicht** aus ufw,
+sondern aus der 127.0.0.1-Bindung (Abschnitt 6). Für SSH (Host-Dienst,
+kein Container) greifen ufw und fail2ban tatsächlich. Ein
+`DOCKER-USER`-Einbau ist eine offene Entscheidung (D-Firewall) und wurde
+bewusst nicht eingebaut.
+
+**fail2ban** (`/etc/fail2ban/jail.local`): Jail `sshd`, `backend=systemd`,
+`maxretry=5`, `findtime=10m`, `bantime=1h`. Bei unveränderter
+`jail.local` lädt das Setup den Dienst **nicht** neu (sonst würden aktive
+Bans verworfen).
+
+```bash
+sudo ufw status numbered
+sudo fail2ban-client status sshd
+sudo fail2ban-client get sshd logpath
+sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar machen
+```
+
+## 5. Host-Grundhärtung
+
+- `unattended-upgrades` aktiviert (nicht-interaktiv, `20auto-upgrades`),
+  automatischer Reboot um 03:00 Uhr (`52-coder-reboot`). Das Fenster ist
+  **nicht** mit dem Schulbetrieb abgestimmt (D-Reboot-Fenster) – vor
+  Produktionsfreigabe abstimmen.
+- Docker-apt-Repo mit Fingerprint-Prüfung: entspricht der Wert nicht
+  `9DC858229FC7DD38854AE2D88D81803C0EBFCD88`, bricht das Setup ab
+  (Rotation dort abgleichen, nicht blind übernehmen).
+- Retry-Begrenzung: `apt`/`curl`/`pull` max. 3 Versuche mit 10 s Pause –
+  keine endlosen Wiederholungen, kein Retry um Let's-Encrypt.
+- Log-Rotation existiert für `/var/log/coder-backup.log`; für
+  `/var/log/coder-boot.log` und `/var/log/coder-tls.log` fehlt sie.
+- Es gibt **kein Alerting** (kein Alertmanager, keine Benachrichtigung).
+  Gesundheit wird nur sichtbar, wer sie abfragt (Boot-Gate, TLS-Check,
+  manuelle Checks in [OPERATIONS.md](OPERATIONS.md)).
+- Image-Pinning: Coder/Prometheus/Grafana/node-exporter exakt, Caddy minor
+  (`2.10`) und `postgres:15-alpine` mit beweglichen Tags. Ein
+  bit-genauer Pin bräuchte Digests (`sha256:…`) – nicht umgesetzt.
+  Alte Images bleiben nach Updates als Rollback-Basis erhalten (kein
+  Auto-Prune).
+
+## 6. Docker-Netzwerk und Listener
+
+| Dienst | gebunden auf | öffentlich erreichbar? |
+|---|---|---|
+| Caddy | `80/tcp`, `443/tcp`, `443/udp` (Host) | ja – der einzige öffentliche Einstieg |
+| Coder | `0.0.0.0:3000` **im Compose-Netz**, kein `ports:` | nein, nur über Caddy |
+| PostgreSQL | kein Host-Port | nein, nur im Compose-Netz |
+| Prometheus | `127.0.0.1:9090` | nein |
+| node-exporter | `127.0.0.1:9100` | nein |
+| Grafana | `127.0.0.1:3001` | nein (SSH-Tunnel) |
+| sshd | `22/tcp` (Host) | ja, rate-limitiert |
+
+Bindungsregel (im Setup als Review-Check hinterlegt): neue `ports:`-Einträge
+nur als `127.0.0.1:<port>:<port>`; öffentliche Ports bleiben Caddy
+vorbehalten.
+
+**Docker-Socket – das größte Restrisiko**
+
+- `/var/run/docker.sock` wird dem Coder-Container **schreibbar** gemountet
+  (offizielles Coder-Docker-Setup) und die docker-Gruppe per `group_add`
+  vergeben. Wer den Coder-Container oder ein davon provisioniertes
+  Workspace-Image kontrolliert, kontrolliert den Host (root-äquivalent).
+- Die docker-GID wird bei jedem Lauf gegen den Host abgeglichen; der
+  Abschlusscheck prüft, dass `GroupAdd` die aktuelle GID enthält
+  (`[OK]`/`[FEHLER]` „Socket-Zugriff").
+- Echte Trennung (Proxy/ separater Host) ist eine offene Entscheidung
+  (D-Socket). Bis dahin greift die Template-Allowlist:
+  [templates/allowlist.md](templates/allowlist.md) – verboten sind dort
+  u. a. Socket-Mounts, `privileged`, `pid/host`/`network_mode: host`,
+  Host-Root-Mounts und gemeinsame Netze mit `postgres`.
+- Der Erstinventar aller Templates und der Workspace-Selbsttest (T-063)
+  sind in der Allowlist-Tabelle als `_offen_` eingetragen – sie sind
+  **noch nicht** durchgeführt.
+
+Weiteres: `node-exporter` läuft mit `pid: host` und bringt `/proc`, `/sys`
+und `/` nur lesend eingebunden. Container-Logs sind mengenmäßig begrenzt
+(10 MB × 3), damit die Root-Partition nicht wächst.
+
+```bash
+sudo docker inspect coder | grep -A3 -i mounts
+sudo docker inspect -f '{{json .HostConfig.GroupAdd}}' coder
+sudo docker inspect -f '{{json .HostConfig.PortBindings}}' $(sudo docker compose -f /opt/coder/docker-compose.yml ps -q)
+ss -tlnp; ss -ulnp | grep 443
+```
+
+## 7. Backups
+
+- `/opt/coder/backups` ist `700`, Dateien `600`, Inhalt: nur
+  verifizierte Postgres-Dumps (14 Stück).
+- Es gibt **keine Offsite-Kopie**. Platten- oder Hostverlust bedeutet
+  Datenbank und alle Backups gleichzeitig (offene Entscheidung D-Offsite).
+- Workspace-Dateien und `.env` sind nicht Teil des Backups – siehe
+  Verlusttabelle in [RESTORE.md](RESTORE.md).
+- Ein grüner Backup-Lauf ist kein Restore-Nachweis; die Probe gehört auf
+  eine Test-VM ([RESTORE.md](RESTORE.md)).
+
+## 8. Bekannte Grenzen (Zusammenfassung)
+
+| # | Grenze | Risiko in einem Satz | Status |
+|---|---|---|---|
+| 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | Trennung offen (D-Socket), Allowlist greift bis dahin |
+| 2 | SSH-Passwort-Login aktiv, Port 22 weltweit | Brute-Force trotz ufw/fail2ban möglich | `ssh-harden.sh` vorbereitet, nicht ausgeführt (D-SSH) |
+| 3 | On-Demand-`ask` antwortet immer 200 | jeder löst Zertifikate aus, geteiltes Wochenbudget erschöpfbar | Mechanik bleibt bis D-TLS mit Frist |
+| 4 | TLS-Zählung blind gegenüber Log-Rotation | Budget-DoS fällt unter Umständen nicht auf (B2-005) | offen |
+| 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | offen (D-Offsite) |
+| 6 | Restore nie geprobt, RTO unbekannt | im Ernstfall ist der Wiederherstellungsweg ungeprüft | offen, Probe nur auf Test-VM |
+| 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
+| 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | offen (D-Reboot-Fenster) |
+| 9 | Kein Alerting, keine Digest-Pins, Logs ohne Rotation (boot/tls) | Ausfälle und Veränderungen fallen erst auf, wenn jemand hinsieht | offen (u. a. D-Monitoring) |
+| 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
+
+**Regel für Reparaturen:** Kein Fehlerbild wird durch Abschalten von
+Prüfungen, Zurücklassen von Firewall-Regeln im ungünstigen Zustand oder
+Überspringen der Verifikation gelöst. Wenn eine Maßnahme die Sicherheit
+senkt, braucht sie eine dokumentierte Entscheidung mit Eigentümer und
+Frist – siehe [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
