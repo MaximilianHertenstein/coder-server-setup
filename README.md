@@ -78,7 +78,7 @@ deterministisch neu – Hand-Anpassungen gehen dabei verloren, Details in
 | Dienst | Image (Pin) | Port | Zugang |
 |---|---|---|---|
 | Caddy | `caddy:2.10` (Minor-Pin) | 80/tcp, 443/tcp, 443/udp | öffentlich |
-| Coder | `ghcr.io/coder/coder:2.36.6` (exakt) | intern 3000 | nur über Caddy |
+| Coder | `ghcr.io/coder/coder:v2.36.6` (exakt) | intern 3000 | nur über Caddy |
 | PostgreSQL | `postgres:15-alpine` | keiner | nur im Compose-Netz |
 | Prometheus | `prom/prometheus:v3.14.0` (exakt) | 127.0.0.1:9090 | lokal |
 | node-exporter | `prom/node-exporter:v1.12.1` (exakt) | 127.0.0.1:9100 | lokal |
@@ -155,7 +155,7 @@ Umgebungsvariable überschreibbar:
 |---|---|---|
 | `DOMAIN_CODER` | `coder.ghse-unterricht.de` | Access-URL und Wildcard `*.…` |
 | `ACME_EMAIL` | `hert@ghse.de` | Let's-Encrypt-Benachrichtigungsadresse |
-| `CODER_VERSION` | `2.36.6` | exakter Coder-Image-Tag (ohne `v`) |
+| `CODER_VERSION` | `v2.36.6` | exakter Coder-Image-Tag (mit `v`) |
 | `CADDY_VERSION` | `2.10` | Minor-Pin, Patch-Updates per `compose pull` |
 | `PROMETHEUS_VERSION` | `v3.14.0` | exakter Pin |
 | `GRAFANA_VERSION` | `12.4.5` | exakter Pin |

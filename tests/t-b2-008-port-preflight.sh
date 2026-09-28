@@ -90,7 +90,9 @@ WARNFILE="${WORK}/warns"
 reset_fixtures
 printf '%s\n' c1 c2 c3 c4 c5 > "${WORK}/ps"
 printf '%s\n' '/coder-caddy' > "${WORK}/c1.name"
-printf 'map[80/tcp:[{ 80}] 443/tcp:[{ 443}] 443/udp:[{ 443}]]' > "${WORK}/c1.pb"
+# Reale Ausgabe von Docker 29.8.1/Go: leere HostIp wird als "invalid IP"
+# gerendert, nicht als "{ 80}" (am 2026-09-28 auf dem Test-Host gemessen).
+printf 'map[80/tcp:[{invalid IP 80}] 443/tcp:[{invalid IP 443}] 443/udp:[{invalid IP 443}]]' > "${WORK}/c1.pb"
 printf '%s\n' '/coder-prometheus' > "${WORK}/c2.name"
 printf 'map[9090/tcp:[{127.0.0.1 9090}]]' > "${WORK}/c2.pb"
 printf '%s\n' '/coder-node-exporter' > "${WORK}/c3.name"
@@ -125,6 +127,15 @@ grep -qE '^(tcp|udp)$' "${WORK}/ss.calls" && pass "(1) ss wurde aufgerufen" || f
 grep -qx 'udp' "${WORK}/ss.calls" && pass "(1) ss -ulnp wird aufgerufen (UDP-Teil existiert)" \
   || fail "(1) ss -ulnp fehlt"
 grep -qx 'tcp' "${WORK}/ss.calls" && pass "(1) ss -tlnp wird aufgerufen" || fail "(1) ss -tlnp fehlt"
+
+# --- (1b) Legacy-Render "{ 80}" (andere Docker-/Go-Versionen) -> ebenfalls 0 WARN
+printf 'map[80/tcp:[{ 80}] 443/tcp:[{ 443}] 443/udp:[{ 443}]]' > "${WORK}/c1.pb"
+RC=0; run_block "${WARNFILE}" || RC=$?
+[ "${RC}" -eq 0 ] && pass "(1b) Legacy-Format '{ 80}': rc 0" || fail "(1b) rc=${RC}: $(cat "${WARNFILE}")"
+N="$(grep -c '^WARN' "${WARNFILE}" || true)"
+[ "${N}" -eq 0 ] && pass "(1b) Legacy-Format '{ 80}': keine Port-WARN" \
+  || fail "(1b) unerwartete WARN: $(cat "${WARNFILE}")"
+printf 'map[80/tcp:[{invalid IP 80}] 443/tcp:[{invalid IP 443}] 443/udp:[{invalid IP 443}]]' > "${WORK}/c1.pb"
 
 # --- (2) Fremd-Listener auf 80/tcp, keine eigenen Container -> WARN mit Name
 reset_fixtures

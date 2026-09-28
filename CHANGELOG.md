@@ -10,7 +10,76 @@ offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
 Stand: 2026-09-28 · aktueller Quellstand: `git log -1 --oneline`
-(Branch `ai/implementation-v3`).
+(Branch `main`; Umsetzung lief auf `ai/implementation-v3`).
+
+---
+
+## 2026-09-28 – Erstlauf auf frischer Debian-13-VM: vier Defekte, behoben
+
+**Umfang:** erster echter Skriptlauf auf einem frisch neu aufgesetzten
+Debian 13 (trixie), Host `2.29.11.30` (vorher Ubuntu 26.04 mit fremder
+Coder-Installation, auf Wunsch komplett neu aufgesetzt). Vier Funde, jeder
+behoben und nachgetestet. Kein Feature, keine Architektur-, keine
+Planänderung.
+
+1. **`CODER_VERSION` ohne `v` – Stack startet gar nicht (Starter-Blocker).**
+   Lauf 1 brach in Schritt 3 ab: `ghcr.io/coder/coder:2.36.6` →
+   `not found`. Gegen die Registry geprüft: Manifest `2.36.6` → HTTP 404,
+   `v2.36.6` → HTTP 200, `docker pull ghcr.io/coder/coder:v2.36.6` ok
+   (Digest `sha256:a7daad452864428ce1e93d37706b780f248b06ccb2f8e2fcb2ffd9a11f10ebd4`),
+   Docker Hub `coder/coder` kennt keinen der beiden Tags. Die Release-Notes
+   zu v2.36.6 nennen selbst `… coder:2.36.6` ohne `v` – dieser dortige Satz
+   ist falsch und stand wörtlich als Kommentar im Skript. Kein Test deckt das
+   ab: `tests/` prüft Quelltext, kein Registry-Zugriff.
+2. **Zweiter Lauf scheitert in Schritt 1 (Idempotenz).** Existiert
+   `/etc/apt/keyrings/docker.gpg` bereits, fragt `gpg --dearmor -o` nach dem
+   Überschreiben per `/dev/tty`; ohne TTY (`ssh` ohne `-t`, `nohup`) →
+   `cannot open '/dev/tty'`, exit 2 → `set -euo pipefail` beendet den Lauf.
+   Kontrolliert nachgestellt: ohne Flag exit 2, mit `--batch --yes` exit 0.
+   Mit TTY bliebe der sonst promptfreie Normalpfad an genau dieser einen
+   Frage hängen.
+3. **B2-008 warnt bei jedem Re-Run über den eigenen Caddy (False Positive).**
+   `docker inspect --format '{{.HostConfig.PortBindings}}'` rendert auf
+   Docker 29.8.1/Go die leere HostIp als `{invalid IP 80}`, nicht als
+   `{ 80}` wie der Kommentar annimmt; die awk-Auswertung las daraus
+   `ip=invalid`, `port=IP`, fand nie einen Treffer und meldete 80/tcp,
+   443/tcp, 443/udp (je v4+v6) als „fremden Listener … vor 'up -d'
+   aufräumen" – genau die Warnung, die B2-008 abstellen sollte. 9090/9100/
+   3001 matchten weiter (dort ist HostIp `127.0.0.1` gesetzt).
+4. **Runbook wurde nie abgelegt (B-008).** `SCRIPT_SRC_DIR` wurde in Schritt 6
+   relativ aus `dirname $0` berechnet, nachdem Schritt 2 `cd /opt/coder`
+   gemacht hat → gesucht wurde `/opt/coder/RESTORE.md`, die Datei lag aber
+   neben dem Skript. Der Warn trat bei jedem Lauf auf, die Kopie nie.
+
+**Geändert:** `setup-coder.sh` – `CODER_VERSION` `2.36.6` → `v2.36.6`
+(Kommentarblock Z.48–57 auf Registry-Ergebnis korrigiert), `gpg` mit
+`--batch --yes`, awk-Zweig für `{invalid IP <port>}`, `SCRIPT_SRC_DIR` vor
+dem ersten `cd` ermittelt; `README.md` – zwei Tabellenzeilen
+(`ghcr.io/coder/coder:v2.36.6`, Tag „mit `v`"); `tests/t-b2-008-
+port-preflight.sh` – Fixture (1) auf das reale Docker-29.8.1-Format
+umgestellt, Szenario (1b) für das Legacy-Format `{ 80}` ergänzt.
+
+**Tatsächlich ausgeführt am 2026-09-28:**
+- Lokal: `bash -n setup-coder.sh` und alle 8 Testskripte → 0 Befunde;
+  `shellcheck -S warning setup-coder.sh` → 1 Befund (SC2034, ungenutzter
+  Zähler `i`,   Z.1264, unverändert); alle 8 `tests/*.sh` → 8× Exit 0,
+  **253 PASS, 0 FAIL** (6/16/64/61/16/37/28/25).
+- Server `2.29.11.30`: sechs Läufe. Lauf 1 Abbruch Schritt 3 (Blocker 1),
+  Lauf 2 Abbruch Schritt 1 (Blocker 2), Läufe 3–6 Exit 0. Lauf 6 nach allen
+  vier Fixes: Exit 0, 0 `[FEHLER]`, 0 Port-WARN, Runbook
+  `[OK] Runbook nach /opt/coder/RESTORE.md abgelegt`, keine Drift-Warnung;
+  verbleibend nur zwei erwartete WARNungen (ACME/healthz, SSH-Passwort).
+- Nachweisen: 6 Container laufen (`ghcr.io/coder/coder:v2.36.6`,
+  postgres `healthy`), `docker exec coder-caddy wget http://coder:3000/healthz`
+  → `OK`, `gzip -t` des Test-Backups grün (73 931 Byte, Recht 600),
+  `ufw status` → active mit `22/tcp LIMIT`, fail2ban-Jail `sshd` aktiv,
+  Cron-Dateien `coder-backup`/`coder-bootcheck`/`coder-tlscheck` vorhanden.
+
+**Offen:** ACME/Lets-Encrypt läuft auf diesem Test-Host ins Leere
+(`coder.ghse-unterricht.de` zeigt auf einen anderen Server) → erwartete
+WARNUNG in Schritt 10, kein Defekt; TLS-/DNS-Weg weiter nur auf echter
+Zielumgebung prüfbar (siehe README „Nur auf einer Test-VM bzw. in
+Produktion zu verifizieren"). SSH-Passwort-Login bleibt bis D-SSH aktiv.
 
 ---
 

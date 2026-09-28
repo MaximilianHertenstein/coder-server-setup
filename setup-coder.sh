@@ -45,12 +45,15 @@
 # Coder-Updates laufen NICHT automatisch. update.sh liegt bereit, wird aber
 # manuell mit "sudo /opt/coder/update.sh" ausgeführt.
 #
-# CODER_VERSION: Das Image-Tag auf ghcr.io trägt KEIN "v"-Präfix (2.36.6,
-# nicht v2.36.6) – maßgeblich ist der offizielle Pull-Befehl aus den
-# Release-Notes (docker pull ghcr.io/coder/coder:2.36.6). Git-Tag (mit "v")
-# ungleich Image-Tag (ohne "v"). Für eine neuere Version:
-# https://github.com/coder/coder/releases
-# Vor Merge neuer Version per "docker pull" beidseitig belegen.
+# CODER_VERSION: Das Image-Tag auf ghcr.io TRÄGT das "v"-Präfix (v2.36.6).
+# Am 2026-09-28 gegen die Registry geprüft: ghcr.io/coder/coder:2.36.6 ->
+# HTTP 404, ghcr.io/coder/coder:v2.36.6 -> Pull ok; Docker Hub coder/coder
+# kennt keinen der beiden Tags. Die Release-Notes zu v2.36.6 nennen selbst
+# "docker pull ghcr.io/coder/coder:2.36.6" ohne "v" – dieser Satz ist dort
+# falsch und darf hier nicht kopiert werden (er bricht Schritt 3 ab).
+# Für eine neuere Version: https://github.com/coder/coder/releases
+# Vor Merge neuer Version IMMER per "docker pull" gegen die Registry belegen,
+# nicht nach dem Wortlaut der Release-Notes.
 #
 # Versionierung: CODER_VERSION, PROMETHEUS_VERSION und GRAFANA_VERSION sind
 # exakte Versionen (ändern sich nie von selbst). CADDY_VERSION ist bewusst nur
@@ -76,6 +79,12 @@
 
 set -euo pipefail
 
+# Wo das Skript selbst liegt – JETZT merken, vor jedem cd. Schritt 2 geht nach
+# /opt/coder; würde der Runbook-Check in Schritt 6 seinen Pfad erst dort aus
+# "dirname $0" (relativ, also ".") berechnen, suchte er RESTORE.md in
+# /opt/coder und meldete ihn jedes Mal als fehlend, obwohl er daneben liegt.
+SCRIPT_SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
 # Alle Werte lassen sich beim Aufruf per Umgebungsvariable überschreiben,
 # ohne diese Datei zu ändern, z.B.:
 #   DOMAIN_CODER=andere-domain.de ./setup-coder.sh
@@ -83,7 +92,7 @@ set -euo pipefail
 # wurde.
 : "${DOMAIN_CODER:=coder.ghse-unterricht.de}"
 : "${ACME_EMAIL:=hert@ghse.de}"
-: "${CODER_VERSION:=2.36.6}"              # https://github.com/coder/coder/releases prüfen
+: "${CODER_VERSION:=v2.36.6}"              # https://github.com/coder/coder/releases prüfen
 : "${CADDY_VERSION:=2.10}"                # https://hub.docker.com/_/caddy/tags
 : "${PROMETHEUS_VERSION:=v3.14.0}"        # https://github.com/prometheus/prometheus/releases
 : "${GRAFANA_VERSION:=12.4.5}"            # https://github.com/grafana/grafana/releases
@@ -162,7 +171,10 @@ echo "############################################################"
 retry3 sudo apt-get update
 retry3 sudo apt-get install -y ca-certificates curl gnupg openssl
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL --retry 3 --retry-delay 5 https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+# --batch --yes: existiert die Datei bereits (jeder zweite Lauf), fragt gpg
+# beim Überschreiben per /dev/tty nach – ohne TTY (ssh ohne -t, nohup) kommt
+# "cannot open '/dev/tty'" mit exit 2 und set -e beendet den Lauf in Schritt 1.
+curl -fsSL --retry 3 --retry-delay 5 https://download.docker.com/linux/debian/gpg | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
 # K1/F-018 (billige Hälfte, kein Digest-Pin): Fingerprint des Docker-GPG-Keys
@@ -578,8 +590,13 @@ for _cid in $(sudo docker compose ps -q 2>/dev/null || true); do
           gsub(/^ +/, "", b)
           gsub(/ +$/, "", b)
           n = split(b, f, " +")
-          ip = (n >= 2) ? f[1] : ""
-          port = (n >= 2) ? f[2] : f[1]
+          # Formate der leeren HostIp: Docker 29.8.1/Go rendert "{invalid IP
+          # 80}", andere Versionen "{ 80}" (n=1). Beides = Wildcard. Ohne
+          # diesen Zweig wird f[1]="invalid" zur IP und f[2]="IP" zum Port,
+          # der eigene Caddy matcht nie und jede Re-Run-Warnung kehrt zurück.
+          if (n >= 3 && f[1] == "invalid" && f[2] == "IP") { ip = ""; port = f[3] }
+          else if (n >= 2) { ip = f[1]; port = f[2] }
+          else { ip = ""; port = f[1] }
           if (ip == "" || ip == "0.0.0.0") printf "%s|v4*|%s\n", proto, port
           if (ip == "" || ip == "::") printf "%s|v6*|%s\n", proto, port
           if (ip != "" && ip != "0.0.0.0" && ip != "::") printf "%s|%s|%s\n", proto, ip, port
@@ -1262,7 +1279,8 @@ fi
 # B-008: Runbook auf dem Server ablegen, damit Verweise aus update.sh und
 # reset-coder.sh ("/opt/coder" auf dem Server) dort auflösen. Kein Dangling:
 # liegt RESTORE.md neben dem Setup, wird es kopiert; sonst WARN (kein Fail).
-SCRIPT_SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# SCRIPT_SRC_DIR steht seit Zeile 86 (vor dem cd nach /opt/coder), hier nicht
+# neu berechnen – relativ zu /opt/coder fände sie RESTORE.md nie.
 if [ -f "${SCRIPT_SRC_DIR}/RESTORE.md" ]; then
   sudo cp -a "${SCRIPT_SRC_DIR}/RESTORE.md" /opt/coder/RESTORE.md
   sudo chmod 644 /opt/coder/RESTORE.md
