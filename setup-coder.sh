@@ -576,12 +576,92 @@ retry3 sudo apt-get install -y ufw fail2ban
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 
-# B-007: Re-Run-Downgrade-Schutz. Eine restriktivere vorgefundene SSH-Regel
-# (z. B. 10.16.0.0/12-only durch den Operator) wird NICHT still gelöscht:
-# laute Warnung in SUMMARY, danach deterministische Regeneration (kein
-# interaktiver Stopp – Idempotenz bleibt, aber nichts wird heimlich weiter).
-if sudo ufw status 2>/dev/null | grep -Eq "22/(tcp|ssh).*(ALLOW|LIMIT).*([0-9]{1,3}\.)"; then
-  warn "Restriktivere SSH-Regel vorgefunden – Re-Run weitet SSH auf weltweit+limit aus (B-007). Falls gewollt: nach Lauf eigene Regel erneut setzen; falls nicht: Setup mit angepasster Regel fahren."
+# B-007/B2-004: Re-Run-Downgrade-Schutz. Der alte Detektor
+#   22/(tcp|ssh).*(ALLOW|LIMIT).*([0-9]{1,3}\.)
+# übersah die reale ufw-Zeile "22 ALLOW 192.168.1.0/24" (ohne /tcp) und hat
+# danach trotz WARN die restriktive Regel gelöscht und SSH weltweit geöffnet.
+# Detektor wörtlich nach Plan B2-004 (POSIX grep -E, keine Wahl im
+# Implementierungs-PR): Pfad C (inaktiv) zuerst, danach Kandidat minus
+# "Anywhere"; nicht-leer = Pfad B = harter Abbruch vor jedem Löschen, sofern
+# nicht exakt CODER_ALLOW_SSH_DOWNGRADE=yes gesetzt ist.
+UFW_OUT="$(sudo ufw status numbered 2>/dev/null || sudo ufw status 2>/dev/null || echo 'Status: inactive')"
+UFW_RESTRICTED="$(printf '%s\n' "${UFW_OUT}" \
+  | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' \
+  | grep -Ev '[[:space:]]Anywhere([[:space:]\(]|$)' || true)"
+
+UFW_TS=""
+UFW_BEFORE_LOG=""
+UFW_AFTER_LOG=""
+UFW_RESTORE_ACTION=""
+UFW_RESTORE_SRC=""
+
+if printf '%s\n' "${UFW_OUT}" | grep -qi 'Status:[[:space:]]*inactive'; then
+  # Pfad C: UFW nicht aktiv oder ufw fehlt – kein Abbruch, Hinweis, der
+  # ufw-Setup-Pfad unten fährt fort wie bisher.
+  warn "ufw ist inaktiv (Status: inactive) – SSH-Regel wird jetzt gesetzt (B2-004 Pfad C, kein Abbruch)"
+elif [ -n "${UFW_RESTRICTED}" ]; then
+  # Pfad B: restriktive SSH-Regel (Quelle != Anywhere). Nie still entfernen.
+  UFW_TS="$(date +%Y%m%d-%H%M%S)"
+  UFW_BEFORE_LOG="/var/log/coder-ssh-downgrade-${UFW_TS}.before.log"
+  UFW_AFTER_LOG="/var/log/coder-ssh-downgrade-${UFW_TS}.after.log"
+  UFW_RESTRICTED_LINE="$(printf '%s\n' "${UFW_RESTRICTED}" | head -n 1)"
+  sudo ufw status numbered | sudo tee "${UFW_BEFORE_LOG}"
+
+  if [ "${CODER_ALLOW_SSH_DOWNGRADE:-}" != "yes" ]; then
+    # Harter Abbruch VOR den delete-Zeilen – die Härtung bleibt unangetastet.
+    printf '%s\n' \
+      "" \
+      "############ B2-004: Abbruch – restriktive SSH-Regel #############" \
+      "Vorgefunden und NICHT entfernt:" \
+      "  ${UFW_RESTRICTED_LINE}" \
+      "Protokoll (vor dem Lauf): ${UFW_BEFORE_LOG}" \
+      "" \
+      "Ohne Bypass würde das Setup SSH per 'limit 22/tcp' weltweit öffnen" \
+      "und damit die Quell-Beschränkung still aufweichen." \
+      "Es wurde bisher nichts gelöscht." \
+      "" \
+      "Downgrade-Lauf ausdrücklich erlauben (die restriktive Regel wird" \
+      "danach wiederhergestellt und per Protokoll verifiziert):" \
+      "  sudo env CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh" \
+      "  (als root: CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh)" \
+      "" \
+      "Oder ohne Bypass fortfahren, indem du die Regel selbst anpasst:" \
+      "  sudo ufw status numbered" \
+      "################################################################" >&2
+    exit 1
+  fi
+
+  # Bypass: nur exakt "yes". NOTED_SRC = Quelle wörtlich aus before.log,
+  # Aktion quellengetreu (PV-009: allow vs. limit vs. deny vs. reject).
+  UFW_RESTORE_ACTION="$(printf '%s\n' "${UFW_RESTRICTED_LINE}" \
+    | grep -Eio '(^|[[:space:]])(allow|limit|deny|reject)([[:space:]]|$)' \
+    | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)"
+  UFW_RESTORE_ACTION="${UFW_RESTORE_ACTION:-allow}"
+  UFW_RESTORE_SRC="$(printf '%s\n' "${UFW_RESTRICTED_LINE}" | awk '{
+      if (match($0, /from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22/)) {
+        s = substr($0, RSTART, RLENGTH)
+        sub(/^from[[:space:]]+/, "", s)
+        sub(/[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22/, "", s)
+      } else {
+        s = $NF
+        if (s == "(v6)") s = $(NF - 1)
+      }
+      print s
+    }')"
+
+  if ! printf '%s' "${UFW_RESTORE_SRC}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:/-]*$' \
+    || printf '%s' "${UFW_RESTORE_SRC}" \
+      | grep -Eq '^(Anywhere|ALLOW([[:space:]]+(IN|OUT))?|DENY([[:space:]]+(IN|OUT))?|REJECT([[:space:]]+(IN|OUT))?|LIMIT([[:space:]]+(IN|OUT))?|IN|OUT)$'
+  then
+    echo "B2-004: Quelle der restriktiven SSH-Regel konnte nicht eindeutig aus" >&2
+    echo "dem Protokoll gelesen werden (gelesen: '${UFW_RESTORE_SRC}')." >&2
+    echo "Ohne gesicherte Quelle gibt es keine verifizierte Wiederherstellung," >&2
+    echo "also Abbruch VOR dem Löschen. Protokoll: ${UFW_BEFORE_LOG}" >&2
+    echo "Regel manuell prüfen, dann ggf. ohne Quell-Beschränkung fortfahren." >&2
+    exit 1
+  fi
+
+  warn "Bypass CODER_ALLOW_SSH_DOWNGRADE=yes: restriktive SSH-Regel '${UFW_RESTRICTED_LINE}' wird nach dem Lauf wiederhergestellt und verifiziert (B2-004)"
 fi
 # Falls ein früherer Lauf schon eine engere oder App-Profil-Regel angelegt
 # hat: entfernen, bevor die neue Regel gesetzt wird. --force unterdrückt die
@@ -593,11 +673,27 @@ sudo ufw --force delete allow from 10.16.0.0/12 to any port 22 proto tcp > /dev/
 
 # SSH ist jetzt von überall erreichbar (Zugriff von zuhause gewünscht) – eine
 # Herkunfts-Beschränkung ist bei einer dynamischen Heim-IP nicht praktikabel.
+# B2-004: Bei einem Bypass-Lauf wird die vorgefundene restriktive Regel direkt
+# danach wiederhergestellt und verifiziert (Block unter diesem Aufruf).
 # "limit" statt "allow": ufw blockt automatisch IPs mit auffällig vielen
 # Verbindungsversuchen in kurzer Zeit (eingebautes Rate-Limiting).
 # fail2ban ist die zweite, schärfere Verteidigungslinie: es sperrt IPs nach
 # mehreren fehlgeschlagenen Login-Versuchen für längere Zeit komplett.
 sudo ufw limit 22/tcp
+
+# B2-004: Wiederherstellung der notierten restriktiven SSH-Regel nach einem
+# Bypass-Lauf – nur mit Verifikation (ohne erfolgreichen grep-F-Check gilt die
+# Wiederherstellung als fehlgeschlagen, Exit 1, kein stilles Grün).
+if [ -n "${UFW_RESTORE_SRC}" ]; then
+  sudo ufw "${UFW_RESTORE_ACTION}" from "${UFW_RESTORE_SRC}" to any port 22 proto tcp
+  sudo ufw status numbered | sudo tee "${UFW_AFTER_LOG}"
+  if grep -F -- "${UFW_RESTORE_SRC}" "${UFW_AFTER_LOG}" > /dev/null; then
+    ok "Restriktive SSH-Regel wiederhergestellt (${UFW_RESTORE_ACTION} from ${UFW_RESTORE_SRC}) und in ${UFW_AFTER_LOG} verifiziert (B2-004)"
+  else
+    fail "Wiederherstellung der restriktiven SSH-Regel NICHT verifiziert – ${UFW_AFTER_LOG} enthält '${UFW_RESTORE_SRC}' nicht. Sofort prüfen: sudo ufw status numbered (B2-004)"
+    exit 1
+  fi
+fi
 
 # backend=systemd explizit setzen: Debians fail2ban-Paket hat python3-systemd
 # als harte Abhängigkeit (steht so auf der offiziellen Debian-Paketseite),
