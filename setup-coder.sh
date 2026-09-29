@@ -72,16 +72,81 @@
 #   chmod +x setup-coder.sh
 #   ./setup-coder.sh
 #
-# Vom Skript unter /opt/coder bereitgestellte Wartungsskripte (alle mit
-# "sudo /opt/coder/<name>.sh" manuell aufzurufen, keines läuft automatisch
-# außer backup.sh per Cronjob):
+# Manuelle Wartungsskripte unter /opt/coder (mit sudo aufzurufen):
 #   backup.sh           Postgres-Backup (täglich per Cron, 01:00 Uhr)
 #   update.sh           Images der konfigurierten Tags ziehen + Stack pruefen
 #   reset-passwords.sh  Neue Postgres-/Grafana-Passwörter setzen
 #   reset-coder.sh      Coder-Reset (Datenbank, .env - Zertifikate bleiben)
+# Automatische Aufgaben: backup.sh täglich 01:00, check-tls.sh montags 06:30,
+# boot-check.sh nach jedem Boot; unattended-upgrades kann um 03:00 rebooten.
 # ============================================================================
 
 set -euo pipefail
+
+# Zielplattform vor jeder Serveränderung prüfen. Die Docker-APT-Quelle unten
+# übernimmt VERSION_CODENAME aus /etc/os-release; ohne Guard könnte ein Lauf
+# auf Ubuntu oder Debian 12 eine unpassende Quelle eintragen und Pakete
+# verändern, obwohl nur Debian 13 (trixie) unterstützt wird.
+if [ ! -r /etc/os-release ]; then
+  echo "Fehler: /etc/os-release fehlt oder ist nicht lesbar; Zielplattform nicht prüfbar. Abbruch ohne Serveränderungen." >&2
+  exit 1
+fi
+. /etc/os-release
+if [ "${ID:-}" != "debian" ] || [ "${VERSION_CODENAME:-}" != "trixie" ]; then
+  printf 'Fehler: nicht unterstützte Zielplattform (ID=%s, VERSION_CODENAME=%s). Erwartet wird Debian 13 (trixie). Abbruch vor Serveränderungen.\n' \
+    "${ID:-unbekannt}" "${VERSION_CODENAME:-unbekannt}" >&2
+  exit 1
+fi
+
+# Das Setup schreibt Compose- und Wartungsskripte und startet den Stack.
+# Ein paralleler Wartungslauf könnte Dateien während ihrer Ausführung
+# überschreiben. Vor diesen Konfigurations- und Stack-Änderungen nimmt das
+# Setup denselben flock wie die Wartungsskripte. Ein privilegierter Wächter
+# hält ihn, während dieses Skript im ursprünglichen Benutzerkontext und mit
+# dessen expliziten Umgebungswerten läuft.
+SETUP_LOCKER_PID=""
+SETUP_LOCK_READ_FD=""
+SETUP_LOCK_WRITE_FD=""
+SETUP_LOCK_STATUS=""
+ENV_TMP=""
+ENV_TMP_GID=""
+MANAGED_TMP=""
+release_setup_lock() {
+  if [ -n "${SETUP_LOCK_WRITE_FD}" ]; then
+    printf 'RELEASE\n' 2>/dev/null >&"${SETUP_LOCK_WRITE_FD}" || true
+  fi
+}
+setup_cleanup() {
+  local rc=$?
+  for _tmp in "${ENV_TMP}" "${ENV_TMP_GID}" "${MANAGED_TMP}"; do
+    [ -n "${_tmp}" ] && sudo -n rm -f -- "${_tmp}" 2>/dev/null || true
+  done
+  if [ -n "${SETUP_LOCKER_PID}" ]; then
+    release_setup_lock
+    wait "${SETUP_LOCKER_PID}" 2>/dev/null || true
+  fi
+  return "${rc}"
+}
+
+sudo -v
+sudo mkdir -p /opt/coder
+sudo sh -c 'umask 077; : >> /opt/coder/.maintenance.lock; chown root:root /opt/coder/.maintenance.lock; chmod 600 /opt/coder/.maintenance.lock'
+coproc SETUP_LOCKER {
+  sudo flock -w 300 /opt/coder/.maintenance.lock \
+    bash -c 'printf "LOCKED\\n"; IFS= read -r _release || true' _
+}
+SETUP_LOCK_READ_FD="${SETUP_LOCKER[0]:-}"
+SETUP_LOCK_WRITE_FD="${SETUP_LOCKER[1]:-}"
+if [ -z "${SETUP_LOCK_READ_FD}" ] \
+  || ! IFS= read -r -t 305 SETUP_LOCK_STATUS <&"${SETUP_LOCK_READ_FD}" \
+  || [ "${SETUP_LOCK_STATUS}" != "LOCKED" ]; then
+  echo "Fehler: gemeinsamer Wartungs-Lock nach 300 s nicht erhalten; Setup abgebrochen (Exit 75)." >&2
+  release_setup_lock
+  wait "${SETUP_LOCKER_PID}" 2>/dev/null || true
+  exit 75
+fi
+export CODER_MAINTENANCE_LOCK_HELD=1
+trap setup_cleanup EXIT
 
 # Wo das Skript selbst liegt – JETZT merken, vor jedem cd. Schritt 2 geht nach
 # /opt/coder; würde der Runbook-Check in Schritt 6 seinen Pfad erst dort aus
@@ -118,8 +183,10 @@ VERSIONS_PREV="$(cat "${VERSIONS_FILE}" 2>/dev/null || true)"
 for _vv in ${VERSION_VARS}; do
   _vnew="${!_vv:-}"
   _vprev="$(printf '%s\n' "${VERSIONS_PREV}" | awk -F= -v k="${_vv}" '$1 == k {print substr($0, index($0, "=") + 1); exit}')"
-  if [ -n "${_vprev}" ] && [ -n "${_vnew}" ] && [ "${_vprev}" != "${_vnew}" ] \
-    && [ "$(printf '%s\n%s\n' "${_vprev}" "${_vnew}" | sort -V | head -n 1)" = "${_vnew}" ]; then
+  _vprev_sort="${_vprev#v}"
+  _vnew_sort="${_vnew#v}"
+  if [ -n "${_vprev_sort}" ] && [ -n "${_vnew_sort}" ] && [ "${_vprev_sort}" != "${_vnew_sort}" ] \
+    && [ "$(printf '%s\n%s\n' "${_vprev_sort}" "${_vnew_sort}" | sort -V | head -n 1)" = "${_vnew_sort}" ]; then
     echo "Fehler: Downgrade erkannt – ${_vv} würde von ${_vprev} auf ${_vnew} zurückgesetzt." >&2
     echo "Ein Downgrade kann bei Coder eine bereits ausgeführte DB-Schema-Migration" >&2
     echo "nicht rückgängig machen und die Installation unbrauchbar machen." >&2
@@ -160,11 +227,9 @@ check_container_running() {
 # retention.size, Caddy-Snippets, recidive-Jails, Cron-Zeiten), steht das als
 # WARN in der SUMMARY. Erwartungswerte liegen in /opt/coder/.generated-hashes
 # (nur root, 600). Kein interaktiver Stopp (Idempotenz bleibt).
-# Commit-Ort (B2-007): remember_hash steht unmittelbar NACH jedem
-# Schreib-/Chmod-Schritt der jeweiligen Datei, nicht hier vor dem Schreiben
-# und nicht mehr gebündelt in Schritt 10 – sonst committet ein abgebrochener
-# Lauf entweder den Hash der ALTEN Datei oder lässt veraltete Hashes zurück,
-# und der nächste Lauf meldet Operator-Drift für setup-eigene Residuen.
+# Commit-Ort (B2-007): write_managed schreibt atomar und aktualisiert den Hash
+# unmittelbar nach dem erfolgreichen Austausch. So kann ein abgebrochener
+# Lauf keinen Hash der alten Datei als Hash der neuen Generation eintragen.
 HASHSTORE="/opt/coder/.generated-hashes"
 note_drift() {
   local file="$1" label="$2" cur="" exp=""
@@ -193,6 +258,51 @@ forget_hash() {
   sudo awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | sudo tee "${HASHSTORE}.tmp" > /dev/null || true
   sudo mv "${HASHSTORE}.tmp" "${HASHSTORE}"
   sudo chmod 600 "${HASHSTORE}"
+}
+
+# Atomar eine vom Setup verwaltete Datei schreiben. Die temporäre Datei liegt
+# im Zielverzeichnis, damit mv dieselbe Dateisystem-Grenze nicht überschreitet.
+# Bei identischem Inhalt bleibt der Ziel-Inode unangetastet; das vermeidet
+# unnötige Reloads und schützt laufende Leser. Modus und Hash werden trotzdem
+# nachgezogen. MANAGED_TMP wird vom EXIT-Cleanup entfernt, falls der Lauf vor
+# dem mv abbricht.
+WRITE_MANAGED_CHANGED=0
+write_managed() { # $1=Pfad $2=Modus $3=Drift-Label; Inhalt via stdin
+  local file="$1" mode="$2" label="$3" dir base
+  dir="${file%/*}"
+  base="${file##*/}"
+  MANAGED_TMP=$(sudo mktemp "${dir}/.${base}.tmp.XXXXXX")
+  if ! sudo tee "${MANAGED_TMP}" > /dev/null; then
+    sudo rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
+    MANAGED_TMP=""
+    return 1
+  fi
+  case "${file}" in
+    *.sh)
+      if ! sudo bash -n "${MANAGED_TMP}"; then
+        echo "Fehler: generiertes Skript ist syntaktisch ungültig: ${file}; vorhandene Datei bleibt erhalten." >&2
+        sudo rm -f -- "${MANAGED_TMP}"
+        MANAGED_TMP=""
+        return 1
+      fi
+      ;;
+  esac
+  sudo chmod "${mode}" "${MANAGED_TMP}"
+  if [ "${label}" != "-" ]; then
+    note_drift "${file}" "${label}"
+  fi
+  if sudo cmp -s -- "${MANAGED_TMP}" "${file}"; then
+    sudo chmod "${mode}" "${file}"
+    sudo rm -f -- "${MANAGED_TMP}"
+    WRITE_MANAGED_CHANGED=0
+  else
+    sudo mv -f -- "${MANAGED_TMP}" "${file}"
+    WRITE_MANAGED_CHANGED=1
+  fi
+  MANAGED_TMP=""
+  if [ "${label}" != "-" ]; then
+    remember_hash "${file}"
+  fi
 }
 
 # B-013: Retry max. 3 mit Schlaf + Ursachen-Log (Schulnetz!). Keine endlosen
@@ -242,7 +352,7 @@ apt_install() {
     -o Dpkg::Options::=--force-confold "$@"
 }
 retry3 sudo apt-get update
-apt_install ca-certificates curl gnupg openssl cron
+apt_install ca-certificates curl gnupg openssl cron logrotate iproute2
 sudo install -m 0755 -d /etc/apt/keyrings
 # --batch --yes: existiert die Datei bereits (jeder zweite Lauf), fragt gpg
 # beim Überschreiben per /dev/tty nach – ohne TTY (ssh ohne -t, nohup) kommt
@@ -353,13 +463,14 @@ if [ ! -f /opt/coder/.env ]; then
   # coder_postgres_data die alten behält – Coder käme nicht mehr an die DB
   # (Crashloop) und nichts würde warnen. Also vor dem Würfeln prüfen, ob die
   # Datenbank-Volume schon existiert; im Zweifel abbrechen statt zerstören.
-  if printf '%s\n' "$(sudo docker volume ls -q 2>/dev/null || true)" \
-    | grep -qx 'coder_postgres_data'; then
+  DOCKER_VOLUMES="$(sudo docker volume ls -q 2>/dev/null || true)"
+  if grep -qx 'coder_postgres_data' <<< "${DOCKER_VOLUMES}"; then
     echo "Fehler: /opt/coder/.env fehlt, aber das Volume coder_postgres_data existiert." >&2
     echo "Abbruch ohne Änderung – neu gewürfelte Passwörter würden die bestehende" >&2
     echo "Datenbank-Anmeldung zerstören (A5/P-011)." >&2
-    echo "Reparatur: .env aus dem Backupsatz wiederherstellen (RESTORE.md) oder die" >&2
-    echo "Passwörter angleichen, dann Setup erneut. Volume NICHT löschen." >&2
+    echo "Reparatur: Ein SQL-Backup enthält die .env und ihre Passwörter NICHT." >&2
+    echo "Eine separat gesicherte .env wiederherstellen oder nach RESTORE.md mit" >&2
+    echo "neuen Zugangsdaten neu aufsetzen; Volume NICHT löschen." >&2
     exit 1
   fi
   # hex statt base64: garantiert nur 0-9a-f, kann also nie ein "/", "+" oder
@@ -369,9 +480,6 @@ if [ ! -f /opt/coder/.env ]; then
   GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)
 
   ENV_TMP=$(sudo mktemp /opt/coder/.env.tmp.XXXXXX)
-  # Wird bei Abbruch (inkl. Reboot/SSH-Abbruch) weggeräumt, damit kein
-  # halb geschriebenes Temp-File liegen bleibt.
-  trap 'sudo rm -f "$ENV_TMP"' EXIT
   # 600 VOR dem Schreiben festlegen: tee kürzt nur, erzeugt nicht neu,
   # der Modus bleibt also 600 – kein 644-Fenster (P-010).
   sudo install -m 600 /dev/null "$ENV_TMP"
@@ -384,15 +492,12 @@ EOF
   sudo chown root:root "$ENV_TMP"
   sudo chmod 600 "$ENV_TMP"
   sudo mv "$ENV_TMP" /opt/coder/.env
-  # mv hat das Temp-File übernommen, trap muss nichts mehr räumen.
-  trap - EXIT
+  ENV_TMP=""
 
   echo "------------------------------------------------------------"
-  echo "Neu generiertes Grafana-Admin-Passwort (jetzt sicher notieren!):"
-  echo "  Grafana-Admin-Passwort: ${GRAFANA_ADMIN_PASSWORD}"
-  echo "  Das interne Postgres-Passwort bleibt in /opt/coder/.env (nur root lesbar)."
-  echo "  C7: Klartext des Grafana-Passworts erscheint nur in diesem Fenster – danach Scrollback und"
-  echo "      Session-Log leeren, nicht in Tickets/Chats kopieren."
+  echo "Grafana-Admin-Passwort wurde in /opt/coder/.env (Modus 600) gespeichert."
+  echo "Bei Bedarf gezielt abrufen: sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env"
+  echo "Das interne Postgres-Passwort bleibt ebenfalls in /opt/coder/.env."
   echo "------------------------------------------------------------"
 elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   && sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env \
@@ -404,18 +509,16 @@ elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   if [ "$(sudo sh -c 'LC_ALL=C tr -d -c "\000" < /opt/coder/.env | wc -c')" -ne 0 ] \
     || sudo grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' /opt/coder/.env; then
     echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
-    echo "Reparatur: .env-Wert manuell auf einzeiliges Hex (openssl rand -hex 24/16) setzen, per ALTER USER + grafana-cli angleichen (Schrittfolge im Runbook), danach Setup erneut." >&2
+    echo "Reparatur: sudo /opt/coder/reset-passwords.sh setzt Postgres und Grafana neu auf Hex, danach Setup erneut." >&2
     exit 1
   fi
   # B-014/B2-003: Hex-Validierung bleibt fail-closed (auch im Setup-Re-Run),
-  # Nicht-Hex-Werte brechen ALTER USER/grafana-cli/Connection-URL. Der Verweis
-  # auf reset-passwords.sh ist nach B2-003 ehrlich: jenes akzeptiert Legacy-
-  # .env lesend und würfelt Hex nach – genau ein grüner Weg statt Pingpong
-  # (zuvor wies Reset auf sich selbst und Setup auf Reset: beides Endstation).
+  # Nicht-Hex-Werte brechen ALTER USER/Connection-URL. reset-passwords.sh
+  # setzt Datenbank, Grafana und .env gemeinsam auf neu erzeugte Hex-Werte.
   if ! sudo grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
     || ! sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
     echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter." >&2
-    echo "Reparatur: erst sudo /opt/coder/reset-passwords.sh laufen lassen (migriert Legacy lesend nach Hex), danach Setup erneut." >&2
+    echo "Reparatur: sudo /opt/coder/reset-passwords.sh setzt Postgres und Grafana neu auf Hex, danach Setup erneut." >&2
     exit 1
   fi
 else
@@ -434,7 +537,6 @@ OLD_DOCKER_GID=$(sudo grep '^DOCKER_GID=' /opt/coder/.env | cut -d= -f2-)
 if [ "${OLD_DOCKER_GID}" != "${DOCKER_GID}" ]; then
   echo "docker-GID hat sich geändert (${OLD_DOCKER_GID} -> ${DOCKER_GID}), aktualisiere /opt/coder/.env ..."
   ENV_TMP_GID=$(sudo mktemp /opt/coder/.env.tmp.XXXXXX)
-  trap 'sudo rm -f "$ENV_TMP_GID"' EXIT
   sudo install -m 600 /dev/null "$ENV_TMP_GID"
   sudo chown root:root "$ENV_TMP_GID"
   sudo grep -v '^DOCKER_GID=' /opt/coder/.env | sudo tee "$ENV_TMP_GID" > /dev/null
@@ -442,7 +544,7 @@ if [ "${OLD_DOCKER_GID}" != "${DOCKER_GID}" ]; then
   sudo chown root:root "$ENV_TMP_GID"
   sudo chmod 600 "$ENV_TMP_GID"
   sudo mv "$ENV_TMP_GID" /opt/coder/.env
-  trap - EXIT
+  ENV_TMP_GID=""
   if [ "$(sudo docker inspect -f '{{.State.Running}}' coder 2>/dev/null || echo false)" = "true" ]; then
     echo "Erstelle Coder-Container mit neuer GID neu ..."
     sudo docker compose up -d --no-deps coder
@@ -462,8 +564,7 @@ fi
 # Verzeichnisses würde die laufenden Container als fremd behandeln und einen
 # zweiten Stack nebenan aufbauen. Gleichzeitig ist der Name damit unabhängig
 # davon, von wo aus compose aufgerufen wird.
-note_drift "/opt/coder/docker-compose.yml" "docker-compose.yml"
-sudo tee /opt/coder/docker-compose.yml > /dev/null <<EOF
+write_managed "/opt/coder/docker-compose.yml" 644 "docker-compose.yml" <<EOF
 name: coder
 
 x-logging: &coder-logging
@@ -573,7 +674,7 @@ services:
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
-      - /:/rootfs:ro
+      - /:/rootfs:ro,rslave
       # C1: textfile-collector. backup.sh schreibt nach jedem erfolgreichen Lauf
       # /opt/coder/node-textfile/coder_backup.prom (mode 644, atomar). Read-only
       # ist hier richtig: geschrieben wird vom Host, der Container liest nur.
@@ -617,7 +718,6 @@ volumes:
   prometheus_data:
   grafana_data:
 EOF
-remember_hash "/opt/coder/docker-compose.yml"
 
 # Caddyfile – echtes, öffentlich vertrauenswürdiges Let's-Encrypt-Zertifikat,
 # inklusive Wildcard-Subdomain für Coder-Workspace-Apps (Port-Forwarding,
@@ -682,10 +782,10 @@ CADDY_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-caddy 2>/d
 # Ergebnis "Apex nicht parsbar" und übersprungener TLS-Smoke. Datei ist ein
 # reines Artefakt dieses Skripts, wird bei jedem Lauf neu geschrieben – kein
 # Drift-Check nötig.
-echo "${DOMAIN_CODER}" | sudo tee /opt/coder/domain > /dev/null
-sudo chmod 644 /opt/coder/domain
-note_drift "/opt/coder/Caddyfile" "Caddyfile"
-sudo tee /opt/coder/Caddyfile > /dev/null <<EOF
+write_managed "/opt/coder/domain" 644 - <<EOF
+${DOMAIN_CODER}
+EOF
+write_managed "/opt/coder/Caddyfile" 644 "Caddyfile" <<EOF
 {
 ${CADDY_ACME_CA}
     on_demand_tls {
@@ -723,7 +823,6 @@ ${DOMAIN_CODER} {
     }
 }
 EOF
-remember_hash "/opt/coder/Caddyfile"
 
 # C3/B10: Signatur über prometheus.yml UND die Alarmregeln. Schritt 3 sendet
 # Prometheus nur dann SIGHUP, wenn sich eine der beiden Dateien tatsächlich
@@ -741,8 +840,7 @@ PROM_CFG_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-prometh
 GRAFANA_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-grafana 2>/dev/null || echo false)
 
 # prometheus.yml
-note_drift "/opt/coder/prometheus.yml" "prometheus.yml"
-sudo tee /opt/coder/prometheus.yml > /dev/null <<'EOF'
+write_managed "/opt/coder/prometheus.yml" 644 "prometheus.yml" <<'EOF'
 global:
   scrape_interval: 15s
 
@@ -757,7 +855,6 @@ scrape_configs:
     static_configs:
       - targets: ['node-exporter:9100']
 EOF
-remember_hash "/opt/coder/prometheus.yml"
 
 # C3: Alarmregeln (einzige Alarmkanäle ohne Alertmanager: Prometheus-eigenen
 # /alerts + Grafana). Drei Regeln, alle mit messbarer Grundlage:
@@ -766,7 +863,7 @@ remember_hash "/opt/coder/prometheus.yml"
 # kein Backup gelaufen, das meldet ohnehin das erste erfolgreiche Laufdatum;
 # ehrlicher als ein Alarm direkt nach der Installation.
 sudo install -d -m 0755 /opt/coder/rules
-sudo tee /opt/coder/rules/coder-alerts.yml > /dev/null <<'EOF'
+write_managed "/opt/coder/rules/coder-alerts.yml" 644 - <<'EOF'
 groups:
   - name: coder
     rules:
@@ -816,7 +913,7 @@ EOF
 # Eintragung. Betrifft nur den Beginn der Container-Welt; ob provisioniert
 # wurde, sieht der erste Start in den Grafana-Logs.
 sudo install -d -m 0755 /opt/coder/grafana/provisioning/datasources
-sudo tee /opt/coder/grafana/provisioning/datasources/prometheus.yml > /dev/null <<'EOF'
+write_managed "/opt/coder/grafana/provisioning/datasources/prometheus.yml" 644 - <<'EOF'
 apiVersion: 1
 
 datasources:
@@ -923,7 +1020,7 @@ for _pr in tcp udp; do
       *)
         continue ;;
     esac
-    if printf '%s' "${OWN_PORT_KEYS}" | grep -qxF -- "${_pr}|${_ip}|${_port}"; then
+    if grep -qxF -- "${_pr}|${_ip}|${_port}" <<< "${OWN_PORT_KEYS}"; then
       continue
     fi
     _proc="$(printf '%s\n' "${_line}" | awk '{$1="";$2="";$3="";$4="";sub(/^ +/,"");print}')"
@@ -950,6 +1047,14 @@ sudo docker compose config --quiet
 # bricht vor jedem Container-Start ab.
 retry3 sudo docker compose pull
 
+# Erstlauf-Validierung mit genau den Images, die anschließend gestartet werden.
+# Caddy lädt Zertifikate erst zur Laufzeit; validate prüft die Caddyfile, ohne
+# den bestehenden Stack zu ändern. promtool prüft Konfiguration und Regeln.
+echo "Validiere Caddyfile, Prometheus-Konfiguration und Alarmregeln vor dem Start ..."
+sudo docker run --rm -v /opt/coder/Caddyfile:/etc/caddy/Caddyfile:ro "caddy:${CADDY_VERSION}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus.yml:/etc/prometheus/prometheus.yml:ro -v /opt/coder/rules:/etc/prometheus/rules:ro "prom/prometheus:${PROMETHEUS_VERSION}" check config /etc/prometheus/prometheus.yml
+sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/rules:/etc/prometheus/rules:ro "prom/prometheus:${PROMETHEUS_VERSION}" check rules /etc/prometheus/rules/coder-alerts.yml
+
 sudo docker compose up -d
 
 # A7/A1: wirksam gewesene Versionen erst JETZT persistieren – genau ab dem
@@ -958,7 +1063,7 @@ sudo docker compose up -d
 # bereits migrierte DB ungeschützt lassen). "install -d" sichert den Pfad,
 # falls dieser Block je früher stünde (A1: tee legt keine Verzeichnisse an).
 sudo install -d -m 0755 /opt/coder
-sudo tee "${VERSIONS_FILE}" > /dev/null <<VERSIONSEOF
+write_managed "${VERSIONS_FILE}" 644 - <<VERSIONSEOF
 # Von setup-coder.sh erzeugt – wirksam gewesene Versionen des letzten Laufs.
 # Kein Geheimnis, daher 644 (unten ohne sudo lesbar).
 CODER_VERSION=${CODER_VERSION}
@@ -967,7 +1072,6 @@ PROMETHEUS_VERSION=${PROMETHEUS_VERSION}
 GRAFANA_VERSION=${GRAFANA_VERSION}
 NODE_EXPORTER_VERSION=${NODE_EXPORTER_VERSION}
 VERSIONSEOF
-sudo chmod 644 "${VERSIONS_FILE}"
 
 # Docker Compose erkennt Änderungen am Inhalt einer eingebundenen Datei
 # (Caddyfile) nicht automatisch, nur Änderungen an der docker-compose.yml
@@ -1082,7 +1186,7 @@ UFW_AFTER_LOG=""
 UFW_RESTORE_ACTION=""
 UFW_RESTORE_SRC=""
 
-if printf '%s\n' "${UFW_OUT}" | grep -qi 'Status:[[:space:]]*inactive'; then
+if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
   if [ -n "${UFW_ADDED_RESTRICTED}" ]; then
     fail "ufw ist inaktiv, enthält aber gespeicherte SSH-Quellregeln; Abbruch vor jeder ufw-Regel-/Policy-Änderung."
     printf 'Gespeicherte Regel(n):\n%s\n' "${UFW_ADDED_RESTRICTED}" >&2
@@ -1197,7 +1301,7 @@ if [ -n "${UFW_RESTORE_SRC}" ]; then
     fail "Wiederherstellung der restriktiven SSH-Regel NICHT verifiziert – ${UFW_AFTER_LOG} enthält '${UFW_RESTORE_SRC}' nicht. Sofort prüfen: sudo ufw status numbered (B2-004/A1)"
     exit 1
   fi
-  if grep -E '22/tcp[[:space:]]+LIMIT' "${UFW_AFTER_LOG}" | grep -q 'Anywhere'; then
+  if grep -Eq '22/tcp[[:space:]]+LIMIT.*Anywhere' "${UFW_AFTER_LOG}"; then
     fail "Weltweite '22/tcp LIMIT Anywhere'-Regel steht nach dem Bypass-Lauf noch – die Quell-Beschränkung wäre wirkungslos. Sofort prüfen: sudo ufw status numbered (A1)"
     exit 1
   fi
@@ -1247,8 +1351,7 @@ if [ -f /etc/fail2ban/jail.local ]; then
   fi
 fi
 sudo mkdir -p /etc/fail2ban/jail.d
-note_drift "/etc/fail2ban/jail.d/10-coder-sshd.local" "fail2ban-jail.d/10-coder-sshd.local"
-sudo tee /etc/fail2ban/jail.d/10-coder-sshd.local > /dev/null <<'EOF'
+write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<'EOF'
 [sshd]
 enabled  = true
 backend  = systemd
@@ -1257,7 +1360,6 @@ maxretry = 5
 findtime = 10m
 bantime  = 1h
 EOF
-remember_hash "/etc/fail2ban/jail.d/10-coder-sshd.local"
 # P-025: "restart" bei jedem Lauf verwirft aktive Bans (Angreifer per Re-Run
 # entbannt). Daher: nur bei geänderter Datei neu laden (reload statt restart,
 # mit restart als Fallback), sonst nur sicherstellen, dass der Dienst läuft
@@ -1303,7 +1405,8 @@ else
   warn "ufw-IPv6-Pfad unklar (kein IPV6=yes in /etc/default/ufw) – Dual-Stack-Annahme gilt nicht, prüfen mit: grep IPV6 /etc/default/ufw (B-007)"
 fi
 
-if sudo ufw status | grep -q "Status: active"; then
+UFW_STATUS="$(sudo ufw status)"
+if grep -q "Status: active" <<< "${UFW_STATUS}"; then
   ok "ufw ist aktiv"
 else
   fail "ufw ist NICHT aktiv"
@@ -1312,14 +1415,14 @@ fi
 # muss existieren. Bypass-Pfaden (UFW_RESTORE_SRC gesetzt): sie darf NICHT
 # existieren – sonst steht sie neben der restriktiven Regel und macht sie
 # wirkungslos (genau der Fehler, den A1 schließt).
-UFW_SSH_LINES="$(sudo ufw status | grep -E '22/tcp[[:space:]]+(LIMIT|ALLOW)' || true)"
+UFW_SSH_LINES="$(grep -E '22/tcp[[:space:]]+(LIMIT|ALLOW)' <<< "${UFW_STATUS}" || true)"
 if [ -n "${UFW_RESTORE_SRC}" ]; then
-  if printf '%s\n' "${UFW_SSH_LINES}" | grep 'LIMIT' | grep -q 'Anywhere'; then
+  if grep -q 'LIMIT' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
     fail "Weltweite '22/tcp LIMIT Anywhere'-Regel existiert trotz wiederhergestellter Beschränkung – prüfen mit: sudo ufw status (A1)"
   else
     ok "SSH restriktiv (Bypass-Lauf): keine weltweite 22/tcp LIMIT-Regel, Beschränkung greift (A1)"
   fi
-elif printf '%s\n' "${UFW_SSH_LINES}" | grep -q "22/tcp.*LIMIT"; then
+elif grep -q "22/tcp.*LIMIT" <<< "${UFW_SSH_LINES}"; then
   ok "SSH ist offen, aber per ufw rate-limitiert (22/tcp LIMIT)"
 else
   fail "SSH-Rate-Limit-Regel fehlt in ufw – prüfen mit: sudo ufw status"
@@ -1359,25 +1462,25 @@ if [ -n "${F2B_FAILED}" ] && [ "${F2B_FAILED}" -eq "${F2B_FAILED}" ] 2>/dev/null
 else
   fail "fail2ban-Jail 'sshd' zählt keine Fehlversuche – prüfen mit: sudo fail2ban-client status sshd (A6)"
 fi
-if sudo sshd -T 2>/dev/null | grep -qi '^passwordauthentication no' && \
-   sudo sshd -T 2>/dev/null | grep -qi '^kbdinteractiveauthentication no'; then
+if grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && \
+   grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
   ok "SSH-Passwort-Login ist deaktiviert (nur noch Keys erlaubt)"
 else
   warn "SSH-Passwort-Login ist aktiv. Der Schulserver muss laut Netzvorgabe auf das Schulnetz beschränkt sein; auf anderen Hosts die Netzgrenze separat prüfen. Starkes Passwort und fail2ban beibehalten."
 fi
 # Anker ^ am Zeilenanfang: "443/tcp" soll nicht "8443/tcp" treffen, und die
 # Spaltenabfolge verhindert, dass "22/tcp" von einer ganz anderen Regel kommt.
-if sudo ufw status | grep -qE '^80/tcp[[:space:]]'; then
+if grep -qE '^80/tcp[[:space:]]' <<< "${UFW_STATUS}"; then
   ok "Port 80/tcp ist in ufw freigegeben"
 else
   fail "Port 80/tcp fehlt in ufw"
 fi
-if sudo ufw status | grep -qE '^443/tcp[[:space:]]'; then
+if grep -qE '^443/tcp[[:space:]]' <<< "${UFW_STATUS}"; then
   ok "Port 443/tcp ist in ufw freigegeben"
 else
   fail "Port 443/tcp fehlt in ufw"
 fi
-if sudo ufw status | grep -qE '^443/udp[[:space:]]'; then
+if grep -qE '^443/udp[[:space:]]' <<< "${UFW_STATUS}"; then
   ok "Port 443/udp ist in ufw freigegeben (HTTP/3)"
 else
   fail "Port 443/udp fehlt in ufw"
@@ -1396,8 +1499,7 @@ sudo dpkg-reconfigure -f noninteractive unattended-upgrades
 
 # Eigene Datei statt Änderung an der von dpkg verwalteten 50unattended-upgrades
 # (die würde beim nächsten Paket-Update sonst zu einem Konflikt-Dialog führen).
-note_drift "/etc/apt/apt.conf.d/52-coder-reboot" "52-coder-reboot"
-sudo tee /etc/apt/apt.conf.d/52-coder-reboot > /dev/null <<'EOF'
+write_managed "/etc/apt/apt.conf.d/52-coder-reboot" 644 "52-coder-reboot" <<'EOF'
 // Automatischer Neustart bei Kernel-Updates, nachts um 03:00 Uhr.
 // B-011/D-Reboot-Fenster: 03:00 ist Default, kein abgestimmtes Betriebsfenster.
 // Vor Produktionsfreigabe mit Schulbetrieb abstimmen + im Wartungsplan
@@ -1406,7 +1508,6 @@ sudo tee /etc/apt/apt.conf.d/52-coder-reboot > /dev/null <<'EOF'
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "03:00";
 EOF
-remember_hash "/etc/apt/apt.conf.d/52-coder-reboot"
 
 # Docker-Engine-Updates bleiben manuell. Ein dockerd-Neustart beendet
 # Workspace-Container; deshalb wird die zuvor eingerichtete Docker-Origin-
@@ -1426,7 +1527,7 @@ if [ -f "${LEGACY_DOCKER_UU}" ]; then
   fi
 fi
 APT_UU_CONFIG="$(apt-config dump 2>/dev/null || true)"
-if printf '%s\n' "${APT_UU_CONFIG}" | grep -Fq 'o=Docker'; then
+if grep -Fq 'o=Docker' <<< "${APT_UU_CONFIG}"; then
   warn "Die wirksame APT-Konfiguration enthält weiterhin eine Docker-Origin für unattended-upgrades; prüfen mit: grep -rn 'o=Docker' /etc/apt/apt.conf.d/"
 else
   ok "Docker-Origin ist nicht für unattended-upgrades freigegeben"
@@ -1438,12 +1539,12 @@ else
   fail "unattended-upgrades-Dienst läuft nicht"
 fi
 if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && \
-   grep -qF 'APT::Periodic::Unattended-Upgrade "1";' /etc/apt/apt.conf.d/20auto-upgrades; then
+   grep -qF 'APT::Periodic::Unattended-Upgrade "1";' <<< "${APT_UU_CONFIG}"; then
   ok "Automatische Update-Prüfung ist aktiviert"
 else
   fail "Automatische Update-Prüfung (20auto-upgrades) fehlt oder ist deaktiviert"
 fi
-if [ -f /etc/apt/apt.conf.d/52-coder-reboot ]; then
+if grep -qF 'Unattended-Upgrade::Automatic-Reboot "true";' <<< "${APT_UU_CONFIG}" && grep -qF 'Unattended-Upgrade::Automatic-Reboot-Time "03:00";' <<< "${APT_UU_CONFIG}"; then
   ok "Automatischer Neustart um 03:00 Uhr ist konfiguriert"
 else
   fail "Reboot-Konfiguration (52-coder-reboot) fehlt"
@@ -1456,8 +1557,7 @@ fi
 # Container und bis zu 10 Minuten auf /healthz via TLS (je curl max. 10 s plus
 # 10 s Abstand). Gesamtlaufzeit im Fehlerfall: knapp 14 Minuten. Ergebnis nach
 # /var/log/coder-boot.log (+ logger). Auslösung per @reboot-Cron.
-note_drift "/opt/coder/boot-check.sh" "boot-check.sh"
-sudo tee /opt/coder/boot-check.sh > /dev/null <<'EOF'
+write_managed "/opt/coder/boot-check.sh" 755 "boot-check.sh" <<'EOF'
 #!/bin/bash
 # boot-check.sh (B-011): lesendes Boot-Gate, kein Eingriff.
 # Aufruf: per @reboot-Cron oder manuell. Exit 1 bei rot (sichtbar im Cron-Log),
@@ -1543,15 +1643,11 @@ else
   exit 1
 fi
 EOF
-sudo chmod +x /opt/coder/boot-check.sh
-remember_hash "/opt/coder/boot-check.sh"
-note_drift "/etc/cron.d/coder-bootcheck" "coder-bootcheck-Cron"
-sudo tee /etc/cron.d/coder-bootcheck > /dev/null <<'EOF'
+write_managed "/etc/cron.d/coder-bootcheck" 644 "coder-bootcheck-Cron" <<'EOF'
 @reboot root /opt/coder/boot-check.sh
 EOF
-sudo chmod 644 /etc/cron.d/coder-bootcheck
-remember_hash "/etc/cron.d/coder-bootcheck"
-  if [ -x /opt/coder/boot-check.sh ] && [ -f /etc/cron.d/coder-bootcheck ]; then
+if [ -x /opt/coder/boot-check.sh ] && sudo bash -n /opt/coder/boot-check.sh \
+  && grep -qxF '@reboot root /opt/coder/boot-check.sh' /etc/cron.d/coder-bootcheck; then
   ok "Lesendes Boot-Gate installiert (/opt/coder/boot-check.sh, @reboot)"
 else
   fail "Boot-Gate fehlt (/opt/coder/boot-check.sh oder /etc/cron.d/coder-bootcheck)"
@@ -1562,8 +1658,7 @@ fi
 # Docker-Logrotation kann Eintraege aus den letzten 7 Tagen bereits verworfen
 # haben. Die Erfolgszeit wird separat exportiert, damit ein ausgefallener oder
 # verpasster Cronlauf als TlsCheckStale sichtbar wird.
-note_drift "/opt/coder/check-tls.sh" "check-tls.sh"
-sudo tee /opt/coder/check-tls.sh > /dev/null <<'EOF'
+write_managed "/opt/coder/check-tls.sh" 755 "check-tls.sh" <<'EOF'
 #!/bin/bash
 # check-tls.sh (B-005/B4): zählt LE-Ausstellungen der letzten 7 Tage im
 # Caddy-Log, legt sie als textfile-Metrik ab und meldet sie an syslog.
@@ -1601,15 +1696,11 @@ else
   exit 1
 fi
 EOF
-sudo chmod +x /opt/coder/check-tls.sh
-remember_hash "/opt/coder/check-tls.sh"
-note_drift "/etc/cron.d/coder-tlscheck" "coder-tlscheck-Cron"
-sudo tee /etc/cron.d/coder-tlscheck > /dev/null <<'EOF'
+write_managed "/etc/cron.d/coder-tlscheck" 644 "coder-tlscheck-Cron" <<'EOF'
 30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1
 EOF
-sudo chmod 644 /etc/cron.d/coder-tlscheck
-remember_hash "/etc/cron.d/coder-tlscheck"
-if [ -x /opt/coder/check-tls.sh ] && [ -f /etc/cron.d/coder-tlscheck ]; then
+if [ -x /opt/coder/check-tls.sh ] && sudo bash -n /opt/coder/check-tls.sh \
+  && grep -qxF '30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1' /etc/cron.d/coder-tlscheck; then
   ok "TLS-Erkennung installiert (/opt/coder/check-tls.sh, wöchentlich Mo 06:30)"
 else
   fail "TLS-Erkennung fehlt (/opt/coder/check-tls.sh oder /etc/cron.d/coder-tlscheck)"
@@ -1618,8 +1709,7 @@ fi
 echo "############################################################"
 echo "# [6/10] Tägliches Datenbank-Backup einrichten"
 echo "############################################################"
-note_drift "/opt/coder/backup.sh" "backup.sh"
-sudo tee /opt/coder/backup.sh > /dev/null <<'EOF'
+write_managed "/opt/coder/backup.sh" 755 "backup.sh" <<'EOF'
 #!/bin/bash
 # Tägliches Postgres-Backup (F-005/F-008/F-009, mit P-013/P-017-Korrekturen).
 # Aufruf: /opt/coder/backup.sh (direkt, per Cron oder aus update.sh).
@@ -1651,6 +1741,7 @@ mkdir -p "${BACKUP_DIR}"
 # zwei Backup-Aufrufe.
 if [ "${CODER_MAINTENANCE_LOCK_HELD:-}" != "1" ]; then
   (umask 077; : >> /opt/coder/.maintenance.lock)
+  chown root:root /opt/coder/.maintenance.lock
   chmod 600 /opt/coder/.maintenance.lock
   exec 8>>/opt/coder/.maintenance.lock
   if ! flock -w 300 8; then
@@ -1725,7 +1816,7 @@ fi
 # B2-001: Kopf in Variable lesen – direkte Pipe (zcat|head|grep) gäbe unter
 # pipefail Exit 141 (SIGPIPE) bei Dumps > ~64 KB und damit falschen Fail.
 HEADER="$(zcat "${TMP}" 2>/dev/null | head -c 4000 || true)"
-if ! printf '%s' "${HEADER}" | grep -q "PostgreSQL database dump"; then
+if ! grep -q "PostgreSQL database dump" <<< "${HEADER}"; then
   echo "backup.sh: FEHLGESCHLAGEN: kein SQL-Dump-Header (leer oder Fehlertext), keine Finaldatei angelegt." >&2
   logger -t coder-backup "FEHLGESCHLAGEN: kein SQL-Dump-Header" || true
   exit 1
@@ -1786,18 +1877,17 @@ if [ "${#NEWEST[@]}" -gt "${KEEP}" ]; then
   done
 fi
 EOF
-sudo chmod +x /opt/coder/backup.sh
-remember_hash "/opt/coder/backup.sh"
 
 # Falls von einer früheren Skript-Version noch ein Eintrag in der
 # Root-Crontab existiert (dieses Skript nutzte anfangs "crontab -e"): erst
 # entfernen, sonst würde das Backup doppelt laufen (einmal von dort, einmal
 # von der neuen /etc/cron.d/-Datei unten).
-if sudo crontab -l 2>/dev/null | grep -qF "/opt/coder/backup.sh"; then
+ROOT_CRONTAB="$(sudo crontab -l 2>/dev/null || true)"
+if grep -qF "/opt/coder/backup.sh" <<< "${ROOT_CRONTAB}"; then
   # "|| true": grep -v liefert Exit 1, wenn nach dem Filtern keine Zeile
   # übrig ist (F-001: einzige Alt-Zeile). Ohne das bricht das Setup unter
   # "set -euo pipefail" hier lautlos ab.
-  (sudo crontab -l 2>/dev/null | grep -vF "/opt/coder/backup.sh" || true) | sudo crontab -
+  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/backup.sh" || true) | sudo crontab -
 fi
 
 # F-009(a): ohne Cron-Daemon läuft nie ein Backup, das Setup meldete trotzdem
@@ -1815,16 +1905,12 @@ sudo systemctl enable --now cron
 # Locks selbst und wartet darauf bis zu 300 s. Ein äußeres
 # "flock" auf derselben Datei würde den inneren Lauf bis zum Timeout sperren
 # (Exit 75, kein Backup). Absolute Pfade (P-017).
-note_drift "/etc/cron.d/coder-backup" "coder-backup-Cron"
-sudo tee /etc/cron.d/coder-backup > /dev/null <<'EOF'
+write_managed "/etc/cron.d/coder-backup" 644 "coder-backup-Cron" <<'EOF'
 0 1 * * * root /opt/coder/backup.sh >> /var/log/coder-backup.log 2>&1
 EOF
-sudo chmod 644 /etc/cron.d/coder-backup
-remember_hash "/etc/cron.d/coder-backup"
 
 # P-007: Backup-Log ohne Rotation wächst als Root-Log unbegrenzt.
-note_drift "/etc/logrotate.d/coder-backup" "coder-backup-logrotate"
-sudo tee /etc/logrotate.d/coder-backup > /dev/null <<'EOF'
+write_managed "/etc/logrotate.d/coder-backup" 644 "coder-backup-logrotate" <<'EOF'
 /var/log/coder-backup.log {
     weekly
     rotate 8
@@ -1834,15 +1920,12 @@ sudo tee /etc/logrotate.d/coder-backup > /dev/null <<'EOF'
     copytruncate
 }
 EOF
-sudo chmod 644 /etc/logrotate.d/coder-backup
-remember_hash "/etc/logrotate.d/coder-backup"
 
 # C4: die beiden anderen Logdateien des Stacks liefen bisher ohne Rotation und
 # wuchsen unbegrenzt (coder-boot.log wächst bei jedem Reboot, coder-tls.log
 # pro Woche). Eigene Datei statt Anhängen an coder-backup, weil deren Inhalt
 # nach Server-Konvention Backup-spezifisch bleibt.
-note_drift "/etc/logrotate.d/coder-logs" "coder-logs-logrotate"
-sudo tee /etc/logrotate.d/coder-logs > /dev/null <<'EOF'
+write_managed "/etc/logrotate.d/coder-logs" 644 "coder-logs-logrotate" <<'EOF'
 /var/log/coder-boot.log
 /var/log/coder-tls.log {
     weekly
@@ -1853,8 +1936,6 @@ sudo tee /etc/logrotate.d/coder-logs > /dev/null <<'EOF'
     copytruncate
 }
 EOF
-sudo chmod 644 /etc/logrotate.d/coder-logs
-remember_hash "/etc/logrotate.d/coder-logs"
 
 if [ -f /etc/cron.d/coder-backup ] && grep -qF "/opt/coder/backup.sh" /etc/cron.d/coder-backup; then
   ok "Täglicher Backup-Cronjob ist eingetragen (01:00 Uhr, /etc/cron.d/coder-backup)"
@@ -1866,10 +1947,10 @@ if systemctl is-active --quiet cron; then
 else
   fail "Cron-Daemon läuft NICHT – Backups würden still nie laufen"
 fi
-if [ -f /etc/logrotate.d/coder-backup ]; then
-  ok "Log-Rotation für coder-backup.log ist konfiguriert"
+if sudo logrotate -d /etc/logrotate.conf >/dev/null 2>&1; then
+  ok "Logrotate-Konfiguration ist syntaktisch gültig"
 else
-  fail "Logrotate-Konfiguration für coder-backup.log fehlt"
+  fail "Logrotate-Konfiguration ist ungültig – prüfen mit: sudo logrotate -d /etc/logrotate.conf"
 fi
 
 echo "Teste Backup einmal direkt..."
@@ -1883,7 +1964,7 @@ for i in $(seq 1 30); do
   [ "$(sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
   sleep 2
 done
-if sudo /opt/coder/backup.sh; then
+if sudo env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
   LATEST_BACKUP=$(ls -t /opt/coder/backups/coder_*.sql.gz 2>/dev/null | head -n1 || true)
   if [ -n "${LATEST_BACKUP:-}" ]; then
     ok "Testlauf erfolgreich, Backup-Datei angelegt: ${LATEST_BACKUP}"
@@ -1920,8 +2001,7 @@ fi
 echo "############################################################"
 echo "# [7/10] Update-Skript bereitstellen (manuell, KEIN Cronjob)"
 echo "############################################################"
-note_drift "/opt/coder/update.sh" "update.sh"
-sudo tee /opt/coder/update.sh > /dev/null <<'EOF'
+write_managed "/opt/coder/update.sh" 755 "update.sh" <<'EOF'
 #!/bin/bash
 # Manuelles Update: Images ziehen, Stack neu erstellen. Kein Auto-Prune (B-003).
 # B-009: Health-Gate nach "up -d" (Container Running + Postgres healthy +
@@ -1937,6 +2017,7 @@ cd /opt/coder
 # Wartungs-Lock serialisiert Updates mit Backup, Passwortrotation und Reset.
 # FD 8 wird an backup.sh vererbt; das Marker-Env verhindert dort Deadlock.
 (umask 077; : >> /opt/coder/.maintenance.lock)
+chown root:root /opt/coder/.maintenance.lock
 chmod 600 /opt/coder/.maintenance.lock
 exec 8>>/opt/coder/.maintenance.lock
 if ! flock -w 300 8; then
@@ -2037,21 +2118,20 @@ echo "Update-Gate grün: alle Container laufen, Postgres healthy, /healthz via C
 # Versionen (es aktualisiert nur, was schon in der Compose-Datei steht) und
 # zieht bei Minor-Pins wie caddy:2.10 zusätzlich die neueste Patch-Version.
 EOF
-sudo chmod +x /opt/coder/update.sh
-remember_hash "/opt/coder/update.sh"
 
 # Falls ein früherer Lauf einen automatischen Update-Cronjob angelegt hat:
 # entfernen, weil Updates jetzt bewusst manuell laufen sollen.
-if sudo crontab -l 2>/dev/null | grep -qF "/opt/coder/update.sh"; then
+ROOT_CRONTAB="$(sudo crontab -l 2>/dev/null || true)"
+if grep -qF "/opt/coder/update.sh" <<< "${ROOT_CRONTAB}"; then
   # Siehe F-001 oben: "|| true" verhindert stillen Abbruch, wenn die
   # Update-Zeile die einzige Crontab-Zeile war.
-  (sudo crontab -l 2>/dev/null | grep -vF "/opt/coder/update.sh" || true) | sudo crontab -
+  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/update.sh" || true) | sudo crontab -
   warn "Vorhandenen automatischen Update-Cronjob entfernt – Updates laufen jetzt nur noch manuell"
 else
   ok "Kein automatischer Update-Cronjob vorhanden (wie gewünscht)"
 fi
 
-if [ -x /opt/coder/update.sh ]; then
+if [ -x /opt/coder/update.sh ] && sudo bash -n /opt/coder/update.sh; then
   ok "update.sh ist vorhanden und ausführbar – manuell starten mit: sudo /opt/coder/update.sh"
 else
   fail "update.sh fehlt oder ist nicht ausführbar"
@@ -2063,8 +2143,7 @@ sudo crontab -l 2>/dev/null || echo "(keine Einträge - Backup läuft über /etc
 echo "############################################################"
 echo "# [8/10] Passwort-Reset-Skript bereitstellen"
 echo "############################################################"
-note_drift "/opt/coder/reset-passwords.sh" "reset-passwords.sh"
-sudo tee /opt/coder/reset-passwords.sh > /dev/null <<'EOF'
+write_managed "/opt/coder/reset-passwords.sh" 755 "reset-passwords.sh" <<'EOF'
 #!/bin/bash
 # Setzt neue, zufällige Passwörter für den Postgres-Benutzer "coder" und den
 # Grafana-Admin. Das ist nötig, weil POSTGRES_PASSWORD/GF_SECURITY_ADMIN_PASSWORD
@@ -2080,6 +2159,7 @@ cd /opt/coder
 # Wartungs-Lock serialisiert Passwortrotation mit Update, Backup und Reset.
 # FD 8 wird an backup.sh vererbt; das Marker-Env verhindert dort Deadlock.
 (umask 077; : >> /opt/coder/.maintenance.lock)
+chown root:root /opt/coder/.maintenance.lock
 chmod 600 /opt/coder/.maintenance.lock
 exec 8>>/opt/coder/.maintenance.lock
 if ! flock -w 300 8; then
@@ -2092,24 +2172,23 @@ if [ ! -f .env ]; then
   echo "Fehler: /opt/coder/.env nicht gefunden. Erst setup-coder.sh ausführen." >&2
   exit 1
 fi
-if ! grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' .env || ! grep -qE '^DOCKER_GID=[0-9]+$' .env; then
-  echo "Fehler: /opt/coder/.env ist unvollständig. Erst reparieren (setup-coder.sh meldet wie), dann erneut." >&2
+if ! grep -qE '^DOCKER_GID=[0-9]+$' .env; then
+  echo "Fehler: /opt/coder/.env enthält keine gültige DOCKER_GID. Erst reparieren, dann erneut." >&2
   exit 1
 fi
 # B2-003: Newline/NUL im .env-Wert hart abweisen, kein stilles Trimmen. Ein
-# Hand-Edit kann den Wert über eine zweite Zeile fortsetzen; die "grep|cut"-
-# Zeile unten läse nur die erste Zeile und würde das alte Passwort still kürzen.
+# Ein Hand-Edit kann die Compose-Env-Datei durch eine ungueltige Zusatzzeile
+# unlesbar machen; in diesem Zustand wird nichts automatisch getrimmt.
 if [ "$(LC_ALL=C tr -d -c '\000' < .env | wc -c)" -ne 0 ] \
   || grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' .env; then
   echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
-  echo "Reparatur: .env-Wert manuell auf einzeiliges Hex (openssl rand -hex 24/16) setzen, per ALTER USER + grafana-cli angleichen (Schrittfolge im Runbook), danach Setup erneut." >&2
+  echo "Reparatur: .env-Zeilenstruktur manuell korrigieren (Schlüssel=einzeiliger Wert, DOCKER_GID numerisch), dann reset-passwords.sh erneut ausführen." >&2
   exit 1
 fi
-# B2-003: ALT (unten ausgelesen) darf Legacy sein – Sonderzeichen, Quotes,
-# Space, führendes "-", Backtick. Fail-closed bleibt für unvollständige .env
-# (oben) und für nicht-Hex NEU (unten, nach dem Würfeln). Die frühere Hex-
-# Prüfung der gesamten .env blockierte Legacy-Systeme vor JEDER Rotation, ohne
-# dass das Setup-Gate sie je durchließ: kein dokumentierter Ausweg.
+# Das bisherige Postgres-Passwort wird nicht benötigt: ALTER USER läuft lokal
+# im Container über den Unix-Socket, dessen initiale pg_hba.conf-Regel trust
+# verwendet. Das neue Passwort wird danach über TCP geprüft; ein Negativtest
+# weist zuvor trust auf diesem TCP-Pfad zurück.
 
 for c in coder-postgres coder-grafana; do
   if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
@@ -2136,11 +2215,29 @@ echo "Sicherung der alten .env: ${ENV_BAK}"
 # Re-Run heilt (würfelt erneut und synchronisiert DB+Grafana+.env); .bak stellt
 # den Vorzustand wieder her.
 PHASE="Vorbereitung"
-trap 'rc=$?; rm -f .env.tmp.??????; if [ "${rc}" -ne 0 ]; then echo "ABBRUCH in Phase [${PHASE}]." >&2; case "${PHASE}" in Postgres-ALTER-USER|Postgres-Verifikation) echo "Fenster PG: DB-Passwort evtl. bereits neu, .env noch alt, Grafana noch alt." >&2;; Grafana-Reset) echo "Fenster Grafana: DB-Passwort bereits neu, Grafana evtl. neu, .env noch alt." >&2;; .env-Tausch|Coder-Recreate) echo "Fenster .env: DB+Grafana neu, .env evtl. bereits getauscht – Coder-Recreate ggf. unvollständig." >&2;; *) echo "Fenster Vorbereitung: noch nichts geändert (.bak liegt vor)." >&2;; esac; echo "Reparatur: 1) Skript erneut laufen lassen (heilt in der Regel). 2) Falls DB-Login danach scheitert: altes Passwort aus ${ENV_BAK} per psql setzen (ALTER USER coder WITH PASSWORD ...). 3) Grafana ggf. erneut per grafana-cli angleichen." >&2; fi' EXIT
+reset_passwords_cleanup() {
+  local rc=$?
+  rm -f .env.tmp.??????
+  if [ "${rc}" -ne 0 ]; then
+    echo "ABBRUCH in Phase [${PHASE}]." >&2
+    case "${PHASE}" in
+      Postgres-ALTER-USER|Postgres-Verifikation)
+        echo "Fenster PG: DB-Passwort evtl. bereits neu, .env noch alt, Grafana noch alt." >&2 ;;
+      Grafana-Reset)
+        echo "Fenster Grafana: DB-Passwort bereits neu, Grafana evtl. neu, .env noch alt." >&2 ;;
+      .env-Tausch|Coder-Recreate)
+        echo "Fenster .env: DB+Grafana neu, .env evtl. bereits getauscht – Coder-Recreate ggf. unvollständig." >&2 ;;
+      *)
+        echo "Fenster Vorbereitung: noch nichts geändert (.bak liegt vor)." >&2 ;;
+    esac
+    echo "Reparatur: reset-passwords.sh erneut ausführen; es würfelt neue Werte und synchronisiert Postgres, Grafana und .env. Details stehen in ${ENV_BAK}." >&2
+  fi
+  return "${rc}"
+}
+trap reset_passwords_cleanup EXIT
 
 # C3: Der Container-Check lief vorher ein zweites Mal (identischer Block nach
 # der trap-Zeile) – die Prüfung passiert genau einmal oben, vor dem Backup.
-OLD_PG_PW=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
 # hex statt base64: garantiert nur 0-9a-f, kann also nie ein "/", "+" oder "="
 # enthalten, das in der Postgres-Connection-URL Probleme machen würde.
 NEW_PG_PW=$(openssl rand -hex 24)
@@ -2158,31 +2255,13 @@ esac
 
 echo "Setze neues Postgres-Passwort..."
 PHASE="Postgres-ALTER-USER"
-# B2-003: ALT darf Legacy sein (Sonderzeichen, Quotes, Space, führendes "-",
-# Backtick), NEU ist ausschließlich Hex. Secret-Architektur:
-# - ALT-Heredoc QUOTIERT: auf dem Host wird nichts expandiert, der Container-
-#   Text bleibt roher Skriptcode. Ein unquotiertes Heredoc (zuvor) hätte
-#   Legacy-Zeichen als Shell-Code geliefert: "$Pass" weg, Backtick ausgeführt,
-#   eingebrochenes Quote zerlegt die export-/psql-Zeile.
-# - Beide Passwörter ausschließlich als Env-Wert über STDIN
-#   (printf | ... sh -c -> read -> export). Nie in SQL/URL interpoliert, nie
-#   als docker-exec-Argument (statt "docker exec -e PGPASSWORD=..."), also
-#   weder über "ps aux" noch über "docker inspect" sichtbar.
-# - "sh -c" statt des im Plan genannten "sh -s": Skript und Daten dürfen nicht
-#   auf einem stdin liegen, sonst liefert die Shell die Datenzeilen an den
-#   Parser statt an "read". Gemessen in postgres:15-alpine (busybox ash):
-#   "sh -s" parst die Datenzeile als Kommando, rc=127; ein Heredoc als stdin
-#   lässt die Daten gar nicht erst ankommen. "read -rs" wird dort ebenfalls
-#   belegt (lokal geprüft).
-# - NEU wird als Container-Variable gelesen: [0-9a-f] kann Shell-/SQL-Quoting
-#   nicht aufbrechen.
-printf '%s\n' "${OLD_PG_PW}" "${NEW_PG_PW}" | docker exec -i coder-postgres sh -c "$(cat <<'INNER_EOF'
-read -rs OLD_PG_PW
-read -rs NEW_PG_PW
-export PGPASSWORD="$OLD_PG_PW"
-psql -U coder -d coder -c "ALTER USER coder WITH PASSWORD '$NEW_PG_PW';"
-INNER_EOF
-)"
+# Das neue Hex-Passwort geht per stdin an psql (nicht als Prozessargument).
+# psqls Variablenersetzung quotiert es als SQL-Literal; der lokale Socket
+# benötigt wegen trust kein altes Passwort.
+{
+  printf '\\set new_password %s\n' "${NEW_PG_PW}"
+  printf '%s\n' "ALTER USER coder WITH PASSWORD :'new_password';"
+} | docker exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder
 
 # Verifikation mit dem NEUEN Passwort: über den NICHT-Loopback-Pfad.
 # A2 (gemessen auf dem Test-Host): "psql -U coder -d coder" OHNE -h läuft über
@@ -2225,7 +2304,7 @@ PHASE="Grafana-Reset"
 # docker-exec-Argument, sonst wäre das neue Passwort kurzzeitig über
 # "ps aux" auf dem Host sichtbar.
 docker exec -i coder-grafana sh <<INNER_EOF
-grafana-cli --homepath /usr/share/grafana admin reset-admin-password "${NEW_GF_PW}"
+grafana cli --homepath /usr/share/grafana admin reset-admin-password "${NEW_GF_PW}"
 INNER_EOF
 
 # .env aktualisieren, damit Coder mit dem neuen Postgres-Passwort verbindet
@@ -2254,19 +2333,16 @@ PHASE="fertig"
 trap - EXIT
 
 echo "------------------------------------------------------------"
-echo "Neues Grafana-Admin-Passwort (jetzt sicher notieren!):"
-echo "  Grafana-Admin-Passwort: ${NEW_GF_PW}"
+echo "Neues Grafana-Admin-Passwort wurde in /opt/coder/.env (Modus 600) gespeichert."
+echo "Bei Bedarf gezielt abrufen: sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env"
 echo "  Das interne Postgres-Passwort bleibt in /opt/coder/.env (nur root lesbar)."
-echo "  C7: Klartext des Grafana-Passworts nur in diesem Fenster – danach Scrollback/Session-Log leeren."
 echo "  C2: .env ist geändert. Coder wurde sofort neu erstellt; Postgres und"
 echo "      Grafana werden beim nächsten 'docker compose up -d' neu erstellt"
 echo "      (Env-Hash) – Fenster dafür einplanen, kurzfristige DB-Unterbrechung."
 echo "------------------------------------------------------------"
 EOF
-sudo chmod +x /opt/coder/reset-passwords.sh
-remember_hash "/opt/coder/reset-passwords.sh"
 
-if [ -x /opt/coder/reset-passwords.sh ]; then
+if [ -x /opt/coder/reset-passwords.sh ] && sudo bash -n /opt/coder/reset-passwords.sh; then
   ok "reset-passwords.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-passwords.sh"
 else
   fail "reset-passwords.sh fehlt oder ist nicht ausführbar"
@@ -2275,8 +2351,7 @@ fi
 echo "############################################################"
 echo "# [9/10] Komplett-Reset-Skript bereitstellen"
 echo "############################################################"
-note_drift "/opt/coder/reset-coder.sh" "reset-coder.sh"
-sudo tee /opt/coder/reset-coder.sh > /dev/null <<'EOF'
+write_managed "/opt/coder/reset-coder.sh" 755 "reset-coder.sh" <<'EOF'
 #!/bin/bash
 # Setzt die Coder-Installation zurück, als wäre sie neu installiert:
 # Datenbank, Grafana-Dashboards und generierte Passwörter (.env) werden
@@ -2307,6 +2382,7 @@ cd /opt/coder
 # Wartungs-Lock vor Inventar/Backup/Bestätigung halten, damit kein Update,
 # Passwortwechsel oder Backup zwischen Sicherung und destruktivem Reset läuft.
 (umask 077; : >> /opt/coder/.maintenance.lock)
+chown root:root /opt/coder/.maintenance.lock
 chmod 600 /opt/coder/.maintenance.lock
 exec 8>>/opt/coder/.maintenance.lock
 if ! flock -w 300 8; then
@@ -2473,10 +2549,8 @@ echo "Verwaiste Workspace-Container (Inventar vor 'down', B-020):"
 echo "  docker ps -a  # von Hand aufräumen, sonst Namens-/Port-Konflikte"
 echo "------------------------------------------------------------"
 EOF
-sudo chmod +x /opt/coder/reset-coder.sh
-remember_hash "/opt/coder/reset-coder.sh"
 
-if [ -x /opt/coder/reset-coder.sh ]; then
+if [ -x /opt/coder/reset-coder.sh ] && sudo bash -n /opt/coder/reset-coder.sh; then
   ok "reset-coder.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-coder.sh"
 else
   fail "reset-coder.sh fehlt oder ist nicht ausführbar"
@@ -2507,7 +2581,7 @@ check_container_running "coder-grafana" "Grafana-Container"
 # die aktuelle docker-GID enthalten, sonst "Permission denied" auf
 # /var/run/docker.sock und keine Workspace-Provisionierung.
 if CODER_GROUPS=$(sudo docker inspect --format '{{json .HostConfig.GroupAdd}}' coder 2>/dev/null); then
-  if [ -n "${DOCKER_GID:-}" ] && printf '%s' "${CODER_GROUPS}" | grep -q "${DOCKER_GID}"; then
+  if [ -n "${DOCKER_GID:-}" ] && grep -q "${DOCKER_GID}" <<< "${CODER_GROUPS}"; then
     ok "Coder-Container hat docker-GID ${DOCKER_GID} (Socket-Zugriff konfiguriert)"
   else
     fail "Coder-Container GroupAdd (${CODER_GROUPS}) enthält docker-GID ${DOCKER_GID:-?} NICHT – Socket-Zugriff prüfen (F-007)"
@@ -2607,7 +2681,7 @@ if [ "${HUMAN_USERS}" = "0" ] \
         -e CODER_FIRST_USER_EMAIL="${CODER_FIRST_USER_EMAIL}" \
         -e CODER_FIRST_USER_USERNAME="${CODER_FIRST_USER_USERNAME}" \
         -e CODER_FIRST_USER_FULL_NAME="${CODER_FIRST_USER_FULL_NAME:-}" \
-        coder sh -c 'read -rs P
+        coder sh -c 'IFS= read -r P
           export CODER_FIRST_USER_PASSWORD="$P"
           exec coder login http://127.0.0.1:3000 --first-user-trial=false ${CODER_FIRST_USER_FULL_NAME:+--first-user-full-name "$CODER_FIRST_USER_FULL_NAME"}' 2>&1); then
     ok "Erstkonto (Owner) angelegt: ${CODER_FIRST_USER_USERNAME} (B1)"
@@ -2657,8 +2731,7 @@ echo "Grafana weiterhin nur per SSH-Tunnel: 127.0.0.1:3001"
 # Dauer des aktiven Passwort-Logins: den Zeitstempel beim ersten Lauf merken,
 # damit Folge-Läufe nicht nur "jetzt" als Startzeit anzeigen.
 PW_LOGIN_SINCE_FILE="/opt/coder/.ssh-password-login-since"
-if ! (sudo sshd -T 2>/dev/null | grep -qi '^passwordauthentication no' && \
-      sudo sshd -T 2>/dev/null | grep -qi '^kbdinteractiveauthentication no'); then
+if ! (grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"); then
   if [ ! -f "${PW_LOGIN_SINCE_FILE}" ]; then
     date -Is | sudo tee "${PW_LOGIN_SINCE_FILE}" > /dev/null
     sudo chmod 644 "${PW_LOGIN_SINCE_FILE}"

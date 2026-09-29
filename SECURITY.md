@@ -108,19 +108,24 @@ Zugriffswege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
   gewürfelt (das würde die DB-Anmeldung zerstören) – das Setup bricht ab
   und nennt die Reparatur.
 - Nicht-Hex-Werte in der `.env` führen zum Abbruch mit Verweis auf
-  `sudo /opt/coder/reset-passwords.sh` (migriert Legacy-Werte lesend nach
-  Hex).
+  `sudo /opt/coder/reset-passwords.sh`. Die Rotation liest das alte Postgres-
+  Passwort nicht, setzt beide Passwörter neu und schreibt Hex-Werte in die
+  `.env`.
 - Newline/NUL in `.env`-Werten wird hart abgewiesen, nicht still getrimmt.
-- Rotation: `reset-passwords.sh` zieht zuerst ein Backup, sichert die alte
-  `.env` (genau eine Generation), übergibt beide Passwörter über STDIN in
-  den Container – nicht als `docker exec`-Argument, damit sie weder in
-  `ps aux` noch in `docker inspect` auftauchen – und recreated nur den
-  Coder-Container (`--no-deps`).
+- Rotation: `reset-passwords.sh` zieht zuerst ein Backup und sichert die alte
+  `.env` (genau eine Generation). Das bisherige Postgres-Passwort wird nicht
+  gelesen: `ALTER USER` läuft lokal über den Unix-Socket mit `trust`. Das neue
+  Hex-Passwort geht über STDIN an `psql`, wird danach über TCP mit einer
+  Negativkontrolle verifiziert und landet atomar in `.env`. Das neue Grafana-
+  Passwort geht ebenfalls per STDIN an `grafana cli`; keins wird als
+  `docker exec`-Argument übergeben. Nur Coder wird mit `--no-deps` neu erstellt.
 - Repository-Hygiene: `.gitignore` schließt `.env`, `*.env`, `*.sql`,
   `*.sql.gz`, `*.log`, `backups/` aus. Kein Secret liegt im Repository.
-- Beim Erstlauf und bei Rotation wird nur das Grafana-Admin-Passwort im
-  Terminal ausgegeben; das interne Postgres-Passwort bleibt in `.env`. Das
-  Grafana-Passwort gehört nicht in Protokolle, Tickets oder Doku.
+- Beim Erstlauf und bei Rotation werden die Passwörter in der geschützten
+  `.env` gespeichert, aber nicht automatisch in die Terminalausgabe geschrieben.
+  Das Grafana-Passwort nur bei Bedarf gezielt abrufen:
+  `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`. Nicht in
+  Protokolle, Tickets oder Doku kopieren.
 
 ```bash
 sudo stat -c '%a %U:%G %n' /opt/coder/.env /opt/coder/backups
@@ -367,6 +372,7 @@ ss -tlnp; ss -ulnp | grep 443
 | 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | Entscheidung offen (B5): erst festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz/Schule). Empfehlung 2026-09-29: **so lassen**. Wenn doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |
+| 13 | PostgreSQL 15 hat ein bekanntes Support-Ende | Sicherheitsupdates für diese Major-Version enden am 11. November 2027; ein später Major-Wechsel braucht eine Datenmigration | Migration mit Coder-Kompatibilität, Restore-Probe und Wartungsfenster vorab planen; [Upstream-Lifecycle](https://www.postgresql.org/support/versioning/) |
 
 **Regel für Reparaturen:** Kein Fehlerbild wird durch Abschalten von
 Prüfungen, Zurücklassen von Firewall-Regeln im ungünstigen Zustand oder

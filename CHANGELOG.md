@@ -9,9 +9,48 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-29 · aktueller Quellstand: `git log -1 --oneline`
-(Branch `main`; Umsetzung lief auf `ai/implementation-v3`; die Änderungen
-dieses Eintrags sind **nicht committet** – Arbeitsstand im Repo).
+Stand: 2026-09-29 · Basisstand dieses Eintrags: `8b18621` auf `main`.
+Änderungen dieses Eintrags sind noch nicht committet.
+
+---
+
+## 2026-09-29 – Prüfung der Setup-Fundliste A1–A13, B1–B10 und C1–C5
+
+- **Umsetzung:** gemeinsamer Setup-Wartungs-Lock mit sauberer Freigabe,
+  atomarer Helper für generierte Dateien, Installations- und wirksame
+  Konfigurationsprüfungen, `bash -n` für generierte Skripte, Erstlauf-
+  Validierung von Caddy/Prometheus/Regeln, sichere Passwortrotation ohne
+  Lesen des alten Postgres-Passworts und ohne automatische Secret-Ausgabe.
+  Außerdem node-exporter-Mount-Propagation, Versionsvergleich ohne `v`,
+  zutreffende `.env`-Restore-Meldungen und korrigierte Betriebsdoku zu
+  Workspace-Prüfung und Logrotation.
+- **Zurückgestellt:** kein Alarmempfänger oder Offsite-Ziel ohne abgestimmte
+  Betriebsparameter; keine Proxy-Header-Freigabe ohne geprüfte Proxy-Kette;
+  keine Root-Reexec- oder `.env`-Refactor-Runde; Container-, Port- und
+  Log-Limit-Prüfungen bleiben wegen ihrer unterschiedlichen Sicherheits- und
+  Laufzeitwirkung bestehen. Die ACME-Kontaktadresse wurde mangels bestätigter
+  Funktionsadresse nicht ersetzt. Einzelbewertungen stehen in
+  [ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md).
+- **SSH/Firewall:** Passwort-Login und UFW-Regelverhalten wurden nicht
+  umgestellt. Die Schulnetz-Beschränkung bleibt eine externe Netzvorgabe; das
+  Setup behauptet nicht, sie selbst durchzusetzen.
+- **Prüfstand:** keine Tests und keine Serverbefehle ausgeführt. Insbesondere
+  wurden die neu eingebauten Caddy-/Prometheus-Preflights und der Grafana-CLI-
+  Passwortwechsel nicht zur Laufzeit ausgeführt.
+
+---
+
+## 2026-09-29 – Debian-Zielplattform vorab prüfen
+
+- **Befund:** Das Skript verwendete `VERSION_CODENAME` für die Docker-APT-
+  Quelle, ohne das Betriebssystem zu prüfen. Ein Lauf auf einer anderen
+  Distribution konnte deshalb mit einer unpassenden Quelle fortfahren.
+- **Änderung:** `setup-coder.sh` bricht jetzt vor Serveränderungen ab, wenn
+  `/etc/os-release` nicht Debian 13 (`ID=debian`, `VERSION_CODENAME=trixie`)
+  ausweist. README nennt dieselbe Voraussetzung und Prüfung.
+- **SSH/Firewall:** unverändert.
+- **Prüfstand:** Tests nicht ausgeführt. Definierte Fälle: Debian 13 „trixie“
+  passiert den Guard; Ubuntu und Debian 12 brechen vor Schritt 1 ab.
 
 ---
 

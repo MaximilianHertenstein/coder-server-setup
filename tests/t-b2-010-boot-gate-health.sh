@@ -21,7 +21,7 @@ BIN="${WORK}/bin"
 mkdir -p "${BIN}"
 
 # ---------- Extraktion des boot-check.sh-Heredocs ----------
-L_START="$(grep -nF 'sudo tee /opt/coder/boot-check.sh > /dev/null <<' "${SETUP}" | cut -d: -f1 || true)"
+L_START="$(grep -nF 'write_managed "/opt/coder/boot-check.sh" 755 "boot-check.sh" <<' "${SETUP}" | cut -d: -f1 || true)"
 if [ -z "${L_START}" ]; then
   fail "boot-check.sh-Heredoc nicht gefunden"
   echo "T-B2-010: FEHLGESCHLAGEN"; exit 1

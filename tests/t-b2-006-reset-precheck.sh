@@ -18,7 +18,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 # reset-coder.sh-Heredoc extrahieren (genau der eingebettete Block).
-awk '/^sudo tee \/opt\/coder\/reset-coder.sh > \/dev\/null <<'\''EOF'\''$/{f=1;next} f&&/^EOF$/{f=0} f' \
+awk '/^write_managed .*reset-coder.sh/ {f=1;next} f&&/^EOF$/{f=0} f' \
   "${SETUP}" > "${WORK}/reset-coder.sh"
 LINES=$(wc -l < "${WORK}/reset-coder.sh")
 echo "INFO: extrahiertes reset-coder.sh = ${LINES} Zeilen"

@@ -22,19 +22,19 @@ nicht im Repository.
 | Einen Fehler diagnostizieren und sicher beheben | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Was wurde wann geändert? | [CHANGELOG.md](CHANGELOG.md) |
 | Welches Workspace-Template darf was? | [templates/allowlist.md](templates/allowlist.md) |
-| Befunde, Pläne, Prüfprotokolle (Referenz) | `ai-review/` – keine Lese-Pflicht für den Betrieb; Auswertung der letzten Runde: [ai-review/REVIEW-2026-09-29-AUSWERTUNG.md](ai-review/REVIEW-2026-09-29-AUSWERTUNG.md) |
+| Befunde, Pläne, Prüfprotokolle (Referenz) | `ai-review/` – keine Lese-Pflicht für den Betrieb; neueste Setup-Prüfung: [ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
 ## Status (Stand 2026-09-29)
 
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, letzter Commit `252ebc8` (Review-Runde 1, Phasen 1–7); die Änderungen der **Review-Runde 2** (zweite Fundliste) sind im Arbeitsstand **nicht committet** (siehe [CHANGELOG.md](CHANGELOG.md)) |
-| Lokale Tests | Zuletzt am 2026-09-29 vor den jüngsten Wartungs-Lock-/Restore-Änderungen ausgeführt; diese Änderungen sind noch nicht getestet (siehe neuester CHANGELOG-Eintrag) |
+| Lokale Tests | Für den aktuellen Arbeitsstand mit atomarer Dateierzeugung, Setup-Lock und Laufzeit-Preflights nicht ausgeführt; siehe neuesten CHANGELOG-Eintrag |
 | Vollständiger Setup-Lauf auf echtem System | Letzter Lauf auf dem Test-Host `2.29.11.30` am 2026-09-29, **vor** den Änderungen dieser Review-Runde. Er belegt nicht deren Laufzeitverhalten. TLS war dort wegen eines externen nginx auf 80/443 offen (Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **nicht geprobt**, RTO unbekannt ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **nicht eingerichtet** – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | Schulserver: Passwort-Login ist für die erste Inbetriebnahme bewusst aktiv, SSH ist laut Netzvorgabe nur aus dem Schulnetz erreichbar; ufw `limit 22/tcp` und fail2ban laufen zusätzlich. `ssh-harden.sh` bleibt unaufgerufen ([SECURITY.md](SECURITY.md) §1) |
-| Offene Befunde | u. a. B5 (Client-IPs im Audit: Env-Namen belegt, aus Datenschutzgründen bewusst nicht gesetzt), DNS-01 als Alternative nur dokumentiert – Details [CHANGELOG.md](CHANGELOG.md) |
+| Offene Befunde | u. a. B5 (Client-IPs im Audit bewusst nicht gesetzt), kein Alert-Empfänger, kein Offsite-Backup und geplante PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
@@ -55,7 +55,7 @@ Abschnitt 11.
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
 | `tests/` | 10 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
-| `ai-review/` | Reviews, Pläne, Implementierungsberichte (B-/B2-/P-/F-Nummern); [Prüfung der angehängten Punkte A1–C6](ai-review/REVIEW-2026-09-29-ANHANG.md) |
+| `ai-review/` | Reviews, Pläne, Implementierungsberichte (B-/B2-/P-/F-Nummern); [Prüfung der Setup-Fundliste A1–A13, B1–B10 und C1–C5](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
 ## Was das Setup-Skript macht
 
@@ -65,7 +65,7 @@ Aufruf als Benutzer mit sudo-Rechten: `./setup-coder.sh`
 |---|---|---|
 | 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
 | 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus.yml` + `rules/coder-alerts.yml`, Grafana-Datasource-Provisioning, `node-textfile/` |
-| 3 | Docker-Stack starten | Preflights (Daemon, fremde Listener, Platte), `docker compose config --quiet`, Pull + `up -d`, Caddy bei Änderung `validate` + `reload`, Prometheus lädt geänderte Regeln per SIGHUP; Grafana startet bei geänderter Provisioning-Datei neu |
+| 3 | Docker-Stack starten | Preflights (Daemon, fremde Listener, Platte), Compose-Konfiguration, Pull, Caddy- und Prometheus-Konfiguration samt Regeln validieren, dann `up -d`; Caddy bei Änderung `validate` + `reload`, Prometheus lädt geänderte Regeln per SIGHUP; Grafana startet bei geänderter Provisioning-Datei neu |
 | 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw limit 22/tcp`, 80/443 frei, fail2ban-Jail `sshd`, Abschluss-Checks |
 | 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades, Reboot 03:00, lesendes Boot-Gate (`boot-check.sh`), TLS-Zählung (`check-tls.sh`); Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |
@@ -103,8 +103,10 @@ node-exporter).
 ## Voraussetzungen
 
 - [ ] Debian 13 (trixie), sudo-Rechte, Netzzugang zu `download.docker.com`,
-      `ghcr.io` und den Debian-Servern.
-      Prüfung: `lsb_release -a`
+      `ghcr.io` und den Debian-Servern. Das Setup prüft `ID` und
+      `VERSION_CODENAME` aus `/etc/os-release` und bricht vor Änderungen ab,
+      wenn es nicht Debian „trixie“ ist.
+      Prüfung: `cat /etc/os-release`
 - [ ] DNS: `coder.ghse-unterricht.de` **und** `*.coder.ghse-unterricht.de`
       (Wildcard, für Workspace-Apps) zeigen per A-Record auf die öffentliche
       IP des Servers.
@@ -186,6 +188,11 @@ Pin in `setup-coder.sh` ändern und Setup erneut ausführen. Docker-Engine- und
 Compose-Paketupdates sind davon getrennt und manuell; ein Engine-Update kann
 alle Workspaces unterbrechen. Die vollständige Dateiliste, Cron-Zeiten und
 Wartungsverfahren stehen in [OPERATIONS.md](OPERATIONS.md).
+
+PostgreSQL ist derzeit auf Major-Version 15 festgelegt. Deren Upstream-Support
+endet am 11. November 2027; die Major-Migration braucht ein eigenes,
+geprobtes Verfahren und wird nicht durch einen Tag-Wechsel im Setup erledigt.
+Siehe [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/).
 
 ## Sicherheit und Hardening (Kurzfassung)
 

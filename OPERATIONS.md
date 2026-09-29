@@ -19,8 +19,9 @@ Verweise: Wiederherstellung → [RESTORE.md](RESTORE.md), Sicherheit →
 
 Ein `git pull` allein verändert **nichts** am laufenden System. Änderungen
 an generierten Dateien kommen erst durch einen erneuten Lauf von
-`setup-coder.sh` an – dieser schreibt die Dateien dabei aber neu (siehe
-Abschnitt 7, Drift-Warnung).
+`setup-coder.sh` an. Verwaltete Dateien werden in ihrem Zielverzeichnis
+atomar ersetzt; erkannte Hand-Änderungen erscheinen als WARN, bevor die
+Setup-Version sie ersetzt (siehe Abschnitt 7).
 
 ## 2. Vom Setup erzeugte Dateien
 
@@ -37,7 +38,7 @@ Abschnitt 7, Drift-Warnung).
 | `/opt/coder/domain` | Apex-Domain, Quelle für TLS-Smoke und Update-Gate (644) – wird bei jedem Lauf aus `DOMAIN_CODER` überschrieben, daher bewusst ohne Hashstore | nein |
 | `/opt/coder/versions.env` | wirksam gewesene Versionen der fünf Images (644) | nein |
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
-| `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Backup, Update, Passwortwechsel und Reset (600, root) | nein |
+| `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Setup, Backup, Update, Passwortwechsel und Reset (600, root) | nein |
 | `/opt/coder/update.sh` | manuelles Update mit Pre-Backup und Health-Gate | ja |
 | `/opt/coder/reset-passwords.sh` | Passwort-Rotation Postgres + Grafana | ja |
 | `/opt/coder/reset-coder.sh` | Komplett-Reset des Coder-Stacks | ja |
@@ -73,16 +74,18 @@ Konfiguration".
 
 **Secrets-Verfahren**
 
-- Erstpasswörter werden beim ersten Lauf erzeugt. Nur das Grafana-Admin-
-  Passwort erscheint in der Ausgabe; das interne Postgres-Passwort steht
-  ausschließlich in `/opt/coder/.env` (600, root:root).
+- Erstpasswörter werden beim ersten Lauf erzeugt und in
+  `/opt/coder/.env` (600, root:root) gespeichert. Die Ausgabe zeigt nur den
+  gezielten Abrufbefehl für das Grafana-Passwort, nicht den Secret-Wert.
 - Eine unvollständige `.env` wird nie still neu gewürfelt – das Setup
   bricht ab und nennt die Reparatur.
 - Passwörter müssen hex sein (`[0-9a-f]`); sonst bricht das Setup ab und
   verweist auf `reset-passwords.sh`.
 - Rotation: `sudo /opt/coder/reset-passwords.sh` (zieht zuerst ein
-  Backup, legt `.env.bak.<Zeitstempel>` an, gibt das neue Grafana-Admin-
-  Passwort aus).
+  Backup und legt `.env.bak.<Zeitstempel>` an). Passwort bei Bedarf gezielt
+  abrufen:
+
+  `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`
 - Nie in Tickets, Chats, Logs oder das Repository kopieren.
 
 ## 4. Start, Stop, Status
@@ -104,6 +107,11 @@ Reihenfolge beim Stack: `postgres` muss `healthy` sein, bevor `coder`
 startet (`depends_on: condition: service_healthy`). Nach einem Reboot
 startet Docker die Container direkt – das gilt als Grund, warum
 `boot-check.sh` existiert.
+
+Vor `docker compose up -d` zieht das Setup die Images und validiert mit den
+gezogenen Versionen die Caddyfile sowie Prometheus-Konfiguration und
+Alarmregeln. Bei einem Fehler startet es den Stack nicht. Diese Prüfung
+validiert die Dateien, aber stellt keine TLS-Zertifikate aus.
 
 Caddy-Hinweis: Docker-Compose erkennt Änderungen an der eingebundenen
 `Caddyfile` nicht automatisch. Das Setup lädt die Konfiguration nur neu,
@@ -130,6 +138,20 @@ Container, den Docker-Socket-Zugriff (GroupAdd/docker-GID),
 prüft Schritt 3 (Preflight), `pg_isready` läuft als Compose-Healthcheck.
 Alles davon einzeln reproduzierbar – plus die Nachweise, die das Setup
 nicht selbst abfragt:
+
+Nach dem ersten Workspace zusätzlich im Terminal dieses Workspaces die
+öffentliche Coder-URL prüfen. Ein Test vom Host belegt nicht, dass
+Workspace-DNS, Egress und TLS-Zugriff funktionieren:
+
+```bash
+curl --fail --show-error --max-time 15 \
+  https://coder.ghse-unterricht.de/healthz
+```
+
+Danach eine echte Workspace-App über ihre von Coder erzeugte
+`*.coder.ghse-unterricht.de`-URL im Browser öffnen. Das prüft zusätzlich
+Wildcard-DNS und On-Demand-TLS; ein erfolgreicher `/healthz`-Aufruf allein
+belegt diese App-Route nicht.
 
 ```bash
 # Alle sechs Container laufen
@@ -223,8 +245,8 @@ existiert, weist er darauf hin, dass der erste Anmeldende Owner wird.
 | Log | Inhalt | Rotation |
 |---|---|---|
 | `/var/log/coder-backup.log` | Ausgabe des Backup-Crons | weekly, 8, compress |
-| `/var/log/coder-boot.log` | Boot-Gate je Reboot (`BOOT-GATE GRÜN/ROT`) | **keine** |
-| `/var/log/coder-tls.log` | TLS-Ausstellungen je Woche | **keine** |
+| `/var/log/coder-boot.log` | Boot-Gate je Reboot (`BOOT-GATE GRÜN/ROT`) | weekly, 8, compress |
+| `/var/log/coder-tls.log` | TLS-Ausstellungen je Woche | weekly, 8, compress |
 | `/var/log/coder-ssh-downgrade-*.before.log` / `.after.log` | ufw-Before/After bei Re-Run mit restriktiver SSH-Regel | keine |
 | Container-Logs | `json-file`, 10 MB × 3 pro Container | intern begrenzt |
 | `journalctl -u fail2ban`, `-u ssh`, `-u cron`, `-u unattended-upgrades` | Systemdienste | Debian-Defaults |
@@ -236,10 +258,11 @@ sudo journalctl -u fail2ban -n 50 --no-pager
 logger -t coder-backup -p user.info "..."     # wie die Skripte selbst loggen
 ```
 
-Hinweis: Die Boot- und TLS-Logs haben keine Rotation (nur
-`coder-backup.log` ist eingerichtet). Bei langer Laufzeit wachsen sie –
-Aufwachsen begrenzen, bevor es die Platte trifft, ist eine offene
-Maßnahme (siehe [CHANGELOG.md](CHANGELOG.md), offene Punkte).
+Die drei Setup-Logs werden über `/etc/logrotate.d/coder-backup` und
+`/etc/logrotate.d/coder-logs` wöchentlich rotiert; acht komprimierte
+Generationen bleiben erhalten. SSH-Downgrade-Protokolle haben keine eigene
+Rotation und sollten bei seltenen Änderungen manuell geprüft und entfernt
+werden.
 
 ### Monitoring und Grafana
 
@@ -253,7 +276,8 @@ Maßnahme (siehe [CHANGELOG.md](CHANGELOG.md), offene Punkte).
   ```
 
 - Das Grafana-Admin-Passwort gilt nur beim allerersten Start; danach
-  `sudo /opt/coder/reset-passwords.sh`.
+  `sudo /opt/coder/reset-passwords.sh`. Bei Bedarf aus der geschützten `.env`
+  abrufen: `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`.
 - Die Datasource `Prometheus` wird beim Setup automatisch provisioniert
   (`/opt/coder/grafana/provisioning/datasources/`) – kein Eintragen im UI.
 - **Fünf Alarmregeln** liegen in Prometheus (`/opt/coder/rules/`):
@@ -267,9 +291,9 @@ Maßnahme (siehe [CHANGELOG.md](CHANGELOG.md), offene Punkte).
 
 ## 7. Wartung
 
-Ein erneuter Lauf von `setup-coder.sh` ist nicht Teil des gemeinsamen
-Laufzeit-Locks. Er darf nicht gleichzeitig mit Backup, Update, Passwortwechsel
-oder Reset laufen.
+Ein erneuter Lauf von `setup-coder.sh` nimmt denselben Laufzeit-Lock wie
+Backup, Update, Passwortwechsel und Reset. Die anderen Wartungsskripte warten
+bis zu 300 Sekunden; danach brechen sie ohne Änderung mit Exit 75 ab.
 
 ### Update (bewusst manuell)
 
@@ -292,6 +316,11 @@ Bei rotem Gate: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
   Neue Releases kommen dabei nur für die beweglichen Tags `caddy:2.10` und
   `postgres:15-alpine` automatisch an. Für die exakt gepinnten Images muss
   der Pin in `setup-coder.sh` geändert und Setup erneut ausgeführt werden.
+- PostgreSQL bleibt bei `postgres:15-alpine`, bis eine geplante Major-
+  Migration umgesetzt wird. Upstream-Support für PostgreSQL 15 endet am
+  11. November 2027. Vorher Coder-Kompatibilität, Dump/Restore-Verfahren und
+  ein isolierter Restore-Test mit Datenprobe prüfen; ein Major-Tag-Wechsel
+  allein migriert kein Volume. [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/)
 - Docker Engine und Compose-Plugin werden weder durch `unattended-upgrades`
   noch durch `update.sh` aktualisiert. Dafür in einem abgestimmten
   Wartungsfenster manuell ausführen:

@@ -18,9 +18,11 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 ## Voraussetzungen (Eingangs-Gates, harter Abbruch bei Fehlen)
 
 1. Gültiger Dump (`gzip -t` grün, Größe plausibel, T-080-Mini-Restore ok).
-2. `.env`-Ersatz: entweder die originale `.env` (aus `.env.bak.*` oder
-   verschlüsseltem Offsite nach B-02) oder Wissen, dass ein Neuaufbau neue
-   Passwörter würfelt (dann Pfad B unten).
+2. `.env`-Ersatz: entweder eine separat auf die Restore-VM übertragene
+   `.env`-Kopie (zum Beispiel `.env.bak.*` oder verschlüsseltes Offsite nach
+   B-02) oder Wissen, dass ein Neuaufbau neue Passwörter würfelt (Pfad B).
+   `.env` und `.env.bak.*` sind nie Bestandteil des SQL-Dumps; lokale Kopien
+   auf derselben ausgefallenen VM sind kein Offsite-Backup.
 3. Frische Debian-13-VM + dieses Repo (getesteter Commit).
 4. **Restore-Sonde im Quellsystem vor dem zu probenden Backup** – ohne sie
    meldet Pfad A Schritt 5 nachher rot (Zählung `0`/fehlende Tabelle gilt
@@ -98,7 +100,8 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
    sichert sie) – der Dump enthält Daten, keine Passwörter. Daher: Dump wie in
    Pfad A Schritt 4 einspielen; DB-Rolle behält das neue Setup-Passwort, Coder
    nutzt die neue `.env` – konsistent ohne Abgleich.
-3. Grafana-Admin-Passwort ist neu (Setup-Wert) – notieren, Dashboards ggf. neu.
+3. Grafana-Admin-Passwort ist neu und steht in der geschützten `.env`;
+   bei Bedarf gezielt abrufen. Dashboards ggf. neu provisionieren.
 4. Verifikation + RTO wie Pfad A Schritt 5–6.
 
 ## Negative Befunde und Fehlerfälle
@@ -113,7 +116,7 @@ das Protokoll führen, nicht die Prüfung streichen.
 | Datenprobe ≠ `1` (0, >1, psql-Fehler) | leer, doppelt oder ohne Sonde gebackupt | Restore nicht anerkennen, Dump/Verfahren prüfen, Sonde vor dem nächsten Probe-Backup setzen |
 | Postgres nach `up -d` nicht `healthy` | Stack nicht hochgefahren | `docker logs coder-postgres`; Liveness zählt hier nichts, erst recht nicht ohne Datenprobe |
 | `/healthz` 200, aber Dashboard zeigt keine Bestandsdaten | falscher/leerer Inhalt | Prüfen, welcher Dump eingespielt wurde; Login-200 ist **keine** Bestätigung |
-| `.env` fehlt oder ist unvollständig | Passwörter weg | Pfad B (Neuaufbau mit neuen Passwörtern) bzw. `.env.bak.*`; nicht still neu würfeln |
+| `.env` fehlt oder ist unvollständig | Zugangsdaten fehlen; ein SQL-Dump kann sie nicht liefern | Separat übertragene `.env`-Kopie verwenden, falls vorhanden; sonst Pfad B (Neuaufbau mit neuen Passwörtern). Eine lokale `.env.bak.*` hilft nur, wenn sie noch lesbar und separat verfügbar ist. |
 | Coder-Version neu als die des Dumps | Schema-Migration evtl. irreversibel | Nur auf gleiche/kleinere Version zurück; Major-Wechsel einzeln mit frischem Dump |
 | Kein/kein belastbares Backup vorhanden | kein Restore möglich | Offsite-Status prüfen ([README.md](README.md)); ehrlich als Datenverlust führen, nichts beschönigen |
 

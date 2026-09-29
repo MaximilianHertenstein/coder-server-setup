@@ -1,7 +1,7 @@
 #!/bin/bash
-# T-026-Delta / B2-007: remember_hash an der Schreibstelle statt in Schritt 10.
-# Geprueft: Struktur (note_drift VOR dem Schreiben, remember_hash NACH
-# erfolgreichem tee/chmod, 16/16 Dateien, keine Schritt-10-Schleife) und
+# T-026-Delta / B2-007: zentraler atomarer Schreibhelfer statt wiederholter
+# tee/chmod/hash-Sequenzen. Geprueft: alle 16 driftverwalteten Dateien nutzen
+# ihn, Drift kommt vor dem Austausch und der Hash danach; keine Schritt-10-Schleife.
 # Verhalten der ECHTEN note_drift-/remember_hash-Funktionen aus
 # setup-coder.sh (ausextrahiert, sudo-Shim, Hashstore in /tmp):
 #   (a) gruener Lauf -> keine WARN
@@ -21,7 +21,7 @@ SETUP="${REPO_ROOT}/setup-coder.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
-# --- 1. Struktur: 16 note_drift / 16 remember_hash, korrekte Reihenfolge ----
+# --- 1. Struktur: verwaltete Dateien nutzen atomaren Schreibhelfer ----------
 EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/Caddyfile
 /opt/coder/prometheus.yml
@@ -39,46 +39,44 @@ EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/reset-passwords.sh
 /opt/coder/reset-coder.sh"
 
-N_NOTE=$(grep -c '^note_drift "' "${SETUP}")
-N_REM=$(grep -c '^remember_hash "' "${SETUP}")
-echo "INFO: note_drift=${N_NOTE} remember_hash=${N_REM}"
-[ "${N_NOTE}" -eq 16 ] && pass "genau 16 note_drift-Aufrufe" || fail "note_drift-Anzahl=${N_NOTE} (erwartet 16)"
-[ "${N_REM}" -eq 16 ] && pass "genau 16 remember_hash-Aufrufe" || fail "remember_hash-Anzahl=${N_REM} (erwartet 16)"
+N_MANAGED=$(grep -c '^write_managed "/' "${SETUP}")
+echo "INFO: write_managed=${N_MANAGED}"
+[ "${N_MANAGED}" -eq 19 ] && pass "alle 19 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 19)"
+grep -qF 'write_managed "${VERSIONS_FILE}"' "${SETUP}" && pass "versions.env nutzt ebenfalls write_managed" || fail "versions.env nutzt write_managed nicht"
 
 nl_idx() { grep -nF "$1" "${SETUP}" | head -n1 | cut -d: -f1; }
 
 while IFS= read -r P; do
   [ -n "${P}" ] || continue
-  ND=$(nl_idx "note_drift \"${P}\"")
-  RM=$(nl_idx "remember_hash \"${P}\"")
-  TE=$(nl_idx "sudo tee ${P} ")
-  if [ -z "${ND}" ] || [ -z "${RM}" ] || [ -z "${TE}" ]; then
-    fail "${P}: Luecke note_drift=${ND} tee=${TE} remember_hash=${RM}"
+  WM=$(nl_idx "write_managed \"${P}\"")
+  if [ -z "${WM}" ]; then
+    fail "${P}: kein write_managed-Aufruf gefunden"
     continue
   fi
-  if [ "${ND}" -lt "${TE}" ] && [ "${TE}" -lt "${RM}" ]; then
-    pass "Reihenfolge note_drift < tee < remember_hash: ${P}"
+  WM_COUNT=$(grep -cF "write_managed \"${P}\"" "${SETUP}")
+  if [ "${WM_COUNT}" -eq 1 ]; then
+    pass "genau ein atomarer Schreibaufruf: ${P}"
   else
-    fail "Reihenfolge falsch (ND=${ND} tee=${TE} RM=${RM}): ${P}"
-  fi
-  # remember_hash muss NACH dem chmod der Datei stehen (wenn vorhanden).
-  CM=$(awk -v s="${TE}" -v e="${RM}" 'NR>s && NR<e && /^sudo chmod / {n=NR} END{print n+0}' "${SETUP}")
-  if [ "${CM}" -gt 0 ]; then
-    if [ "${CM}" -lt "${RM}" ]; then
-      pass "chmod vor remember_hash: ${P}"
-    else
-      fail "chmod steht NACH remember_hash: ${P}"
-    fi
+    fail "write_managed-Aufrufe für ${P}: ${WM_COUNT} (erwartet 1)"
   fi
 done <<< "${EXPECTED}"
 
-# Vollstaendigkeitsabgleich: kein remember_hash ohne erwarteten Pfad.
-while IFS= read -r RM_LINE; do
-  P=$(printf '%s' "${RM_LINE}" | sed 's/^remember_hash "//; s/"$//')
-  if ! printf '%s\n' "${EXPECTED}" | grep -qxF -- "${P}"; then
-    fail "remember_hash fuer unerwarteten Pfad: ${P}"
-  fi
-done < <(grep '^remember_hash "' "${SETUP}")
+HELPER_NOTE=$(nl_idx 'note_drift "${file}" "${label}"')
+HELPER_MV=$(nl_idx 'sudo mv -f -- "${MANAGED_TMP}" "${file}"')
+HELPER_HASH=$(nl_idx 'remember_hash "${file}"')
+if [ -n "${HELPER_NOTE}" ] && [ -n "${HELPER_MV}" ] && [ -n "${HELPER_HASH}" ] && [ "${HELPER_NOTE}" -lt "${HELPER_MV}" ] && [ "${HELPER_MV}" -lt "${HELPER_HASH}" ]; then
+  pass "Drift-Prüfung vor atomarem Austausch, Hash danach"
+else
+  fail "write_managed-Reihenfolge für Drift, Austausch und Hash ist falsch"
+fi
+grep -qF 'sudo mktemp "${dir}/.${base}.tmp.XXXXXX"' "${SETUP}" && pass "Temp-Datei wird im Zielverzeichnis angelegt" || fail "Temp-Datei liegt nicht im Zielverzeichnis"
+
+# Hash-Commits sollen zentral im Schreibhelfer bleiben.
+if grep -q '^remember_hash "' "${SETUP}"; then
+  fail "direkter remember_hash-Aufruf außerhalb write_managed"
+else
+  pass "Hash-Commits sind im Schreibhelfer zentralisiert"
+fi
 
 # --- 2. Schritt-10-Schleife weg ---------------------------------------------
 if grep -qF 'for _f in /opt/coder/docker-compose.yml' "${SETUP}"; then
@@ -91,7 +89,7 @@ fi
 if grep -qE 'remember_hash "\$\{_?f\}"' "${SETUP}"; then
   fail "remember_hash wird noch in einer Schleife gebuendelt nachgezogen"
 else
-  pass "keine gebuendelte remember_hash-Schleife (nur Einzelaufrufe an Schreibstellen)"
+  pass "keine gebuendelte remember_hash-Schleife"
 fi
 
 # --- 3. Verhalten der ECHTEN Funktionen (aus setup-coder.sh extrahiert) -----
