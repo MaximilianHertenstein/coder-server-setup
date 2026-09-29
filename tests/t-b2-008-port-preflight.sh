@@ -42,8 +42,8 @@ case "${1:-}" in
       '{{.Name}}')
         [ -f "${FAKE_DIR}/${id}.name" ] && sed -n '1p' "${FAKE_DIR}/${id}.name"
         ;;
-      '{{.HostConfig.PortBindings}}')
-        [ -f "${FAKE_DIR}/${id}.pb" ] && sed -n '1p' "${FAKE_DIR}/${id}.pb"
+      '{{range $p,$b := .HostConfig.PortBindings}}{{range $b}}{{printf "%s|%s|%s\n" $p .HostIp .HostPort}}{{end}}{{end}}')
+        [ -f "${FAKE_DIR}/${id}.pb" ] && cat "${FAKE_DIR}/${id}.pb"
         ;;
       *)
         exit 1
@@ -90,17 +90,17 @@ WARNFILE="${WORK}/warns"
 reset_fixtures
 printf '%s\n' c1 c2 c3 c4 c5 > "${WORK}/ps"
 printf '%s\n' '/coder-caddy' > "${WORK}/c1.name"
-# Reale Ausgabe von Docker 29.8.1/Go: leere HostIp wird als "invalid IP"
-# gerendert, nicht als "{ 80}" (am 2026-09-28 auf dem Test-Host gemessen).
-printf 'map[80/tcp:[{invalid IP 80}] 443/tcp:[{invalid IP 443}] 443/udp:[{invalid IP 443}]]' > "${WORK}/c1.pb"
+# Ausgabe des docker-eigenen Range-Templates (D2): eine Zeile je Binding,
+# HostIp leer = Wildcard (am 2026-09-29 auf dem Test-Host gemessen).
+printf '%s\n' '80/tcp||80' '443/tcp||443' '443/udp||443' > "${WORK}/c1.pb"
 printf '%s\n' '/coder-prometheus' > "${WORK}/c2.name"
-printf 'map[9090/tcp:[{127.0.0.1 9090}]]' > "${WORK}/c2.pb"
+printf '%s\n' '9090/tcp|127.0.0.1|9090' > "${WORK}/c2.pb"
 printf '%s\n' '/coder-node-exporter' > "${WORK}/c3.name"
-printf 'map[9100/tcp:[{127.0.0.1 9100}]]' > "${WORK}/c3.pb"
+printf '%s\n' '9100/tcp|127.0.0.1|9100' > "${WORK}/c3.pb"
 printf '%s\n' '/coder-grafana' > "${WORK}/c4.name"
-printf 'map[3001/tcp:[{127.0.0.1 3001}]]' > "${WORK}/c4.pb"
+printf '%s\n' '3001/tcp|127.0.0.1|3001' > "${WORK}/c4.pb"
 printf '%s\n' '/coder' > "${WORK}/c5.name"
-printf 'map[]' > "${WORK}/c5.pb"
+: > "${WORK}/c5.pb"
 cat > "${WORK}/ss.tcp" <<'EOF'
 State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
 LISTEN 0      511        0.0.0.0:80        0.0.0.0:*    users:(("docker-proxy",pid=100,fd=4))
@@ -128,14 +128,47 @@ grep -qx 'udp' "${WORK}/ss.calls" && pass "(1) ss -ulnp wird aufgerufen (UDP-Tei
   || fail "(1) ss -ulnp fehlt"
 grep -qx 'tcp' "${WORK}/ss.calls" && pass "(1) ss -tlnp wird aufgerufen" || fail "(1) ss -tlnp fehlt"
 
-# --- (1b) Legacy-Render "{ 80}" (andere Docker-/Go-Versionen) -> ebenfalls 0 WARN
-printf 'map[80/tcp:[{ 80}] 443/tcp:[{ 443}] 443/udp:[{ 443}]]' > "${WORK}/c1.pb"
+# --- (1b) HostIp ausgeschrieben 0.0.0.0 -> nur v4-Wildcard, 0 WARN ----------
+# Discriminiert den awk-Zweig: faellt der Zweig weg, entsteht der Key
+# "tcp|0.0.0.0|80" statt "tcp|v4*|80" und der Abgleich gegen ss schlaegt an.
+reset_fixtures
+printf '%s\n' c1 > "${WORK}/ps"
+printf '%s\n' '/coder-caddy' > "${WORK}/c1.name"
+printf '%s\n' '80/tcp|0.0.0.0|80' '443/tcp|0.0.0.0|443' '443/udp|0.0.0.0|443' > "${WORK}/c1.pb"
+cat > "${WORK}/ss.tcp" <<'EOF'
+State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+LISTEN 0      511        0.0.0.0:80        0.0.0.0:*    users:(("docker-proxy",pid=100,fd=4))
+LISTEN 0      511        0.0.0.0:443       0.0.0.0:*    users:(("docker-proxy",pid=100,fd=6))
+EOF
+cat > "${WORK}/ss.udp" <<'EOF'
+State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+UNCONN 0      0        0.0.0.0:443        0.0.0.0:*    users:(("docker-proxy",pid=100,fd=8))
+EOF
 RC=0; run_block "${WARNFILE}" || RC=$?
-[ "${RC}" -eq 0 ] && pass "(1b) Legacy-Format '{ 80}': rc 0" || fail "(1b) rc=${RC}: $(cat "${WARNFILE}")"
+[ "${RC}" -eq 0 ] && pass "(1b) HostIp 0.0.0.0: rc 0" || fail "(1b) rc=${RC}: $(cat "${WARNFILE}")"
 N="$(grep -c '^WARN' "${WARNFILE}" || true)"
-[ "${N}" -eq 0 ] && pass "(1b) Legacy-Format '{ 80}': keine Port-WARN" \
+[ "${N}" -eq 0 ] && pass "(1b) HostIp 0.0.0.0 -> v4*-Key passt zu ss" \
   || fail "(1b) unerwartete WARN: $(cat "${WARNFILE}")"
-printf 'map[80/tcp:[{invalid IP 80}] 443/tcp:[{invalid IP 443}] 443/udp:[{invalid IP 443}]]' > "${WORK}/c1.pb"
+
+# --- (1c) HostIp ausgeschrieben "::" -> nur v6-Wildcard, 0 WARN -------------
+reset_fixtures
+printf '%s\n' c1 > "${WORK}/ps"
+printf '%s\n' '/coder-caddy' > "${WORK}/c1.name"
+printf '%s\n' '80/tcp|::|80' '443/tcp|::|443' '443/udp|::|443' > "${WORK}/c1.pb"
+cat > "${WORK}/ss.tcp" <<'EOF'
+State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+LISTEN 0      511              *:80              *:*    users:(("docker-proxy",pid=100,fd=5))
+LISTEN 0      511             *:443             *:*    users:(("docker-proxy",pid=100,fd=7))
+EOF
+cat > "${WORK}/ss.udp" <<'EOF'
+State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+UNCONN 0      0              *:443             *:*    users:(("docker-proxy",pid=100,fd=9))
+EOF
+RC=0; run_block "${WARNFILE}" || RC=$?
+[ "${RC}" -eq 0 ] && pass "(1c) HostIp ::: rc 0" || fail "(1c) rc=${RC}: $(cat "${WARNFILE}")"
+N="$(grep -c '^WARN' "${WARNFILE}" || true)"
+[ "${N}" -eq 0 ] && pass "(1c) HostIp ::: -> v6*-Key passt zu ss" \
+  || fail "(1c) unerwartete WARN: $(cat "${WARNFILE}")"
 
 # --- (2) Fremd-Listener auf 80/tcp, keine eigenen Container -> WARN mit Name
 reset_fixtures
@@ -154,7 +187,7 @@ grep -q '80/tcp' "${WARNFILE}" && pass "(2) Fremd-80: Port/Proto genannt" || fai
 reset_fixtures
 printf '%s\n' c1 > "${WORK}/ps"
 printf '%s\n' '/coder-prometheus' > "${WORK}/c1.name"
-printf 'map[9090/tcp:[{127.0.0.1 9090}]]' > "${WORK}/c1.pb"
+printf '%s\n' '9090/tcp|127.0.0.1|9090' > "${WORK}/c1.pb"
 cat > "${WORK}/ss.tcp" <<'EOF'
 State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
 LISTEN 0      4096   127.0.0.1:9090       0.0.0.0:*    users:(("prometheus",pid=200,fd=3))
@@ -183,7 +216,7 @@ grep -q 'quicd' "${WARNFILE}" && pass "(4) Prozessname genannt" || fail "(4) Pro
 reset_fixtures
 printf '%s\n' c5 > "${WORK}/ps"
 printf '%s\n' '/coder' > "${WORK}/c5.name"
-printf 'map[80/tcp:[{ 80}]]' > "${WORK}/c5.pb"
+printf '%s\n' '80/tcp||80' > "${WORK}/c5.pb"
 cat > "${WORK}/ss.tcp" <<'EOF'
 State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
 LISTEN 0      511        0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=400,fd=6))
@@ -208,8 +241,13 @@ grep -qF 'PORT_CHECK="80/tcp 443/tcp 443/udp 9090/tcp 9100/tcp 3001/tcp"' "${SET
   && pass "PORT_CHECK vollstaendig (alle 6 Paare)" || fail "PORT_CHECK unvollstaendig"
 grep -qF 'sudo ss -tlnp' "${SETUP}" && pass "TCP-Vorpruefung per ss -tlnp" || fail "ss -tlnp fehlt"
 grep -qF 'sudo ss -ulnp' "${SETUP}" && pass "UDP-Vorpruefung per ss -ulnp" || fail "ss -ulnp fehlt"
-grep -qF "docker inspect --format '{{.HostConfig.PortBindings}}'" "${SETUP}" \
-  && pass "eigene Bindings aus HostConfig.PortBindings" || fail "PortBindings-Inspect fehlt"
+grep -qF 'range $p,$b := .HostConfig.PortBindings' "${SETUP}" \
+  && pass "eigene Bindings aus dem docker-eigenen Range-Template (D2)" || fail "PortBindings-Inspect fehlt"
+if grep -qF 'invalid IP' "${SETUP}"; then
+  fail "Go-Roh-String-Parsing (invalid IP) ist noch im Code"
+else
+  pass "Go-Roh-String-Parsing entfernt (D2)"
+fi
 grep -qF 'docker compose ps -q' "${SETUP}" && pass "Projekt-Container via docker compose ps -q" \
   || fail "compose ps -q fehlt"
 if grep -qF 'grep -Eq ":${_p}([^0-9]|$)"' "${SETUP}"; then

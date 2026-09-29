@@ -101,6 +101,14 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | Teilzustand: je Phase sind DB, Grafana und `.env` unterschiedlich weit. |
 | **Sichere Behebung** | Skript einfach erneut ausführen – es heilt in der Regel (idempotent). Bleibt die Anmeldung defekt: altes Passwort aus `.env.bak.<zeitstempel>` per `ALTER USER` setzen bzw. Grafana per `grafana-cli` angleichen. Nicht von Hand in der `.env` herumbasteln. |
 
+### A10. `Fehler: /etc/docker/daemon.json existiert, enthält aber kein Log-Limit (max-size/max-file)`
+
+| | |
+|---|---|
+| **Diagnose** | `sudo cat /etc/docker/daemon.json`; `sudo docker info --format '{{.LoggingDriver}}'` |
+| **Erwartete Ursache** | Vorhandene Docker-Konfiguration (z. B. von einem anderen Setup-Skript) ohne Log-Opts. Das Setup schreibt fremde Konfigurationen bewusst weder um noch mergt sie (kein jq als Abhängigkeit) – das wäre ein stiller Verlust von `insecure-registries`, `live-restore` o. Ä. |
+| **Sichere Behebung** | Die beiden Schlüssel von Hand ergänzen, übrige Einträge behalten, dann `sudo systemctl restart docker` und Setup erneut ausführen: `{ "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }`. Die Datei **nicht** löschen, solange dort weitere Optionen stehen. |
+
 ---
 
 ## B. Zugriff, DNS, TLS
@@ -137,6 +145,14 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | fail2ban-Ban nach 5 Fehlversuchen (1 h), ufw-Regel geändert, oder nach `ssh-harden.sh` ohne funktionierenden Key. |
 | **Sichere Behebung** | Über Zweit-Zugang (Konsole/Proxmox/iDRAC): `sudo fail2ban-client set sshd unbanip <ip>`. War die Härtung die Ursache: Rollback wie in [SECURITY.md](SECURITY.md) Abschnitt 1 (`rm` des Drop-Ins + `reload`). Vorher nie `ssh-harden.sh` ohne getesteten Key und Zweit-Zugang ausführen. |
 
+### B5. Workspace-Subdomain bekommt kein Zertifikat (ask meldet 404 / Connection refused)
+
+| | |
+|---|---|
+| **Diagnose** | `docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=<NAME>'` (200 = erlaubt, 404 = verboten); `docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`; `docker logs coder-caddy --tail=50`; `sudo docker compose -f /opt/coder/docker-compose.yml config \| grep -A3 on_demand` |
+| **Erwartete Ursache** | (1) Der Name passt nicht zum Coder-Muster (mindestens zwei `--`-Trenner, keine Punkte in der ersten Gruppe) – dann ist 404 **korrekt**; das Subformat steht in `SECURITY.md` Abschnitt 3. (2) `Connection refused` = Endpunkt nicht erreichbar, weil Caddyfile/Container-Status defekt ist. (3) Caddyfile-Syntaxfehler. |
+| **Sichere Behebung** | Bei (1): Subdomain-Format prüfen, nicht das Muster aufweiten (`.*` würde jede Zertifikatsausstellung öffnen). Bei (2)/(3): Caddyfile aus `setup-coder.sh` neu schreiben (Setup erneut ausführen), danach den Befehl oben wiederholen. **Nicht** `on_demand` entfernen – dann scheitert die Wildcard-Ausstellung komplett. |
+
 ---
 
 ## C. Stack und Container
@@ -162,8 +178,8 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | | |
 |---|---|
 | **Diagnose** | `sudo sha256sum /opt/coder/Caddyfile`, `sudo docker ps --filter name=coder-caddy` |
-| **Erwartete Ursache** | Compose merkt sich Änderungen an eingebundenen Dateien nicht; das Setup startet Caddy nur bei geändertem Hash neu. |
-| **Sichere Behebung** | `cd /opt/coder && sudo docker compose restart caddy`. Besser: Änderung in `setup-coder.sh` vornehmen und das Setup erneut ausführen – sonst meldet der Folgelauf Drift (Abschnitt G). |
+| **Erwartete Ursache** | Compose merkt sich Änderungen an eingebundenen Dateien nicht; das Setup lädt die Konfiguration nur bei geändertem Hash **und** grünem `caddy validate` per `reload` neu (kein `restart`: der bräche bestehende Verbindungen). |
+| **Sichere Behebung** | Zuerst validieren, dann laden: `docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` und danach dasselbe mit `caddy reload`. Schlägt `validate` fehl, behält Caddy die alte Konfiguration – dann erst den Fehler suchen. Besser: Änderung in `setup-coder.sh` vornehmen und das Setup erneut ausführen – sonst meldet der Folgelauf Drift (Abschnitt G). |
 
 ### C4. Nach Reboot: `BOOT-GATE ROT`
 
@@ -172,6 +188,14 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Diagnose** | `tail -50 /var/log/coder-boot.log`, `sudo journalctl -t coder-boot -n 50`, `sudo docker ps -a` |
 | **Erwartete Ursache** | Container nicht gestartet, Postgres nicht `healthy`, `/healthz` nicht 200 im 5-Minuten-Fenster (On-Demand-Erstverzögerung einkalkuliert). |
 | **Sichere Behebung** | Wie C1. Danach `sudo /opt/coder/boot-check.sh` manuell erneut ausführen – der Log-Eintrag wird laufbezogen ausgewertet, nicht kumulativ. |
+
+### C5. Prometheus zeigt 0 Alarmregeln / Grafana ohne Datasource
+
+| | |
+|---|---|
+| **Diagnose** | `curl -s http://127.0.0.1:9090/api/v1/rules \| grep -c '"name"'` (erwartet > 0); `docker logs coder-grafana --tail=50 \| grep -i provision`; `ls -l /opt/coder/rules/ /opt/coder/grafana/provisioning/datasources/` |
+| **Erwartete Ursache** | Beide Dienste lesen ihre Dateien nur beim Start. Der Neustart nach einer Änderung ist im Setup an Hash und laufenden Container gekoppelt und kann fehlgeschlagen sein (dann steht ein `[WARNUNG] … Neustart … fehlgeschlagen` in der SUMMARY). |
+| **Sichere Behebung** | `sudo docker restart coder-prometheus coder-grafana` (wenige Sekunden Messlücke, unbedenklich) und danach die Diagnose wiederholen. Danach Setup erneut ausführen, damit die Hashes stimmen. Nicht die `rule_files`-Zeile oder die Provisioning-Mounts entfernen. |
 
 ---
 
@@ -209,6 +233,14 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | Entweder legitime Verkleinerung (Reset, gelöschte Daten) oder Teilverlust. |
 | **Sichere Behebung** | Ursache klären, bevor die Warnung akzeptiert wird. Das Kriterium ist absichtlich nur eine Warnung – eine frische/verkleinerte DB darf nicht abbrechen. |
 
+### D5. Backup läuft, aber `coder_backup_last_success_timestamp_seconds` fehlt
+
+| | |
+|---|---|
+| **Diagnose** | `ls -ld /opt/coder/node-textfile`; `cat /opt/coder/node-textfile/coder_backup.prom`; `docker exec coder-node-exporter ls -l /var/lib/node-exporter/textfile`; `docker logs coder-node-exporter --tail=20`; `grep -i 'Metrik' /var/log/coder-backup.log` |
+| **Erwartete Ursache** | Verzeichnis fehlt oder ist enger als `0755` (backup.sh läuft mit `umask 077`), der textfile-collector ist nicht aktiv, oder nach dem Verzeichnis-Lauf wurde node-exporter nicht neu gestartet. |
+| **Sichere Behebung** | `sudo install -d -m 0755 /opt/coder/node-textfile`, `sudo /opt/coder/backup.sh` erneut, `sudo docker restart coder-node-exporter` falls nötig. Wichtig: ein fehlgeschlagener Metrik-Schreibversuch macht ein **gutes Backup nicht** zu einem Fehler – die Dump-Datei bleibt gültig, betroffen ist allein die Alarmregel `BackupStale`. |
+
 ---
 
 ## E. Firewall, Updates, Wartung
@@ -226,8 +258,8 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | | |
 |---|---|
 | **Diagnose** | `sudo systemctl status fail2ban --no-pager`, `sudo fail2ban-client status`, `sudo journalctl -u fail2ban -n 50` |
-| **Erwartete Ursache** | Dienst nicht gestartet, `jail.local` defekt, `sshd -T` liefert keine `PasswordAuthentication`-Zeile (Drop-In-Problem). |
-| **Sichere Behebung** | `sudo systemctl restart fail2ban`, danach `sudo fail2ban-client status sshd` muss wieder grün sein. Bei Config-Fehlern `/etc/fail2ban/jail.local` gegen den vom Setup erzeugten Inhalt prüfen (Abschnitt „Vom Setup erzeugte Dateien" in [OPERATIONS.md](OPERATIONS.md)) und das Journal lesen. **Nicht** fail2ban deaktivieren, um die Meldung loszuwerden. |
+| **Erwartete Ursache** | Dienst nicht gestartet, Drop-In defekt, `sshd -T` liefert keine `PasswordAuthentication`-Zeile (Drop-In-Problem). Achtung Lese-Reihenfolge: eine vorhandene `/etc/fail2ban/jail.local` hat **Vorrang** vor dem Setup-Drop-In. |
+| **Sichere Behebung** | `sudo systemctl restart fail2ban`, danach `sudo fail2ban-client status sshd` muss wieder grün sein. Bei Config-Fehlern `/etc/fail2ban/jail.d/10-coder-sshd.local` und eine vorhandene `jail.local` gegeneinander prüfen (Abschnitt „Vom Setup erzeugte Dateien" in [OPERATIONS.md](OPERATIONS.md)) und das Journal lesen. **Nicht** fail2ban deaktivieren, um die Meldung loszuwerden. |
 
 ### E3. `[FEHLER] … 80/tcp fehlt in ufw` u. ä.
 
@@ -269,6 +301,14 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | Zwischenzustand DB/Grafana/.env. |
 | **Sichere Behebung** | Skript erneut ausführen (heilt). Wenn danach kein DB-Login mehr gelingt: altes Passwort aus `.env.bak.<ts>` per `ALTER USER coder WITH PASSWORD …` setzen. Reihenfolge DB→`.env` ist Status-quo und wurde nicht still umgestellt. |
 
+### E8. `[FEHLER] Docker-Origin fehlt in apt-config – C6 hätte keine Wirkung`
+
+| | |
+|---|---|
+| **Diagnose** | `apt-config dump \| grep -F 'o=Docker'`; `sudo cat /etc/apt/apt.conf.d/52-coder-docker-upgrades`; `grep -rn 'Origins-Pattern' /etc/apt/apt.conf.d/` |
+| **Erwartete Ursache** | Die Drop-In-Datei fehlt/ist leer, oder eine andere Konfigurationsdatei setzt `Unattended-Upgrade::Origins-Pattern` (Einzelpunkt statt Doppelpunkt) und ersetzt damit die komplette Liste. |
+| **Sichere Behebung** | Setup erneut ausführen (es schreibt die Datei neu). Wenn danach immer noch `o=Docker` fehlt: die Datei mit der Ersatz-Setzung suchen und dort auf `::` (Anhängen) umstellen. **Nicht** die Debian-Muster aus `50unattended-upgrades` löschen – sonst fallen Sicherheitsupdates weg. |
+
 ---
 
 ## F. Restore
@@ -306,7 +346,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | | |
 |---|---|
 | **Diagnose** | `sudo cat /opt/coder/.generated-hashes`, `sudo sha256sum <datei>` |
-| **Erwartete Ursache** | Hand-Änderung an einer generierten Datei (Caddy-Snippet, Cron-Zeit, jail.local, Logrotate). |
+| **Erwartete Ursache** | Hand-Änderung an einer generierten Datei (Caddy-Snippet, Cron-Zeit, fail2ban-Drop-In `jail.d/10-coder-sshd.local`, Logrotate). |
 | **Sichere Behebung** | Gewollte Änderung in `setup-coder.sh` aufnehmen und Setup erneut ausführen. Der Lauf schreibt die Datei ohnehin neu – die Hand-Änderung geht sonst verloren. Warnung ist beabsichtigt (kein Still-Lauf). |
 
 ### G2. Warnung: `SSH-Passwort-Login ist noch AKTIV`

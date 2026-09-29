@@ -16,14 +16,50 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 
 **Ist-Zustand**
 
-- Port 22 ist von überall erreichbar (bewusst, damit Zugriff von zuhause
-  möglich ist; die Schulnetz-Infrastruktur muss 22 zusätzlich zu 80/443
-  weiterleiten).
-- Schutz: `ufw limit 22/tcp` (eingebautes Rate-Limiting von ufw) und
-  fail2ban als zweite Linie.
+- **Zielbetrieb (Schulserver):** Zugang dort ist **derzeit nur per Passwort**
+  möglich – es ist noch kein SSH-Key eingerichtet. Erreichbar ist SSH nur aus
+  dem Schulnetz bzw. per VPN (Einschränkung liegt in der Netzwerkinfrastruktur,
+  nicht im Setup). **Deshalb darf `ssh-harden.sh` dort nicht laufen, bevor ein
+  Key gesetzt und aus einem zweiten Fenster getestet ist** – sonst wird die
+  einzige Zugangsart abgeschaltet. Reihenfolge: `ssh-copy-id` → Login in
+  zweitem Fenster testen → dann erst über Härtung entscheiden. Das Skript
+  erzwingt das ohnehin (beide Flags + erkannter Key, sonst Abbruch).
+  **Entscheidung 2026-09-29: bis dahin nur die Minimalvariante gegen
+  fehlgeschlagene Logins, kein vollständiges `ssh-harden.sh`** (Skript
+  bleibt vorbereitet, unausgeführt).
+- **Test-Host (Hetzner `2.29.11.30`):** Login **nur per Key** – es existiert
+  kein Konto mit Passwort in `/etc/shadow`, ein Passwort-Login schlägt bei
+  jedem Konto fehl. Port 22 ist von überall erreichbar, damit Zugriff von
+  zuhause möglich ist; die Schulnetz-Infrastruktur muss 22 zusätzlich zu
+  80/443 weiterleiten.
+- Schutz in beiden Fällen: `ufw limit 22/tcp` (eingebautes Rate-Limiting von
+  ufw) und fail2ban als zweite Linie.
 - Passwort-Login ist **nicht** deaktiviert. Das Setup führt `ssh-harden.sh`
   nicht aus; der Abschlusscheck meldet den Zustand bei jedem Lauf und
   fordert auf, Key-Login zuerst zu testen.
+- **Restrisiko der Entscheidung:** Jedes Gerät im Schulnetz/VPN erreicht
+  Port 22 und kann per Passwort raten; ein geteiltes oder weitergegebenes
+  Passwort bleibt gültig. Härtung nachholen, sobald der Server von außen
+  erreichbar wird, der Zugang geteilt wird oder die Zugriffswege reduziert
+  werden sollen.
+
+**Vorgehen 2026-09-29: Minimalvariante (gegen fehlgeschlagene Logins)**
+
+Nichts zu ergänzen – das Setup liefert den Schutz bereits, gemessen auf dem
+Test-Host am 2026-09-29:
+
+| Maßnahme | Ist-Wert | Quelle |
+|---|---|---|
+| `ufw limit 22/tcp` (v4 + v6) | aktiv, Rate-Limiting | `ufw status` |
+| fail2ban-Jail `sshd` | 5 Fehlversuche / 10 min / 1 h Ban, `backend=systemd` | `/etc/fail2ban/jail.d/10-coder-sshd.local` |
+| fail2ban tatsächlich am Sperren | `Total banned: 134`, `Currently banned: 10` | `fail2ban-client status sshd` |
+| Root per Passwort gesperrt | `permitrootlogin without-password` | `sshd -T` |
+| Leere Passwörter / Kbd-Interactive | `permitemptypasswords no`, `kbdinteractiveauthentication no` | `sshd -T` |
+| Passwort-Login allgemein | `passwordauthentication yes` (bewusst offen) | `sshd -T` |
+
+Optional und derzeit **nicht** gesetzt: ein Drop-In mit `MaxAuthTries 3`
+und `LoginGraceTime 30`. Der Effekt wäre gering, weil fail2ban ohnehin
+nach 5 Fehlversuchen in 10 Minuten sperrt.
 
 ```bash
 sudo ufw status verbose                      # 22/tcp LIMIT?
@@ -100,24 +136,42 @@ git status --porcelain | grep -i env               # muss leer sein
 HTTP-01 nicht möglich; ohne DNS-Provider-API-Token nutzt das Setup die von
 Coder empfohlene Lösung: **On-Demand-TLS**.
 
-**Bekannte Begrenzung (bewusst so umgesetzt, nicht versteckt)**
+**`ask`-Endpunkt (B1)**
 
-- `ask http://example.com` beantwortet **jede** Anfrage mit 200. Jeder
-  Internet-Teilnehmer kann also per SNI mit einem beliebigen Namen, der auf
-  `*.coder.ghse-unterricht.de` passt, ein echtes Let's-Encrypt-Zertifikat
-  auslösen – ohne Coder-Account.
-- On-Demand gilt auch für die Apex-Domain, nicht nur für die Wildcard.
+`on_demand_tls.ask` zeigt auf `http://127.0.0.1:9123/ask` – ein eigener
+Caddy-Site-Block, der Port steht **nicht** in `ports:` der compose-Datei
+und hat keine ufw-Regel: von außen unerreichbar, nur aus dem Container-
+Netz. Er antwortet `200` nur, wenn der beantragte `?domain=`-Parameter dem
+Coder-Subdomänen-Muster entspricht, sonst `404`:
+
+- Muster (Quelle: Coder-Quellcode `coderd/workspaceapps/appurl/appurl.go`,
+  Format `{PORT/APP_SLUG}[--{AGENT_NAME}]--{WORKSPACE_NAME}--{USERNAME}`):
+  `^<label>(--<label>){2,}$` + `.` + Apex-Domain. Punkte in der ersten
+  Gruppe sind ausgeschlossen, deshalb greifen `evil.coder.…`,
+  `a.b.coder.…` und der Apex selbst **nicht**.
+- Der Apex-Domain-Block (`coder.…`) läuft **ohne** `on_demand`: sein
+  Zertifikat kommt beim Start bzw. bei der regulären Erneuerung und
+  berührt das On-Demand-Budget nicht.
+- Geprüft (live, `t-b1-on-demand-ask.sh`): 200 für App-Namen mit 2 und 3
+  `--`-Trennern, 404 für Apex, für `evil.…`, für geschachtelte Namen,
+  für falsche Pfade und für fehlende Parameter.
+
+**Was diese Absicherung NICHT leistet (P-005)**
+
+- Das Muster ist ein **Filter, kein Budgetschutz**: für jeden Namen, der
+  hineinpasst, kann ein beliebiger Internet-Teilnehmer das Zertifikat
+  weiterhin auslösen – ohne Coder-Account und ohne Authentifizierung.
+  Ein Angreifer kann ausreichend gültige Namen konstruieren (beliebige
+  Workspace-Namen), wenn er das Wochenbudget erschöpfen will.
 - Das Wochenbudget (50 Ausstellungen pro registrierter Domain
   `ghse-unterricht.de`) ist **geteilt** mit allen anderen Schuldiensten
   derselben Domain. Bei Erschöpfung bekommen legitime neue Workspace-Apps
   kein Zertifikat → TLS-Fehler im Unterricht.
-- Erster Handshake einer neuen Subdomain dauert 5–30 s länger; der
-  Handshake hängt zusätzlich an der Erreichbarkeit von `example.com`.
-- Der Schutz gegen Missbrauch liegt allein am Site-Block-Muster: Caddy
-  fragt nur für Namen an, die auf `*.coder.ghse-unterricht.de` passen.
-- Echter Fix (echter ask-Endpunkt statt `example.com` oder DNS-01-Wildcard)
-  ist eine offene Entscheidung (D-TLS) mit Frist – bis dahin bleibt die
-  Mechanik.
+- Erster Handshake einer neuen Subdomain dauert 5–30 s länger (Zertifikat
+  wird beim ersten Aufruf beantragt).
+- Echter Fix bleibt DNS-01-Wildcard ohne On-Demand (eigener API-Token des
+  DNS-Anbieters, offene Entscheidung D-TLS mit Frist). Bis dahin gilt:
+  Budget über `check-tls.sh` beobachten.
 
 **Erkennung**: `check-tls.sh` zählt `obtaining certificate` im Caddy-Log
 der letzten 7 Tage, schreibt nach `/var/log/coder-tls.log` und ins
@@ -166,10 +220,22 @@ kein Container) greifen ufw und fail2ban tatsächlich. Ein
 `DOCKER-USER`-Einbau ist eine offene Entscheidung (D-Firewall) und wurde
 bewusst nicht eingebaut.
 
-**fail2ban** (`/etc/fail2ban/jail.local`): Jail `sshd`, `backend=systemd`,
-`maxretry=5`, `findtime=10m`, `bantime=1h`. Bei unveränderter
-`jail.local` lädt das Setup den Dienst **nicht** neu (sonst würden aktive
-Bans verworfen).
+**Reihenfolge ist die Sicherheitsfunktion (A1)**: Im Bypass-Lauf steht
+zuerst die Wiederherstellung der vorgefundenen restriktiven Regel samt
+Verifikation gegen das After-Log, erst danach wird die weltweite
+`22/tcp LIMIT Anywhere` entfernt. Ein Abbruch dazwischen lässt die
+Beschränkung stehen; der schlimmste Fall ist der Ausgangszustand, nie ein
+neues Loch. Fehlt die Quelle im After-Log oder steht die weltweite Limit-
+Regel noch, bricht das Setup mit `[FEHLER]` ab.
+
+**fail2ban** – eigene Jails liegen im Drop-In
+`/etc/fail2ban/jail.d/10-coder-sshd.local` (B7), nicht in `jail.local`:
+jail.local hat laut Lese-Reihenfolge Vorrang und würde Hand-Änderungen des
+Operators überschreiben. Eine zuvor setup-eigene `jail.local` wird nur
+entfernt, solange ihr Hash noch der gespeicherten entspricht; sonst bleibt
+sie (mit WARN) und hat Vorrang. Jail `sshd`, `backend=systemd`,
+`maxretry=5`, `findtime=10m`, `bantime=1h`. Ohne Änderung lädt das Setup
+den Dienst **nicht** neu (sonst würden aktive Bans verworfen).
 
 ```bash
 sudo ufw status numbered
@@ -191,9 +257,18 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   keine endlosen Wiederholungen, kein Retry um Let's-Encrypt.
 - Log-Rotation existiert für `/var/log/coder-backup.log`; für
   `/var/log/coder-boot.log` und `/var/log/coder-tls.log` fehlt sie.
-- Es gibt **kein Alerting** (kein Alertmanager, keine Benachrichtigung).
-  Gesundheit wird nur sichtbar, wer sie abfragt (Boot-Gate, TLS-Check,
-  manuelle Checks in [OPERATIONS.md](OPERATIONS.md)).
+- Container-Logs sind daemon-weit begrenzt (`daemon.json`, json-file
+  10 MB × 3). Liegt eine fremde `daemon.json` ohne diese Schlüssel vor,
+  bricht das Setup ab, statt sie umzuschreiben (C2).
+- Docker-Pakete laufen in die automatischen Sicherheitsupdates mit ein
+  (`52-coder-docker-upgrades`, C6); ohne diesen Origin fielen
+  `docker-ce`/`containerd.io` still heraus.
+- Es gibt **Alarmregeln, aber kein Alerting**: drei Prometheus-Regeln
+  (Coder-Target down, Root-Partition <10 % frei, letztes Backup >25 h)
+  sind in Prometheus/Grafana sichtbar, aber **kein Kanal**, der jemanden
+  weckt – kein Alertmanager, keine Benachrichtigung. Gesundheit meldet
+  sich nur, wer sie abfragt (Boot-Gate, TLS-Check, manuelle Checks in
+  [OPERATIONS.md](OPERATIONS.md)).
 - Image-Pinning: Coder/Prometheus/Grafana/node-exporter exakt, Caddy minor
   (`2.10`) und `postgres:15-alpine` mit beweglichen Tags. Ein
   bit-genauer Pin bräuchte Digests (`sha256:…`) – nicht umgesetzt.
@@ -261,14 +336,14 @@ ss -tlnp; ss -ulnp | grep 443
 | # | Grenze | Risiko in einem Satz | Status |
 |---|---|---|---|
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | Trennung offen (D-Socket), Allowlist greift bis dahin |
-| 2 | SSH-Passwort-Login aktiv, Port 22 weltweit | Brute-Force trotz ufw/fail2ban möglich | `ssh-harden.sh` vorbereitet, nicht ausgeführt (D-SSH) |
-| 3 | On-Demand-`ask` antwortet immer 200 | jeder löst Zertifikate aus, geteiltes Wochenbudget erschöpfbar | Mechanik bleibt bis D-TLS mit Frist |
+| 2 | SSH-Passwort-Login aktiv; im Zielbetrieb nur Schulnetz/VPN erreichbar, auf dem Test-Host weltweit | Brute-Force trotz ufw/fail2ban möglich (Test-Host; im Schulnetz nur durch jeden Rechner dort) | Entscheidung 2026-09-29: vorerst keine Härtung, `ssh-harden.sh` vorbereitet (D-SSH) |
+| 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1), Budget-Schutz bleibt bis D-TLS mit Frist |
 | 4 | TLS-Zählung blind gegenüber Log-Rotation | Budget-DoS fällt unter Umständen nicht auf (B2-005) | offen |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | offen (D-Offsite) |
 | 6 | Restore nie geprobt, RTO unbekannt | im Ernstfall ist der Wiederherstellungsweg ungeprüft | offen, Probe nur auf Test-VM |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | offen (D-Reboot-Fenster) |
-| 9 | Kein Alerting, keine Digest-Pins, Logs ohne Rotation (boot/tls) | Ausfälle und Veränderungen fallen erst auf, wenn jemand hinsieht | offen (u. a. D-Monitoring) |
+| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins, Logs ohne Rotation (boot/tls) | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden, Kanal offen (D-Monitoring) |
 | 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
 
 **Regel für Reparaturen:** Kein Fehlerbild wird durch Abschalten von

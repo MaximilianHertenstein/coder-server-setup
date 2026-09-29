@@ -182,8 +182,9 @@ run_stmt() { # $1=stmt-file $2=tag $3=alt $4=neu(pg) $5=neu(gf)
   local argv="${WORK}/$2.argv" stdin="${WORK}/$2.stdin"
   rm -f "${argv}" "${stdin}"
   # shellcheck disable=SC2034
-  # OLD_/NEW_-Vars werden im eval'd Produktions-Statement verwendet.
-  ( OLD_PG_PW="$3"; NEW_PG_PW="$4"; NEW_GF_PW="$5";
+  # OLD_/NEW_-Vars + PGH (Postgres-Container-IP aus A2) werden im eval'd
+  # Produktions-Statement verwendet.
+  ( OLD_PG_PW="$3"; NEW_PG_PW="$4"; NEW_GF_PW="$5"; PGH="172.18.0.2";
     docker() { printf '%s\n' "$@" >> "${argv}"; cat > "${stdin}"; }
     eval "$(cat "$1")" )
 }

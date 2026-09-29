@@ -25,8 +25,9 @@ trap 'rm -rf "${WORK}"' EXIT
 EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/Caddyfile
 /opt/coder/prometheus.yml
-/etc/fail2ban/jail.local
+/etc/fail2ban/jail.d/10-coder-sshd.local
 /etc/apt/apt.conf.d/52-coder-reboot
+/etc/apt/apt.conf.d/52-coder-docker-upgrades
 /opt/coder/boot-check.sh
 /etc/cron.d/coder-bootcheck
 /opt/coder/check-tls.sh
@@ -41,8 +42,8 @@ EXPECTED="/opt/coder/docker-compose.yml
 N_NOTE=$(grep -c '^note_drift "' "${SETUP}")
 N_REM=$(grep -c '^remember_hash "' "${SETUP}")
 echo "INFO: note_drift=${N_NOTE} remember_hash=${N_REM}"
-[ "${N_NOTE}" -eq 15 ] && pass "genau 15 note_drift-Aufrufe" || fail "note_drift-Anzahl=${N_NOTE} (erwartet 15)"
-[ "${N_REM}" -eq 15 ] && pass "genau 15 remember_hash-Aufrufe" || fail "remember_hash-Anzahl=${N_REM} (erwartet 15)"
+[ "${N_NOTE}" -eq 16 ] && pass "genau 16 note_drift-Aufrufe" || fail "note_drift-Anzahl=${N_NOTE} (erwartet 16)"
+[ "${N_REM}" -eq 16 ] && pass "genau 16 remember_hash-Aufrufe" || fail "remember_hash-Anzahl=${N_REM} (erwartet 16)"
 
 nl_idx() { grep -nF "$1" "${SETUP}" | head -n1 | cut -d: -f1; }
 
@@ -172,6 +173,25 @@ else
 fi
 N_ENTRIES=$(grep -c . "${HASHSTORE}")
 [ "${N_ENTRIES}" -eq 1 ] && pass "Hashstore genau 1 Eintrag" || fail "Hashstore-Eintraege=${N_ENTRIES}"
+
+# --- 4. B7: Drop-In statt jail.local, hash-guarded Entfernung ---------------
+if grep -qF 'sudo tee /etc/fail2ban/jail.local ' "${SETUP}"; then
+  fail "B7: eigene jail.local wird noch beschrieben (Ueberschreibt Operator-Jails)"
+else
+  pass "B7: jail.local wird nicht mehr beschrieben"
+fi
+grep -qF 'JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"' "${SETUP}" \
+  && pass "B7: eigene Jails liegen in jail.d/10-coder-sshd.local" \
+  || fail "B7: Drop-In-Pfad fehlt"
+grep -qF '[ -n "${_jl_exp}" ] && [ "${_jl_cur}" = "${_jl_exp}" ]' "${SETUP}" \
+  && pass "B7: Entfernen der alten jail.local ist hash-guarded (Hand-Aenderungen bleiben)" \
+  || fail "B7: Hash-Guard fehlt"
+grep -qF 'forget_hash() {' "${SETUP}" \
+  && pass "B7: forget_hash vorhanden (kein Rest-Hash nach dem Loeschen)" \
+  || fail "B7: forget_hash fehlt"
+grep -qF 'JAIL_CHANGED=1' "${SETUP}" \
+  && pass "B7: Loeschen der alten jail.local loest Reload aus (P-025)" \
+  || fail "B7: Reload-Flag fehlt"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-007: ALLE PRUEFUNGEN BESTANDEN"

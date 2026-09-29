@@ -50,13 +50,20 @@ else
   pass "kein Host-Header gegen 127.0.0.1 mehr"
 fi
 
-# Schritt 10 unveraendert: echter DNS-Pfad, Domain als SNI, kein --resolve, max-time 10
-STEP10_LINE="$(grep -F 'https://${DOMAIN_CODER}/healthz' "${SETUP}" || true)"
-if printf '%s\n' "${STEP10_LINE}" | grep -qF -- '--max-time 10' \
-  && ! printf '%s\n' "${STEP10_LINE}" | grep -qF -- '--resolve'; then
-  pass "Schritt 10 unveraendert (echtes DNS, Domain-SNI, max-time 10, kein --resolve)"
+# Schritt 10 (A7): getrennte lokale und oeffentliche Probe. Lokal MIT
+# --resolve (127.0.0.1, unabhaengig von DNS/Hairpin) + Retry, oeffentlich
+# OHNE --resolve (echter DNS-Weg, ein Versuch). Beide Pfade muessen existieren.
+if grep -qF -- '--resolve "${DOMAIN_CODER}:443:127.0.0.1" "https://${DOMAIN_CODER}/healthz"' "${SETUP}" \
+  && grep -qF -- '--max-time 10' "${SETUP}" \
+  && grep -qF -- 'while [ "${_try}" -lt 6 ]' "${SETUP}"; then
+  pass "Schritt 10 A7: lokaler Pfad mit --resolve und Retry (6x max-time 10)"
 else
-  fail "Schritt 10 veraendert (muss echtes DNS ohne --resolve bleiben)"
+  fail "Schritt 10: lokaler Retry-Pfad mit --resolve fehlt"
+fi
+if grep -qF 'PUB_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://${DOMAIN_CODER}/healthz"' "${SETUP}"; then
+  pass "Schritt 10 A7: oeffentlicher Pfad ohne --resolve (1 Versuch, echter DNS-Weg)"
+else
+  fail "Schritt 10: oeffentlicher Pfad ohne --resolve fehlt"
 fi
 
 # Boot-Poll-Schleife erhalten (30x, bestehende Semantik)

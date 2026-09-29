@@ -109,6 +109,10 @@ keinen Datenstand aus einem Dump.
 - Coder migriert sein Schema beim Start selbst; Downgrades können irreversibel
   sein – Restore immer auf gleiche/kleinere Coder-Version fahren, Major-Wechsel
   nur einzeln mit frischem Dump.
+- `setup-coder.sh` erzwingt das auch ohne Dump: die zuletzt wirksam gewesenen
+  Versionen stehen in `/opt/coder/versions.env`, ein niedrigerer Wert bricht
+  vor dem Stack ab. Bewusstes Zurücksetzen (nur mit verifiziertem Dump):
+  `sudo env CODER_ALLOW_DOWNGRADE=yes CODER_VERSION=... ./setup-coder.sh`.
 - Verwaiste Workspace-Container aus der Alt-Installation gibt es auf einer
   frischen VM nicht; beim Restore auf bestehendem Host vorher inventarisieren
   (`docker ps -a`, siehe reset-coder.sh).

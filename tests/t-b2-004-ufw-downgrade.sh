@@ -37,7 +37,9 @@ RE_ACTION="$(sed -n "s/.*grep -Eio '\([^']*\)'.*/\1/p" "${SETUP}")"
 
 L_START="$(grep -nF 'UFW_OUT="$(sudo ufw status numbered' "${SETUP}" | cut -d: -f1 || true)"
 GATE="$(awk -v s="${L_START}" 'NR>=s{print} NR>s && $0=="fi"{exit}' "${SETUP}")"
-L_RES="$(grep -nF 'if [ -n "${UFW_RESTORE_SRC}" ]; then' "${SETUP}" | cut -d: -f1 || true)"
+# head -n 1: seit A1 gibt es diese Bedingung zweimal (Restore-Block vorne,
+# pfad-abhaengiger Abschlusscheck hinten) – extrahiert wird der Restore-Block.
+L_RES="$(grep -nF 'if [ -n "${UFW_RESTORE_SRC}" ]; then' "${SETUP}" | cut -d: -f1 | head -n 1 || true)"
 RESTORE="$(awk -v s="${L_RES}" 'NR>=s{print} NR>s && $0=="fi"{exit}' "${SETUP}")"
 printf '%s\n' "${GATE}" > "${WORK}/gate.sh"
 printf '%s\n' "${RESTORE}" > "${WORK}/restore.sh"
@@ -260,8 +262,9 @@ RC=0
   warn() { echo "WARN: $1"; }
   ok()   { echo "OK: $1"; }
   fail() { echo "FEHLER: $1"; }
+  # A1: after.log entsteht NACH dem Loeschen der weltweiten limit-Regel -
+  # der Zustand enthaelt also nur noch die restriktive Regel.
   export FAKE_UFW_STATUS='Status: active
-22/tcp                     LIMIT       Anywhere
 22/tcp                     ALLOW       192.168.1.0/24'
   export FAKE_UFW_RC=0
   export UFW_RESTORE_SRC="192.168.1.0/24"
@@ -305,6 +308,39 @@ assert_rc 1 "Restore ohne Treffer in after.log: Exit 1"
 assert_out "FEHLER:" "Restore ohne Treffer: Fehlermeldung"
 printf '%s' "${OUT}" | grep -qF "RESTORE_CONTINUE" && fail "Restore ohne Treffer: darf nicht weiterlaufen" || pass "Restore ohne Treffer: kein Weiterlauf"
 
+# A1: after.log enthaelt restriktive UND weltweite limit-Regel -> Exit 1.
+# Genau der Zustand, den der alte Code still ließ (die Beschraenkung waere
+# neben der weltweiten Regel wirkungslos).
+RC=0
+( set -euo pipefail
+  sudo() {
+    if [ "${1:-}" = "tee" ]; then
+      shift
+      command tee "${LOGDIR}/$(basename "$1")"
+    else
+      "$@"
+    fi
+  }
+  warn() { echo "WARN: $1"; }
+  ok()   { echo "OK: $1"; }
+  fail() { echo "FEHLER: $1"; }
+  export FAKE_UFW_STATUS='Status: active
+22/tcp                     LIMIT       Anywhere
+22/tcp                     ALLOW       192.168.1.0/24'
+  export FAKE_UFW_RC=0
+  export UFW_RESTORE_SRC="192.168.1.0/24"
+  export UFW_RESTORE_ACTION="allow"
+  export UFW_AFTER_LOG="${LOGDIR}/restore3.after.log"
+  . "${WORK}/restore.sh"
+  echo "RESTORE_CONTINUE"
+) > "${WORK}/out4.txt" 2>&1 || RC=$?
+OUT="$(cat "${WORK}/out4.txt")"
+assert_rc 1 "A1: weltweite LIMIT-Regel neben der Beschraenkung -> Exit 1"
+assert_out "FEHLER:" "A1: Fehlermeldung statt stille Duldung"
+printf '%s' "${OUT}" | grep -qF "RESTORE_CONTINUE" \
+  && fail "A1: darf nicht weiterlaufen, wenn LIMIT Anywhere stehen bleibt" \
+  || pass "A1: kein Weiterlauf bei weltweiter LIMIT-Regel"
+
 # --- Struktur: keine stille Oeffnung mehr, alte Schwachstelle weg -----------
 grep -qF 'grep -Eq "22/(tcp|ssh)' "${SETUP}" \
   && fail "alter lueckenhafter Detektor wird noch als Gate benutzt" \
@@ -312,6 +348,29 @@ grep -qF 'grep -Eq "22/(tcp|ssh)' "${SETUP}" \
 grep -qF 'Re-Run weitet SSH auf weltweit+limit aus' "${SETUP}" \
   && fail "alte reine Warnung ohne Gate ist noch im Code" \
   || pass "alte reine Warnung ohne Gate ist entfernt"
+# A1: Reihenfolge "erst zusperren, dann oeffnen" – die weltweite limit-Regel
+# darf erst NACH der wiederhergestellten restriktiven Regel geloescht werden,
+# und auf einem Bypass-Lauf darf sie gar nicht erst gesetzt werden.
+LR="$(grep -nF 'sudo ufw "${UFW_RESTORE_ACTION}" from "${UFW_RESTORE_SRC}"' "${SETUP}" | cut -d: -f1 | head -n 1 || true)"
+LDL="$(grep -nF 'sudo ufw --force delete limit 22/tcp' "${SETUP}" | cut -d: -f1 || true)"
+[ -n "${LR}" ] && [ -n "${LDL}" ] && [ "${LR}" -lt "${LDL}" ] \
+  && pass "A1: Weltweite limit-Regel wird erst NACH der Restaurierung entfernt (Z.${LR} < Z.${LDL})" \
+  || fail "A1: Reihenfolge Restore/Del-Limit falsch (Restore=${LR} del=${LDL})"
+LANY="$(grep -nF 'sudo ufw limit 22/tcp' "${SETUP}" | cut -d: -f1 || true)"
+[ -n "${LANY}" ] && [ "${LANY}" -gt "${LDL}" ] \
+  && pass "A1: 'ufw limit 22/tcp' steht im else-Zweig NACH dem Delete (Z.${LANY} > Z.${LDL})" \
+  || fail "A1: 'ufw limit 22/tcp' nicht im else-Zweig (else=${LANY} del=${LDL})"
+# Zwei getrennte Fragmente, damit die $-Zeichen im Muster hier nicht von der
+# Test-Shell expandiert werden (UFW_AFTER_LOG ist auf Top-Level nicht gesetzt).
+if grep -qF "grep -E '22/tcp[[:space:]]+LIMIT'" "${SETUP}" \
+  && grep -qF "| grep -q 'Anywhere'" "${SETUP}"; then
+  pass "A1: Abschlusscheck prueft nachweislich auf restriktiven Pfad gegen 'LIMIT Anywhere'"
+else
+  fail "A1: harter Check gegen weltweite LIMIT-Regel fehlt"
+fi
+grep -qF 'Weltweite '\''22/tcp LIMIT Anywhere'\''-Regel existiert trotz wiederhergestellter Beschränkung' "${SETUP}" \
+  && pass "A1: pfad-abhaengiger Abschlusscheck vorhanden" \
+  || fail "A1: pfad-abhaengiger Abschlusscheck fehlt"
 LC="$(grep -nF 'UFW_OUT="$(sudo ufw status numbered' "${SETUP}" | cut -d: -f1 || true)"
 LI="$(grep -nF "grep -qi 'Status:" "${SETUP}" | cut -d: -f1 || true)"
 LB="$(grep -nF 'elif [ -n "${UFW_RESTRICTED}" ]' "${SETUP}" | cut -d: -f1 || true)"

@@ -9,8 +9,91 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-28 · aktueller Quellstand: `git log -1 --oneline`
-(Branch `main`; Umsetzung lief auf `ai/implementation-v3`).
+Stand: 2026-09-29 · aktueller Quellstand: `git log -1 --oneline`
+(Branch `main`; Umsetzung lief auf `ai/implementation-v3`; die Änderungen
+dieses Eintrags sind **nicht committet** – Arbeitsstand im Repo).
+
+---
+
+## 2026-09-29 – Review-Runde: Umsetzung (Phasen 1–7) + Live-Läufe 8 und 9
+
+**Umfang:** Umsetzung der Befunde aus der Review-Runde im vereinbarten
+Umfang „alle Fixes außer D1" plus Doku; danach zwei vollständige
+Setup-Läufe auf dem Test-Host `2.29.11.30` (Debian 13). Doku-Ziel:
+README, SECURITY, OPERATIONS, TROUBLESHOOTING, RESTORE, neue
+`ai-review/REVIEW-2026-09-29-AUSWERTUNG.md`.
+
+- **Code (`setup-coder.sh`):** A1 ufw-Failsafe-Ordnung (restriktive Regel
+  wiederherstellen → prüfen → erst dann `limit` löschen; Worldwide-`limit`
+  nur im else-Zweig; Pfad-Check), A2 Postgres-Loopback-Verifikation mit
+  Negativkontrolle, A3 `flock -w 300`/`exit 75`, A4 Versions-Kommentar,
+  A5 Versionswächter + `versions.env`, A6 `retry3 docker compose pull`,
+  A7 TLS-Gate mit zwei Probes, A9 `ssh-harden.sh`-Kopie, A10
+  `daemon.json`-Anlage mit Merge-Anweisung statt stillschweigendem
+  Überschreiben,
+  B1 lokaler On-Demand-`ask`-Endpunkt, B2 Owner-/Nutzerhinweis in Schritt 10,
+  B6 `CODER_TELEMETRY_ENABLE=false`, B7 fail2ban-Read-Order (Drop-in
+  `/etc/fail2ban/jail.d/10-coder-sshd.local` statt `jail.local`), C1
+  node-exporter-Textdatei + atomarer Metrik-Schreibvorgang, C2
+  `daemon.json` (Log-Limit, nur bei Container-frei neu starten), C3
+  Prometheus-Regel-Dateien + Grafana-Datasource-Provisioning + bedingte
+  Restarts (`restart_on_cfg_change`), C4 `caddy validate` + `reload`,
+  C6 Docker-Origin für unattended-upgrades (Append, `a=<Suite>` ohne
+  Codename-Token), C7 `apt_install()`, C9 `name: coder` + `CADDY_ACME_CA`,
+  D2 Docker-Range-Template-Inspektor.
+- **Nicht umgesetzt (bewusst):** D1 Datei-Split (Testmarker brechen),
+  A8, B3 (nur Doku), erzwungener Admin-Account.
+- **Dokumentation:** README-Status/`TLS`-Absatz, SECURITY-§3–§5/§8,
+  OPERATIONS-Dateitabelle/Checks/Drift 16, TROUBLESHOOTING A10/B5/C5/D5/E8,
+  RESTORE-`versions.env`-Hinweis.
+- **Tatsächlich ausgeführt am 2026-09-29 (lokal):**
+  - `bash -n setup-coder.sh` 0 Befunde; `shellcheck -S warning
+    setup-coder.sh` genau 1 Befund (SC2034, ungenutzter Zähler in der
+    Retry-Schleife); `shellcheck` für `tests/t-b1-on-demand-ask.sh` sauber.
+  - **10 Testskripte Exit 0, 314 PASS, 0 FAIL** (neu:
+    `tests/t-b1-on-demand-ask.sh`; `tests/t-b2-007-drift-hash.sh` auf 16
+    `note_drift`/`remember_hash` hochgezählt).
+  - Gerenderte Compose-/Prometheus-/Rules-/Daemon-Dateien: YAML-Parser,
+    `docker compose config --quiet` Exit 0, `promtool check config`
+    „3 rules found", „is valid prometheus config file syntax".
+  - Linkprüfung über `*.md`, `ai-review/*.md`, `templates/*.md`:
+    0 tote Links.
+- **Tatsächlich ausgeführt am 2026-09-29 (Test-Host `2.29.11.30`):**
+  - Lauf 8 → **Exit 0, 0 `[FEHLER]`**; Lauf 9 (Idempotenz) → **Exit 0,
+    0 `[FEHLER]`, 0 Drift-Warnungen, keine Container-Neustarts**,
+    C2-Warnung entfallen (`daemon.json` vorhanden). Verbleibend in beiden
+    Läufen nur die dokumentierten Warnungen (SSH-Passwort-Login aktiv,
+    `healthz` ohne 200).
+  - Verifiziert nach Lauf 8: B1 `ask` → `ok` für
+    `8080--main--ws--user.…`, 404 für `evil.…` und für die Apex-Domain,
+    `caddy validate` „Valid configuration"; B7 `jail.local` entfernt,
+    Drop-in angelegt, Jail `sshd` aktiv; C6 `apt-config dump` enthält
+    `o=Docker,a=trixie,l=Docker CE,c=stable`; C1
+    `/opt/coder/node-textfile/coder_backup.prom` vorhanden, Metrik über
+    `:9100/metrics` sichtbar; C3 Prometheus kennt genau 3 Regeln
+    (`CoderTargetDown`, `RootPartitionFillingUp`, `BackupStale`), Grafana-
+    Datasource-Datei liegt in `grafana/provisioning/datasources/`; C2
+    `/etc/docker/daemon.json` geschrieben, danach **`systemctl restart
+    docker` nach Rücksprache ausgeführt** (Stack vorher gestoppt, `up -d`,
+    alle 6 Container wieder `Up`, Postgres `healthy`, Metriken 200):
+    `docker inspect` meldet jetzt bei allen Containern `json-file` mit
+    `max-size=10m`/`max-file=3`; `versions.env` angelegt; ufw unverändert
+    (nur worldwide `22/tcp LIMIT`); `logrotate -d` meldet rotiert.
+- **Neu dokumentiertes Risiko (extern, nicht im Repo behebbar):** Der
+  öffentliche IP `85.13.130.100` beantwortet 80/443 mit einem **nginx**
+  (404), nicht mit Caddy – daher scheitert die ACME-Ausstellung
+  (http-01 404, tls-alpn-01 „no application protocol") und `…/healthz`
+  lief in den Läufen 3 bis 9 nie HTTP 200 (Läufe 1/2 ohne diesen Check).
+  Caddy hat daher derzeit **kein Zertifikat**. Der Test-Host ist eine
+  Hetzner-VM (kein Schul-Standort); die Portweiterleitung/der Proxy vor
+  80/443 wird später konfiguriert (D-TLS/D-Netz). Kein Regression dieser
+  Runde – belegt durch `curl -I http://…/` → `Server: nginx` von außen
+  und `http://127.0.0.1/` → 308 vom Host.
+- **Offen nach dieser Runde:** TLS/ACME (extern, später: Weiterleitung 80/443
+  am Zielnetz durch den Netzwerkadmin), Restore-Probe/RTO, Offsite-Backup,
+  Entscheidungen D-* (siehe unten); SSH-Härtung: Entscheidung „nur
+  Minimalvariante gegen fehlgeschlagene Logins" (läuft bereits), volles
+  `ssh-harden.sh` vorerst ohne Einsatz.
 
 ---
 
@@ -308,14 +391,16 @@ P-001–P-025), Bericht `ai-review/IMPLEMENTATION-REPORT.md`.
 
 ---
 
-## Offene Punkte (Stand 2026-09-28, ohne Frist/Eigentümer)
+## Offene Punkte (Stand 2026-09-29, ohne Frist/Eigentümer)
 
 | Punkt | Status |
 |---|---|
+| TLS/ACME auf dem Test-Host | **blockiert extern**: nginx am öffentlichen IP beantwortet 80/443, Caddy erhält kein Zertifikat, `healthz` seit Lauf 3 ohne 200. Zielbetrieb = Schulserver (SSH nur aus Schulnetz/VPN), Weiterleitung 80/443 offen beim Netzwerkadmin; Test-Host `2.29.11.30` wird irgendwann abgeschaltet |
+| C2 Log-Limit wirksam | erledigt 2026-09-29: `daemon.json` geschrieben, Docker nach Rücksprache neu gestartet – `docker inspect` zeigt bei allen Containern `json-file` + `max-size=10m`/`max-file=3` |
 | B2-005 (TLS-Zählung blind gegenüber Log-Rotation) | offen, nicht umgesetzt |
 | Restore-Probe + RTO-Zahl | offen, `RESTORE.md`-Tabelle `_offen_` |
 | Offsite-Backup | nicht eingerichtet |
-| SSH-Härtung (`ssh-harden.sh`) | vorbereitet, nicht ausgeführt |
+| SSH-Härtung (`ssh-harden.sh`) | Entscheidung 2026-09-29: nur **Minimalvariante** gegen fehlgeschlagene Logins (ufw `limit` + fail2ban, Root-Passwort-Login gesperrt) – beides läuft. Zielserver aktuell **nur per Passwort** zugänglich (kein Key), Test-Host nur per Key: erst Key setzen und aus zweitem Fenster testen, dann erst Härtung |
 | Template-Erstinventar + Workspace-Selbsttest (T-063) | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
 | VM-/Integrationstests der Testmatrix | nicht ausgeführt |
 | Entscheidungen D-TLS, D-Socket, D-SSH, D-Firewall, D-Reboot-Fenster, D-Monitoring, D-Offsite | offen |
