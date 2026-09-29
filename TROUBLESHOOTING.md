@@ -49,7 +49,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo grep -cE '^(POSTGRES_PASSWORD\|GRAFANA_ADMIN_PASSWORD\|DOCKER_GID)=' /opt/coder/.env`, `sudo stat -c '%a %U:%G %n' /opt/coder/.env` |
+| **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else if ($1 == "DOCKER_GID") name=$1; else next; print name ": " (substr($0, index($0, "=") + 1) != "" ? "vorhanden" : "leer") }' /opt/coder/.env`, `sudo stat -c '%a %U:%G %n' /opt/coder/.env` – zeigt keine Secret-Werte |
 | **Erwartete Ursache** | Hand-Edit oder abgebrochener Lauf hat Schlüssel entfernt/geleert. |
 | **Sichere Behebung** | Fehlende Schlüssel **mit den vorhandenen Werten** ergänzen (nie neu würfeln – das zerstört die DB-Anmeldung), dann Setup erneut. Bei Totalverlust: Restore nach [RESTORE.md](RESTORE.md). |
 
@@ -57,7 +57,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo grep -E '^(POSTGRES_PASSWORD\|GRAFANA_ADMIN_PASSWORD)=' /opt/coder/.env` (Werte nicht weitergeben) |
+| **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else next; value=substr($0, index($0, "=") + 1); print name ": " (value ~ /^[0-9a-f]+$/ ? "hex" : "nicht-hex") }' /opt/coder/.env` – zeigt keine Secret-Werte |
 | **Erwartete Ursache** | Legacy-Wert mit Sonderzeichen aus einer älteren Installation. |
 | **Sichere Behebung** | Erst `sudo /opt/coder/reset-passwords.sh` laufen lassen (liest Legacy lesend, würfelt Hex), danach Setup erneut. Der Verweis auf sich selbst im Reset wurde bewusst entfernt – es gibt genau einen grünen Weg. |
 
@@ -65,7 +65,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo od -c /opt/coder/.env \| head -20` – Zeilenumbruch innerhalb eines Werts |
+| **Diagnose** | `sudo python3 -c 'from pathlib import Path; b=Path("/opt/coder/.env").read_bytes(); print("NUL:", "ja" if b"\0" in b else "nein", "Zeilen:", len(b.splitlines()))'` – die reguläre `.env` hat drei Schlüsselzeilen; das Kommando gibt keine Werte aus |
 | **Erwartete Ursache** | Zeilenumbruch beim Hand-Edit; grep/compose lesen nur die erste Zeile. |
 | **Sichere Behebung** | Wert manuell auf eine einzeilige Hex-Zeile setzen (`openssl rand -hex 24` bzw. `-hex 16`), DB und Grafana per `ALTER USER` bzw. `grafana-cli` angleichen, dann Setup erneut. Nicht „trimmen“ und weiterlaufen lassen. |
 
@@ -77,13 +77,13 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | Ein anderer Dienst (Apache/nginx, alter Stack, Fremd-Container) hält einen der geprüften Ports. Eigene `coder`-Container werden unterdrückt – eine Meldung betrifft also wirklich jemand anderen. |
 | **Sichere Behebung** | Fremden Dienst identifizieren und bewusst stoppen/umziehen (`sudo systemctl status <dienst>`), **bevor** `up -d` läuft. Die Warnung nicht ignorieren: Caddy startet sonst nicht sauber. |
 
-### A7. Abbruch: `B2-004: Abbruch – restriktive SSH-Regel`
+### A7. Abbruch: SSH-Firewall-Preflight
 
 | | |
 |---|---|
-| **Diagnose** | `sudo ufw status numbered`, Protokoll unter `/var/log/coder-ssh-downgrade-*.before.log` |
-| **Erwartete Ursache** | Eine engere SSH-Regel (z. B. `ALLOW 192.168.1.0/24`) existiert bereits; das Setup würde sie sonst durch `limit 22/tcp` weltweit öffnen und bricht deshalb vor dem ersten `delete` ab. |
-| **Sichere Behebung** | **Nichts wurde gelöscht.** Regel selbst prüfen und entscheiden: entweder die Beschränkung beibehalten (Regel manuell so lassen/anpassen, Setup-Re-Run vermeiden) oder den Bypass bewusst setzen: `sudo env CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh`. Danach prüfen, dass die Regel wiederhergestellt ist: `grep -F '<quelle>' /var/log/coder-ssh-downgrade-*.after.log` und `sudo ufw status numbered`. Fehlt sie, sofort manuell nachbessern. |
+| **Diagnose** | `sudo sshd -T \| grep '^port '`, `sudo ufw status numbered`, `sudo ufw show added`; bei aktiver UFW zusätzlich `/var/log/coder-ssh-downgrade-*.before.log` |
+| **Erwartete Ursache** | `sshd -T` ist fehlgeschlagen, liefert keinen Port oder einen Port ungleich 22; oder eine engere SSH-Regel (z. B. `ALLOW 192.168.1.0/24`) existiert aktiv bzw. ist bei inaktiver UFW noch gespeichert. |
+| **Sichere Behebung** | Das Setup hat vor UFW-Policy-/Regeländerungen abgebrochen. Bei unbekanntem/falschem SSH-Port zuerst über einen funktionierenden Zugang den SSH-Port klären. Bei aktiver UFW: Regel prüfen; nur wenn die Beschränkung bewusst entfallen darf, den dokumentierten Bypass setzen: `sudo env CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh`, danach Before-/After-Log prüfen. Bei inaktiver UFW die gespeicherten Regeln (`ufw show added`) und Schulnetz-Regel erhalten; den Bypass nicht verwenden. |
 
 ### A8. `Wenig Platte unter /opt/coder (< 1 GB)`
 
@@ -143,7 +143,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 |---|---|
 | **Diagnose** | `sudo fail2ban-client status sshd` (eigene IP gebannt?), `sudo ufw status numbered`, `sudo journalctl -u ssh -n 50` |
 | **Erwartete Ursache** | fail2ban-Ban nach 5 Fehlversuchen (1 h), ufw-Regel geändert, oder nach `ssh-harden.sh` ohne funktionierenden Key. |
-| **Sichere Behebung** | Über Zweit-Zugang (Konsole/Proxmox/iDRAC): `sudo fail2ban-client set sshd unbanip <ip>`. War die Härtung die Ursache: Rollback wie in [SECURITY.md](SECURITY.md) Abschnitt 1 (`rm` des Drop-Ins + `reload`). Vorher nie `ssh-harden.sh` ohne getesteten Key und Zweit-Zugang ausführen. |
+| **Sichere Behebung** | Über Zweit-Zugang (Konsole/Proxmox/iDRAC): `sudo fail2ban-client set sshd unbanip <ip>`. Bei einem Fehler während `ssh-harden.sh` stellt das Skript seine vorherige Konfiguration automatisch wieder her. Nach erfolgreicher Härtung: Rollback wie in [SECURITY.md](SECURITY.md) Abschnitt 1 (`rm` des Drop-Ins + `reload`). Den Helfer nur mit getestetem Nicht-root-Key-Login und Zweit-Zugang ausführen. |
 
 ### B5. Workspace-Subdomain bekommt kein Zertifikat (ask meldet 404 / Connection refused)
 
@@ -186,7 +186,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | | |
 |---|---|
 | **Diagnose** | `tail -50 /var/log/coder-boot.log`, `sudo journalctl -t coder-boot -n 50`, `sudo docker ps -a` |
-| **Erwartete Ursache** | Container nicht gestartet, Postgres nicht `healthy`, `/healthz` nicht 200 im 5-Minuten-Fenster (On-Demand-Erstverzögerung einkalkuliert). |
+| **Erwartete Ursache** | Container nicht gestartet, Postgres nicht `healthy` (bis 120 s), Container noch nicht alle gestartet (weitere bis 120 s) oder `/healthz` nicht 200 (TLS-Smoke bis zu 10 Minuten, On-Demand-Erstverzögerung einkalkuliert). Gesamtlaufzeit im Fehlerfall knapp 14 Minuten. |
 | **Sichere Behebung** | Wie C1. Danach `sudo /opt/coder/boot-check.sh` manuell erneut ausführen – der Log-Eintrag wird laufbezogen ausgewertet, nicht kumulativ. |
 
 ### C5. Prometheus zeigt 0 Alarmregeln / Grafana ohne Datasource
@@ -194,8 +194,8 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | | |
 |---|---|
 | **Diagnose** | `curl -s http://127.0.0.1:9090/api/v1/rules \| grep -c '"name"'` (erwartet > 0); `docker logs coder-grafana --tail=50 \| grep -i provision`; `ls -l /opt/coder/rules/ /opt/coder/grafana/provisioning/datasources/` |
-| **Erwartete Ursache** | Beide Dienste lesen ihre Dateien nur beim Start. Der Neustart nach einer Änderung ist im Setup an Hash und laufenden Container gekoppelt und kann fehlgeschlagen sein (dann steht ein `[WARNUNG] … Neustart … fehlgeschlagen` in der SUMMARY). |
-| **Sichere Behebung** | `sudo docker restart coder-prometheus coder-grafana` (wenige Sekunden Messlücke, unbedenklich) und danach die Diagnose wiederholen. Danach Setup erneut ausführen, damit die Hashes stimmen. Nicht die `rule_files`-Zeile oder die Provisioning-Mounts entfernen. |
+| **Erwartete Ursache** | Prometheus hat SIGHUP nicht verarbeitet oder Grafana hat die geänderte Provisioning-Datei noch nicht eingelesen. |
+| **Sichere Behebung** | Prometheus-Konfiguration prüfen und bei Bedarf `sudo docker kill -s HUP coder-prometheus`; Grafana mit `sudo docker restart coder-grafana` neu einlesen lassen. Danach die Diagnose wiederholen. Nicht die `rule_files`-Zeile oder die Provisioning-Mounts entfernen. |
 
 ---
 
@@ -301,13 +301,13 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | Zwischenzustand DB/Grafana/.env. |
 | **Sichere Behebung** | Skript erneut ausführen (heilt). Wenn danach kein DB-Login mehr gelingt: altes Passwort aus `.env.bak.<ts>` per `ALTER USER coder WITH PASSWORD …` setzen. Reihenfolge DB→`.env` ist Status-quo und wurde nicht still umgestellt. |
 
-### E8. `[FEHLER] Docker-Origin fehlt in apt-config – C6 hätte keine Wirkung`
+### E8. Warnung: vorhandene Docker-Origin könnte automatische Engine-Updates aktivieren
 
 | | |
 |---|---|
-| **Diagnose** | `apt-config dump \| grep -F 'o=Docker'`; `sudo cat /etc/apt/apt.conf.d/52-coder-docker-upgrades`; `grep -rn 'Origins-Pattern' /etc/apt/apt.conf.d/` |
-| **Erwartete Ursache** | Die Drop-In-Datei fehlt/ist leer, oder eine andere Konfigurationsdatei setzt `Unattended-Upgrade::Origins-Pattern` (Einzelpunkt statt Doppelpunkt) und ersetzt damit die komplette Liste. |
-| **Sichere Behebung** | Setup erneut ausführen (es schreibt die Datei neu). Wenn danach immer noch `o=Docker` fehlt: die Datei mit der Ersatz-Setzung suchen und dort auf `::` (Anhängen) umstellen. **Nicht** die Debian-Muster aus `50unattended-upgrades` löschen – sonst fallen Sicherheitsupdates weg. |
+| **Diagnose** | Setup-Warnung lesen; `apt-config dump \| grep -E 'Unattended-Upgrade::Origins-Pattern'`; `grep -rn 'o=Docker' /etc/apt/apt.conf.d/` |
+| **Erwartete Ursache** | Eine ältere Setup-Version oder eine manuell geänderte APT-Datei erlaubt Docker-Origin-Pakete für unattended-upgrades. |
+| **Sichere Behebung** | Das Setup entfernt seine frühere Datei automatisch, wenn sie unverändert ist. Bei einer geänderten/unverwalteten Datei erst den Eigentümer und Inhalt prüfen; keine fremde Origins-Konfiguration blind löschen. Zielzustand: Docker Engine wird in einem abgestimmten Fenster manuell aktualisiert (siehe [OPERATIONS.md](OPERATIONS.md) §7). |
 
 ---
 
@@ -333,7 +333,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo grep GRAFANA_ADMIN_PASSWORD /opt/coder/.env` (Ausgabe nicht weitergeben) |
+| **Diagnose** | `sudo awk -F= '$1 == "GRAFANA_ADMIN_PASSWORD" { found = (substr($0, index($0, "=") + 1) != ""); exit } END { if (found) print "Grafana-Passwort ist gesetzt"; else print "Grafana-Passwort fehlt" }' /opt/coder/.env` – zeigt den Secret-Wert nicht an |
 | **Erwartete Ursache** | Das Passwort gilt nur beim allerersten Start; ein Restore/Datenbanktausch ändert es nicht automatisch. |
 | **Sichere Behebung** | `sudo /opt/coder/reset-passwords.sh` und den neuen Wert notieren. Nicht das alte Passwort im Klartext suchen oder in Logs posten. |
 
@@ -354,8 +354,8 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | | |
 |---|---|
 | **Diagnose** | `sudo sshd -T \| grep -iE '^(passwordauthentication\|kbdinteractiveauthentication\|permitrootlogin)'` |
-| **Erwartete Ursache** | `ssh-harden.sh` wurde nicht ausgeführt (Normalfall, solange kein Key getestet ist). |
-| **Sichere Behebung** | Key-Login einrichten **und testen**, Zweit-Zugang sicherstellen, dann `ssh-harden.sh` mit beiden Flags. Bis dahin: starkes Passwort, fail2ban beobachten. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. Nicht `PasswordAuthentication no` von Hand setzen, bevor ein Key nachweislich funktioniert. |
+| **Erwartete Ursache** | Passwort-Login ist für die erste Inbetriebnahme des Schulservers bewusst aktiv; die Netzvorgabe beschränkt SSH auf das Schulnetz. |
+| **Sichere Behebung** | Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Eine spätere Umstellung auf Schlüsselzugang braucht einen getesteten Key und einen zweiten Zugang; erst dann kann `ssh-harden.sh` bewusst ausgeführt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
 
 ### G3. Warnung: `ufw-IPv6-Pfad unklar (kein IPV6=yes …)`
 

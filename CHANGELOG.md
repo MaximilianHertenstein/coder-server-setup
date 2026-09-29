@@ -15,6 +15,75 @@ dieses Eintrags sind **nicht committet** – Arbeitsstand im Repo).
 
 ---
 
+## 2026-09-29 – Wartungs-, Restore- und SSH-Helfer-Nacharbeit
+
+- **Restore:** Pfad A stellt jetzt die originale `.env` vor dem ersten Setup-
+  Lauf bereit. Damit initialisieren Postgres und Grafana von Anfang an mit
+  diesen Zugangsdaten; ein nachträglicher `.env`-Tausch hätte die bereits
+  initialisierten Passwörter nicht geändert. Pfad B beschreibt separat den
+  Neuaufbau mit neuen Zugangsdaten.
+- **Wartung:** Backup, Update, Passwortrotation und Reset teilen einen
+  root-eigenen Wartungs-Lock (Modus 600). Parallele Abläufe warten bis zu
+  300 Sekunden und brechen danach ohne Folgeaktion mit Exit 75 ab. Das Backup
+  behält seinen zusätzlichen eigenen Lock. Ein Setup-Re-Run muss weiterhin
+  separat geplant werden und darf nicht parallel dazu laufen.
+- **Firewall-Preflight:** Bei inaktiver UFW prüft das Setup auch gespeicherte
+  Regeln. Eine dort hinterlegte SSH-Quellbeschränkung führt zum Abbruch vor
+  jeder UFW-Policy-/Regeländerung; die aktive UFW-Regelprüfung bleibt erhalten.
+  Ein nicht lesbarer oder fehlender SSH-Port wird ebenfalls fail-closed
+  behandelt.
+- **Boot-Gate:** Kommentare und Betriebshandbuch nennen jetzt die tatsächlichen
+  Wartephasen (bis zu 120 s Postgres, weitere 120 s Container, bis zu 10 min
+  TLS-Smoke; knapp 14 min insgesamt).
+- **Secrets-Diagnose:** Die Troubleshooting-Befehle prüfen Vorhandensein,
+  Format und Zeilenstruktur der `.env`, ohne die Passwörter auszugeben.
+- **SSH-Helfer:** `ssh-harden.sh` verlangt nun einen getesteten Nicht-root-
+  Sudo-Login mit nicht-leerer effektiver `AuthorizedKeysFile`. Bei Fehlern
+  während Validierung, Reload oder Nachprüfung wird das vorherige Drop-In
+  wiederhergestellt. Der Helfer wurde nicht ausgeführt; Passwort-SSH,
+  Schulnetzgrenze und Server-Firewall wurden nicht verändert.
+- **Prüfstand:** Für diese Nacharbeit keine Tests ausgeführt und keine
+  Serverbefehle ausgeführt. Vorgesehene Prüfungen: parallele Fake-Läufe der
+  Wartungsskripte, inaktive-UFW-Fälle mit und ohne gespeicherte SSH-Quelle,
+  Shell-Syntax und isolierte `sshd -t`-/Rollback-Szenarien.
+  Der geänderte Restore-Pfad muss auf einer Debian-13-Test-VM mit Datenprobe
+  und Grafana-Login geprobt werden.
+  Der Restore-Ablauf ist weiterhin ungeprobt. Offsite-Ziel,
+  Workspace-Isolation und verpflichtende Erstkonto-Absicherung bleiben wegen
+  offener Betriebsentscheidungen unverändert.
+
+---
+
+## 2026-09-29 – Prüfung der angehängten Fundliste A1–C6
+
+**Umfang:** Fundliste am aktuellen Arbeitsstand geprüft. Bewertung aller
+Einzelpunkte und Gründe für zurückgestellte oder abgelehnte Vorschläge stehen
+in [ai-review/REVIEW-2026-09-29-ANHANG.md](ai-review/REVIEW-2026-09-29-ANHANG.md).
+SSH-Passwortzugang bleibt auf dem Schulserver für die erste Inbetriebnahme
+bewusst aktiv; die externe Netzvorgabe beschränkt Port 22 auf das Schulnetz.
+
+- **Code (`setup-coder.sh`):** Docker-Origin aus unattended-upgrades entfernt
+  (unveränderte alte Setup-Datei wird hashgeprüft entfernt, geänderte/fremde
+  Datei bleibt mit Warnung); Update-Status exakt geprüft; `cron` in Schritt 1
+  installiert; fail2ban-Readiness abgewartet; Caddy-`permission http` statt
+  deprecated `ask`; TLS-Smokes validieren Zertifikate; TLS-Zählerfehler und
+  veraltete Messung sichtbar; Prometheus-Regeln per SIGHUP geladen; optionales
+  Coder-Erstlogin räumt den temporären Token-Ordner auf; Postgres-Klartext
+  wird nicht mehr ausgegeben; Backup-/Update-Zusammenfassung präzisiert.
+- **Dokumentation:** README, OPERATIONS, SECURITY, TROUBLESHOOTING und
+  `templates/allowlist.md` mit Update-Verhalten, SSH-Netzgrenze, fehlendem
+  Alert-Empfänger/Offsite-Ziel, Limits der TLS-Zählung und node-exporter-
+  Netzwerkmetriken abgeglichen. Anzahl der verwalteten Dateien von 17 auf 16
+  aktualisiert.
+- **Tests:** `bash -n setup-coder.sh ssh-harden.sh tests/*.sh` sauber;
+  10/10 Testskripte Exit 0 mit 311 `PASS`, 0 `FAIL`. Der isolierte
+  TLS-SNI-Gate-Test lief nach Sandbox-Ablehnung des Loopback-Binds mit
+  Freigabe außerhalb der Sandbox und bestand. PyYAML las die fünf
+  Prometheus-Regeln erfolgreich. ShellCheck meldet weiterhin einen
+  vorhandenen SC2034-Befund im Retry-Schleifenzähler. Kein lokales Caddy-Image
+  vorhanden, daher kein `caddy validate`/`adapt`; kein vollständiger Setup-,
+  VM- oder Produktionslauf.
+
 ## 2026-09-29 – Review-Runde 2 (zweite Fundliste A1–C7)
 
 **Umfang:** zweite Fundliste bewertet und umgesetzt (ohne Deployment –

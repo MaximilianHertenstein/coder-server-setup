@@ -1,6 +1,6 @@
 # SECURITY.md – Härtung, Grenzen, offene Entscheidungen
 
-Stand: 2026-09-28. Diese Datei beschreibt den **tatsächlichen** Stand aus
+Stand: 2026-09-29. Diese Datei beschreibt den **tatsächlichen** Stand aus
 `setup-coder.sh` und `ssh-harden.sh` – inklusive dessen, was bewusst noch
 nicht gemacht ist. Provisorien sind als solche markiert.
 
@@ -16,34 +16,30 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 
 **Ist-Zustand**
 
-- **Zielbetrieb (Schulserver):** Zugang dort ist **derzeit nur per Passwort**
-  möglich – es ist noch kein SSH-Key eingerichtet. Erreichbar ist SSH nur aus
-  dem Schulnetz bzw. per VPN (Einschränkung liegt in der Netzwerkinfrastruktur,
-  nicht im Setup). **Deshalb darf `ssh-harden.sh` dort nicht laufen, bevor ein
-  Key gesetzt und aus einem zweiten Fenster getestet ist** – sonst wird die
-  einzige Zugangsart abgeschaltet. Reihenfolge: `ssh-copy-id` → Login in
-  zweitem Fenster testen → dann erst über Härtung entscheiden. Das Skript
-  erzwingt das ohnehin (beide Flags + erkannter Key, sonst Abbruch).
-  **Entscheidung 2026-09-29: bis dahin nur die Minimalvariante gegen
-  fehlgeschlagene Logins, kein vollständiges `ssh-harden.sh`** (Skript
-  bleibt vorbereitet, unausgeführt).
+- **Zielbetrieb (Schulserver):** Passwort-Login ist für die erste
+  Inbetriebnahme bewusst aktiv. SSH ist laut Netzvorgabe **nur aus dem
+  Schulnetz** erreichbar; diese äußere Beschränkung liegt in der
+  Netzwerkinfrastruktur, nicht in diesem Setup. ufw rate-limitiert Port 22
+  zusätzlich, fail2ban sperrt wiederholte Fehlversuche. `ssh-harden.sh` wird
+  nicht vom Setup ausgeführt. Der Passwortzugang bleibt aktiv, bis der
+  Betreiber später einen Schlüsselzugang eingerichtet und getestet hat und
+  die Zugangspolitik ändern möchte. Das Skript verlangt vor einer solchen
+  Änderung beide Bestätigungsflags und einen erkannten Schlüssel.
 - **Test-Host (Hetzner `2.29.11.30`):** Login **nur per Key** – es existiert
   kein Konto mit Passwort in `/etc/shadow`, ein Passwort-Login schlägt bei
-  jedem Konto fehl. Port 22 ist von überall erreichbar, damit Zugriff von
-  zuhause möglich ist; die Schulnetz-Infrastruktur muss 22 zusätzlich zu
-  80/443 weiterleiten.
-- Schutz in beiden Fällen: `ufw limit 22/tcp` (eingebautes Rate-Limiting von
-  ufw) und fail2ban als zweite Linie.
+  jedem Konto fehl. Port 22 ist auf dieser separaten Test-VM von überall
+  erreichbar; das ist nicht die Netzvorgabe für den Schulserver.
+- Schutz zusätzlich zur jeweiligen Netzvorgabe: `ufw limit 22/tcp`
+  (eingebautes Rate-Limiting von ufw) und fail2ban als zweite Linie.
 - Passwort-Login ist **nicht** deaktiviert. Das Setup führt `ssh-harden.sh`
-  nicht aus; der Abschlusscheck meldet den Zustand bei jedem Lauf und
-  fordert auf, Key-Login zuerst zu testen.
-- **Restrisiko der Entscheidung:** Jedes Gerät im Schulnetz/VPN erreicht
-  Port 22 und kann per Passwort raten; ein geteiltes oder weitergegebenes
-  Passwort bleibt gültig. Härtung nachholen, sobald der Server von außen
-  erreichbar wird, der Zugang geteilt wird oder die Zugriffswege reduziert
-  werden sollen.
+  nicht aus; der Abschlusscheck meldet den Zustand bei jedem Lauf. Für die
+  erste Inbetriebnahme des Schulservers ist diese Warnung erwartbar.
+- **Restrisiko der Entscheidung:** Jedes Gerät im Schulnetz erreicht Port 22
+  und kann per Passwort raten; ein geteiltes oder weitergegebenes Passwort
+  bleibt gültig. Die Netzbegrenzung verhindert Internetzugriffe, ersetzt
+  aber keinen individuellen Schlüsselzugang.
 
-**Vorgehen 2026-09-29: Minimalvariante (gegen fehlgeschlagene Logins)**
+**Vorgehen bei der ersten Inbetriebnahme: Passwortzugang im Schulnetz**
 
 Nichts zu ergänzen – das Setup liefert den Schutz bereits, gemessen auf dem
 Test-Host am 2026-09-29:
@@ -83,13 +79,16 @@ Sicherheitsvorkehrungen im Skript selbst:
 1. Beide Flags müssen gesetzt sein
    (`--i-have-key-access --i-have-second-access`) – sie bestätigen ein
    **getestetes** Key-Login und einen Zweit-Zugang (Konsole/Proxmox/iDRAC).
-2. Ohne passenden Key in `/root/.ssh/authorized_keys` oder
-   `/home/<sudo-user>/.ssh/authorized_keys` gibt es einen Abbruch
-   (auch FIDO2- und Zertifikats-Keys werden erkannt).
-3. `sshd -t` muss sauber sein, sonst wird das Drop-In sofort entfernt.
-4. Nach `systemctl reload ssh` prüft das Skript die **effektive** Config
-   (`sshd -T`) – ist einer der drei Werte nicht `no`, meldet es Fehler und
-   nennt den Rollback: `sudo rm /etc/ssh/sshd_config.d/60-coder-hardening.conf && sudo systemctl reload ssh`.
+2. Root-Aufruf und reine Root-Key-Dateien reichen nicht: das Skript verlangt
+   einen nicht-root Sudo-Benutzer und eine nicht-leere Datei aus dessen
+   effektivem `AuthorizedKeysFile`. Die beiden Flags bestätigen weiterhin,
+   dass genau dieser Key-Login und ein Zweit-Zugang tatsächlich getestet sind.
+3. Vorhandene Drop-In-Dateien werden gesichert. Schlägt `sshd -t`, das Reload
+   oder die Prüfung der **effektiven** Config (`sshd -T`) fehl, stellt das
+   Skript die vorherige Datei wieder her (oder entfernt das neue Drop-In) und
+   lädt die vorherige SSH-Konfiguration erneut.
+4. Bei erfolgreicher Härtung bleibt der manuelle Rückweg:
+   `sudo rm /etc/ssh/sshd_config.d/60-coder-hardening.conf && sudo systemctl reload ssh`.
 
 **Vor der Härtung**: Zweit-Zugang testen, Key-Login aus einem zweiten
 Fenster verifizieren, Termin + Eigentümer festhalten (D-SSH). Bis dahin
@@ -119,8 +118,9 @@ Zugriffswege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
   Coder-Container (`--no-deps`).
 - Repository-Hygiene: `.gitignore` schließt `.env`, `*.env`, `*.sql`,
   `*.sql.gz`, `*.log`, `backups/` aus. Kein Secret liegt im Repository.
-- Passwort-Ausgaben passieren nur im Terminal des Operators (Erstlauf,
-  Rotation) – sie gehören nicht in Protokolle, Tickets oder Doku.
+- Beim Erstlauf und bei Rotation wird nur das Grafana-Admin-Passwort im
+  Terminal ausgegeben; das interne Postgres-Passwort bleibt in `.env`. Das
+  Grafana-Passwort gehört nicht in Protokolle, Tickets oder Doku.
 
 ```bash
 sudo stat -c '%a %U:%G %n' /opt/coder/.env /opt/coder/backups
@@ -138,7 +138,7 @@ Coder empfohlene Lösung: **On-Demand-TLS**.
 
 **`ask`-Endpunkt (B1)**
 
-`on_demand_tls.ask` zeigt auf `http://127.0.0.1:9123/ask` – ein eigener
+`on_demand_tls.permission http` zeigt auf `http://127.0.0.1:9123/ask` – ein eigener
 Caddy-Site-Block, der Port steht **nicht** in `ports:` der compose-Datei
 und hat keine ufw-Regel: von außen unerreichbar, nur aus dem Container-
 Netz. Er antwortet `200` nur, wenn der beantragte `?domain=`-Parameter dem
@@ -209,11 +209,16 @@ löst den Bypass aus; die vorgefundene Regel wird danach quellengetreu
 wiederhergestellt und per `grep` gegen das After-Log verifiziert, sonst
 Exit 1. Before/After liegen unter
 `/var/log/coder-ssh-downgrade-<zeitstempel>.{before,after}.log`.
+Bei inaktiver UFW prüft das Setup zusätzlich `ufw show added`; findet es dort
+eine gespeicherte SSH-Quellbeschränkung, bricht es vor Policy- und Regel-
+Änderungen ab. Der Report `added` zeigt die gespeicherten UFW-Befehle auch,
+wenn die Firewall nicht aktiv ist ([Debian-13-ufw(8)](https://manpages.debian.org/trixie/ufw/ufw.8.en.html)).
 
-**Port-Vorabprüfung (B6):** Bevor das Setup die erste Firewall-Regel
-anfasst, liest es die konfigurierten SSH-Ports aus `sshd -T`. Weicht die
-Liste von exakt `22` ab (z. B. `2222`), bricht es ab, statt eine Regel auf
-`22/tcp` zu setzen und den eigentlichen SSH-Port ungeschützt zu lassen.
+**Port-Vorabprüfung (B6):** Bevor das Setup eine UFW-Policy oder -Regel
+anfasst, liest es die konfigurierten SSH-Ports aus `sshd -T`. Ist die
+Konfiguration nicht lesbar, fehlt eine Port-Angabe oder weicht die Liste von
+exakt `22` ab (z. B. `2222`), bricht es ab, statt den SSH-Port ungeschützt
+zu lassen.
 
 **Was ufw hier nicht schützt** (vom Setup selbst so dokumentiert):
 Docker trägt für per `ports:` publizierte Container-Ports eigene
@@ -267,12 +272,15 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
 - Container-Logs sind daemon-weit begrenzt (`daemon.json`, json-file
   10 MB × 3). Liegt eine fremde `daemon.json` ohne diese Schlüssel vor,
   bricht das Setup ab, statt sie umzuschreiben (C2).
-- Docker-Pakete laufen in die automatischen Sicherheitsupdates mit ein
-  (`52-coder-docker-upgrades`, C6); ohne diesen Origin fielen
-  `docker-ce`/`containerd.io` still heraus.
-- Es gibt **Alarmregeln, aber kein Alerting**: vier Prometheus-Regeln
+- Docker-Engine- und Compose-Pakete sind von `unattended-upgrades`
+  ausgenommen. Ein dockerd-Neustart unterbricht Workspaces; die Pakete werden
+  in einem geplanten Wartungsfenster manuell aktualisiert. Beim Upgrade von
+  älteren Setup-Ständen entfernt das Setup die alte Docker-Origin-Datei nur,
+  wenn sie noch dem gespeicherten Hash entspricht.
+- Es gibt **Alarmregeln, aber kein Alerting**: fünf Prometheus-Regeln
   (Coder-Target down, Root-Partition <10 % frei, letztes Backup >25 h,
-  TLS-Ausstellungen >20/7 d) sind in Prometheus/Grafana sichtbar, aber
+  TLS-Ausstellungen >20/7 d, TLS-Check fehlt/ist älter als 8 Tage) sind in
+  Prometheus/Grafana sichtbar, aber
   **kein Kanal**, der jemanden weckt – kein Alertmanager, keine
   Benachrichtigung. Ein Contact Point bräuchte SMTP-Zugang (D-Monitoring). Gesundheit meldet
   sich nur, wer sie abfragt (Boot-Gate, TLS-Check, manuelle Checks in
@@ -318,8 +326,12 @@ vorbehalten.
   **noch nicht** durchgeführt.
 
 Weiteres: `node-exporter` läuft mit `pid: host` und bringt `/proc`, `/sys`
-und `/` nur lesend eingebunden. Container-Logs sind mengenmäßig begrenzt
-(10 MB × 3), damit die Root-Partition nicht wächst.
+und `/` nur lesend eingebunden. Weil es **kein** `network_mode: host` nutzt,
+Netzwerkzähler zeigen nur den Container-Namespace. Die Host-Netzwerkmetriken
+sind damit eine bekannte Lücke; Host-Netzwerk würde eine neue Scrape-Route
+und eine gezielte Listener-Bindung erfordern und wird nicht still aktiviert.
+Container-Logs sind mengenmäßig begrenzt (10 MB × 3), damit die Root-Partition
+nicht wächst.
 
 ```bash
 sudo docker inspect coder | grep -A3 -i mounts
@@ -344,14 +356,14 @@ ss -tlnp; ss -ulnp | grep 443
 | # | Grenze | Risiko in einem Satz | Status |
 |---|---|---|---|
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | Trennung offen (D-Socket), Allowlist greift bis dahin |
-| 2 | SSH-Passwort-Login aktiv; im Zielbetrieb nur Schulnetz/VPN erreichbar, auf dem Test-Host weltweit | Brute-Force trotz ufw/fail2ban möglich (Test-Host; im Schulnetz nur durch jeden Rechner dort) | Entscheidung 2026-09-29: vorerst keine Härtung, `ssh-harden.sh` vorbereitet (D-SSH) |
+| 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | bewusst aktiv für die erste Inbetriebnahme; `ssh-harden.sh` bleibt ein späterer, manueller Schritt nach getestetem Schlüsselzugang |
 | 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1), Budget-Schutz bleibt bis D-TLS mit Frist |
-| 4 | TLS-Zählung blind gegenüber Log-Rotation | Budget-DoS fällt unter Umständen nicht auf (B2-005) | `coder_tls_issuances_7d` + Regel TlsIssuanceBudgetHigh seit 2026-09-29 (B4); Meldung fehlt weiterhin |
+| 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh` plus `TlsCheckStale`; Zählergrenze bleibt, Meldung fehlt weiterhin |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | offen (D-Offsite) |
 | 6 | Restore nie geprobt, RTO unbekannt | im Ernstfall ist der Wiederherstellungsweg ungeprüft | offen, Probe nur auf Test-VM |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | offen (D-Reboot-Fenster) |
-| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (4 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
+| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (5 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
 | 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | Entscheidung offen (B5): erst festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz/Schule). Empfehlung 2026-09-29: **so lassen**. Wenn doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |

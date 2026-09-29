@@ -1,6 +1,6 @@
 # RESTORE.md – Wiederherstellungs-Runbook (F-003)
 
-Stand: 2026-09-28. Status: Verfahrenstiefe 1 (manuell, aber festgelegt).
+Stand: 2026-09-29. Status: Verfahrenstiefe 1 (manuell, aber festgelegt).
 Noch NICHT geprobt (keine Test-VM verfügbar) – RTO unbekannt, siehe BLOCKER.
 Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 
@@ -41,15 +41,29 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 
 ## Pfad A – Dump + originale `.env` vorhanden
 
-1. `setup-coder.sh` auf frischer VM laufen lassen (erzeugt Stack + neue `.env`).
-2. Stack stoppen: `sudo docker compose -f /opt/coder/docker-compose.yml stop coder`
-3. Originale `.env` zurückspielen (`cp -a`, `chmod 600`, `chown root:root`).
+1. **Originale `.env` vor dem ersten Setup-Lauf bereitstellen.** Auf der
+   frischen VM das Zielverzeichnis anlegen und die gesicherte Datei mit
+   Root-Eigentümer und Modus 600 installieren:
+
+   ```bash
+   sudo install -d -o root -g root -m 700 /opt/coder
+   sudo install -o root -g root -m 600 /PFAD/ZUR/ORIGINALEN-ENV /opt/coder/.env
+   ```
+
+2. `setup-coder.sh` ausführen. Postgres und Grafana übernehmen so schon beim
+   ersten Start die Passwörter aus der originalen `.env`; das Setup aktualisiert
+   darin außerdem `DOCKER_GID`. **Die `.env` danach nicht durch eine andere
+   Version ersetzen.** Ein Tausch nach dem Start würde die gespeicherten
+   Postgres-/Grafana-Passwörter nicht ändern und könnte Coder von Postgres
+   trennen.
+3. Coder für den Import stoppen:
+   `sudo docker compose -f /opt/coder/docker-compose.yml stop coder`
 4. Dump einspielen (B-008: eine Variante, kein „Fehlerprotokoll lesen"):
    `sudo docker exec coder-postgres dropdb -U coder --if-exists coder \
      && sudo docker exec coder-postgres createdb -U coder -O coder coder \
      && zcat coder_<TS>.sql.gz | sudo docker exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder`
    `ON_ERROR_STOP=1` steht als `psql`-Option **vor** `-U`: bei jedem SQL-Fehler
-   (fehlerhafte `CREATE TABLE`-Zeile, fehlende Extension, Versionsdrift) exitt
+   (fehlerhafte `CREATE TABLE`-Zeile, fehlende Extension, Versionsdrift) exit
    `psql` ≠ 0, die `&&`-Kette bricht ab. **STOPP bei Exit ≠ 0** – Fehlermeldung
    lesen, Schritt 5 NICHT ausführen (kein `up -d`, kein grüner Restore). Bei
    automatisierter Kette zusätzlich `set -o pipefail`, sonst läuft ein
@@ -76,7 +90,10 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 
 ## Pfad B – nur Dump, `.env` verloren
 
-1. Wie Pfad A Schritt 1 (neue `.env`, neues DB-Passwort).
+1. Auf der frischen VM sicherstellen, dass `/opt/coder/.env` nicht aus einem
+   alten oder unvollständigen Restore-Versuch stammt, dann `setup-coder.sh`
+   ohne vorher bereitgestellte `.env` ausführen. Das Setup erzeugt neue
+   Passwörter und initialisiert Postgres damit.
 2. Rollen-Passwörter stehen NICHT im `pg_dump` (nur `pg_dumpall --globals`
    sichert sie) – der Dump enthält Daten, keine Passwörter. Daher: Dump wie in
    Pfad A Schritt 4 einspielen; DB-Rolle behält das neue Setup-Passwort, Coder
@@ -92,7 +109,7 @@ das Protokoll führen, nicht die Prüfung streichen.
 | Befund | Bedeutung | Weitere Schritte |
 |---|---|---|
 | `gzip -t` des Dumps schlägt fehl | Dump defekt | Diesen Dump verwerfen, älteren Dump nehmen; Ursache klären (Platte, Abbruch) |
-| Import exitt ≠ 0 (`ON_ERROR_STOP=1`) | Dump/Schema/Versionsproblem | **STOPP**: kein Schritt 5, kein `up -d`, Fehlermeldung lesen, neuen Anlauf |
+| Import exit ≠ 0 (`ON_ERROR_STOP=1`) | Dump/Schema/Versionsproblem | **STOPP**: kein Schritt 5, kein `up -d`, Fehlermeldung lesen, neuen Anlauf |
 | Datenprobe ≠ `1` (0, >1, psql-Fehler) | leer, doppelt oder ohne Sonde gebackupt | Restore nicht anerkennen, Dump/Verfahren prüfen, Sonde vor dem nächsten Probe-Backup setzen |
 | Postgres nach `up -d` nicht `healthy` | Stack nicht hochgefahren | `docker logs coder-postgres`; Liveness zählt hier nichts, erst recht nicht ohne Datenprobe |
 | `/healthz` 200, aber Dashboard zeigt keine Bestandsdaten | falscher/leerer Inhalt | Prüfen, welcher Dump eingespielt wurde; Login-200 ist **keine** Bestätigung |

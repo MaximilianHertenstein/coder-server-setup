@@ -17,7 +17,9 @@ Host-Sicherheit. Echte Trennung (Proxy/separater Host) ist BLOCKER B-02
 
 ## Erlaubt (Normalfall Unterricht)
 
-- CPU-/Memory-Limits pro Workspace, eigene Bridge-Netze, Workspace-Volume.
+- CPU-/Memory-Limits pro Workspace (für Schüler-Workspaces verpflichtend,
+  Werte passend zum Unterrichtsbedarf festlegen), eigene Bridge-Netze,
+  Workspace-Volume.
 
 ## Abnahme pro Template/Änderung
 
@@ -26,6 +28,8 @@ Host-Sicherheit. Echte Trennung (Proxy/separater Host) ist BLOCKER B-02
 2. Workspace-Selbsttest aus normalem Workspace (T-063): kein
    `/var/run/docker.sock`, kein `postgres:5432`, keine fremden Container.
 3. Reviewer + Datum unten eingetragen.
+4. CPU-/Memory-Limits sind im Template gesetzt und mit einem repräsentativen
+   Workspace auf ausreichend Spielraum geprüft.
 
 ## Abnahmen
 

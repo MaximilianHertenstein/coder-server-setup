@@ -64,8 +64,10 @@ eval "$(grep -E '^DOMAIN_CODER_(ESC|REGEX)=' "${SETUP}")"
 [ -n "${DOMAIN_CODER_REGEX}" ] || fail "DOMAIN_CODER_REGEX leer nach eval"
 
 # --- 2. Struktur -------------------------------------------------------------
-grep -qF 'ask http://127.0.0.1:9123/ask' "${CF}" \
-  && pass "ask-Endpunkt ist der lokale :9123" || fail "ask-URL fehlt/falsch"
+grep -qF 'permission http http://127.0.0.1:9123/ask' "${CF}" \
+  && pass "HTTP-Permission-Modul nutzt den lokalen :9123-Endpunkt" || fail "HTTP-Permission-URL fehlt/falsch"
+grep -qF 'ask http ' "${CF}" \
+  && fail "deprecated Caddy ask-Option steht noch in der Caddyfile" || pass "deprecated Caddy ask-Option entfernt"
 grep -qF 'example.com' "${CF}" && fail "Platzhaler example.com steht noch in der Caddyfile" \
   || pass "kein example.com-Rest (alter ask-Platzhaler weg)"
 grep -qF ':9123 {' "${CF}" && pass "ask-Server existiert (:9123)" || fail "ask-Server :9123 fehlt"

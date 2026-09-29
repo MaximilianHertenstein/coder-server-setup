@@ -29,17 +29,16 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, letzter Commit `252ebc8` (Review-Runde 1, Phasen 1–7); die Änderungen der **Review-Runde 2** (zweite Fundliste) sind im Arbeitsstand **nicht committet** (siehe [CHANGELOG.md](CHANGELOG.md)) |
-| Lokale Tests | 10 Skripte in `tests/`, alle 2026-09-29 ausgeführt: 10× Exit 0, 316 `PASS`, 0 `FAIL` (Drift-Test jetzt auf 17 Dateien) |
-| Syntax/ShellCheck | `bash -n` für `setup-coder.sh` und `ssh-harden.sh` OK; `shellcheck -S warning` meldet genau einen Befund (SC2034, ungenutzter Zähler), `ssh-harden.sh` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | 2026-09-29 auf dem Test-Host `2.29.11.30` (Debian 13): Läufe 8 und 9 (Review-Runde 1) sowie **Läufe 10 und 11** (Review-Runde 2) je Exit 0, 0 `[FEHLER]`, 0 Drift; Lauf 11 ohne Container-Neustart (Idempotenz), Lauf 10 startete nur Prometheus neu (4. Alarmregel). **TLS bleibt offen** – `…/healthz` lief in den Läufen 3 bis 11 nie HTTP 200, weil ein externer nginx am öffentlichen IP 80/443 beantwortet (Details [CHANGELOG.md](CHANGELOG.md)) |
+| Lokale Tests | Zuletzt am 2026-09-29 vor den jüngsten Wartungs-Lock-/Restore-Änderungen ausgeführt; diese Änderungen sind noch nicht getestet (siehe neuester CHANGELOG-Eintrag) |
+| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf auf dem Test-Host `2.29.11.30` am 2026-09-29, **vor** den Änderungen dieser Review-Runde. Er belegt nicht deren Laufzeitverhalten. TLS war dort wegen eines externen nginx auf 80/443 offen (Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **nicht geprobt**, RTO unbekannt ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **nicht eingerichtet** – Platten-/Hostverlust = Datenbank + Backups weg |
-| SSH-Härtung | **Minimalvariante** (Entscheidung 2026-09-29): Schutz gegen fehlgeschlagene Logins läuft (ufw `limit 22/tcp` + fail2ban, Root-Passwort-Login gesperrt); Zielserver ist **derzeit nur per Passwort** erreichbar → erst Key setzen und testen, dann ggf. `ssh-harden.sh` ([SECURITY.md](SECURITY.md) §1) |
+| SSH-Härtung | Schulserver: Passwort-Login ist für die erste Inbetriebnahme bewusst aktiv, SSH ist laut Netzvorgabe nur aus dem Schulnetz erreichbar; ufw `limit 22/tcp` und fail2ban laufen zusätzlich. `ssh-harden.sh` bleibt unaufgerufen ([SECURITY.md](SECURITY.md) §1) |
 | Offene Befunde | u. a. B5 (Client-IPs im Audit: Env-Namen belegt, aus Datenschutzgründen bewusst nicht gesetzt), DNS-01 als Alternative nur dokumentiert – Details [CHANGELOG.md](CHANGELOG.md) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
-**Zielbetrieb:** ein Schulserver, per SSH nur aus dem Schulnetz bzw. per VPN
+**Zielbetrieb:** ein Schulserver, per SSH nur aus dem Schulnetz
 erreichbar; die Weiterleitung der Weboberfläche (80/443) muss noch durch einen
 Netzwerkadmin umgesetzt werden – bis dahin kann das Setup dort keine
 Zertifikate ausstellen. Der aktuelle Test-Host `2.29.11.30` ist eine
@@ -56,7 +55,7 @@ Abschnitt 11.
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
 | `tests/` | 10 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
-| `ai-review/` | Reviews, Pläne, Implementierungsberichte (B-/B2-/P-/F-Nummern) |
+| `ai-review/` | Reviews, Pläne, Implementierungsberichte (B-/B2-/P-/F-Nummern); [Prüfung der angehängten Punkte A1–C6](ai-review/REVIEW-2026-09-29-ANHANG.md) |
 
 ## Was das Setup-Skript macht
 
@@ -64,11 +63,11 @@ Aufruf als Benutzer mit sudo-Rechten: `./setup-coder.sh`
 
 | # | Schritt | Ergebnis |
 |---|---|---|
-| 1 | Docker Engine installieren | apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
-| 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `Caddyfile` (On-Demand-TLS mit lokalem `ask`), `prometheus.yml` + `rules/coder-alerts.yml`, Grafana-Datasource-Provisioning, `node-textfile/` |
-| 3 | Docker-Stack starten | Preflights (Daemon, fremde Listener, Platte), `docker compose config --quiet`, Pull + `up -d`, Caddy bei Änderung `validate` + `reload`, Prometheus/Grafana nur bei Konfigurationsänderung neu |
+| 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
+| 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus.yml` + `rules/coder-alerts.yml`, Grafana-Datasource-Provisioning, `node-textfile/` |
+| 3 | Docker-Stack starten | Preflights (Daemon, fremde Listener, Platte), `docker compose config --quiet`, Pull + `up -d`, Caddy bei Änderung `validate` + `reload`, Prometheus lädt geänderte Regeln per SIGHUP; Grafana startet bei geänderter Provisioning-Datei neu |
 | 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw limit 22/tcp`, 80/443 frei, fail2ban-Jail `sshd`, Abschluss-Checks |
-| 5 | Automatische Sicherheitsupdates | unattended-upgrades inkl. Docker-Origin (C6), Reboot 03:00, lesendes Boot-Gate (`boot-check.sh`), TLS-Zählung (`check-tls.sh`) |
+| 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades, Reboot 03:00, lesendes Boot-Gate (`boot-check.sh`), TLS-Zählung (`check-tls.sh`); Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |
 | 7 | Update-Skript | `update.sh` (manuell, kein Cronjob) mit Pre-Backup und Health-Gate |
 | 8 | Passwort-Reset-Skript | `reset-passwords.sh` (Postgres + Grafana, atomare `.env`-Aktualisierung) |
@@ -96,8 +95,8 @@ deterministisch neu – Hand-Anpassungen gehen dabei verloren, Details in
 Volumes: `postgres_data`, `caddy_data`, `caddy_config`, `prometheus_data`,
 `grafana_data`. Container-Logs: `json-file`, 10 MB × 3 Dateien je Container
 (daemon-weit in `daemon.json` festgelegt, nicht nur compose-seitig).
-Bind-Mounts aus `/opt/coder/`: `prometheus.yml`, `rules/` (vier Alarmregeln,
-dazu TLS-Ausstellungen >20 pro 7 Tage), `grafana/provisioning/datasources/`
+Bind-Mounts aus `/opt/coder/`: `prometheus.yml`, `rules/` (fünf Alarmregeln,
+darunter TLS-Ausstellungen >20 pro 7 Tage und ein veralteter TLS-Check), `grafana/provisioning/datasources/`
 und `node-textfile/` (Backup- und TLS-Metrik für den textfile-collector von
 node-exporter).
 
@@ -111,9 +110,10 @@ node-exporter).
       IP des Servers.
       Prüfung: `getent hosts coder.ghse-unterricht.de` und
       `getent hosts setup-probe-1.coder.ghse-unterricht.de`
-- [ ] Die Schulnetz-Infrastruktur leitet 80/tcp, 443/tcp (und 443/udp für
-      HTTP/3) sowie 22/tcp an den Server weiter (Standard intern:
-      10.16.103.13).
+- [ ] Die Schulnetz-Infrastruktur leitet 80/tcp und 443/tcp (443/udp für
+      HTTP/3 optional) an den Server weiter (Standard intern: 10.16.103.13).
+      SSH/22 bleibt ausschließlich aus dem Schulnetz erreichbar; keine
+      öffentliche SSH-Weiterleitung einrichten.
 - [ ] Ausreichend Platte: Warnung unter 1 GB frei unter `/opt/coder`,
       Backup bricht unter 500 MB frei hart ab.
       Prüfung: `df -h /opt/coder`
@@ -147,8 +147,9 @@ DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh
 1. Exit-Code `0` (die Zusammenfassung meldet 0 Einträge `[FEHLER]`),
 2. `curl -s -o /dev/null -w '%{http_code}\n' https://coder.ghse-unterricht.de/healthz`
    liefert `200`,
-3. die Warnung zum SSH-Passwort-Login bleibt bis zur Härtung erwartbar
-   (siehe [SECURITY.md](SECURITY.md)),
+3. der SSH-Passwort-Login bleibt bei der ersten Inbetriebnahme bewusst aktiv;
+   SSH/22 darf nur aus dem Schulnetz erreichbar sein (siehe
+   [SECURITY.md](SECURITY.md)),
 4. ein Backup existiert: `ls -t /opt/coder/backups/coder_*.sql.gz | head -n1`.
 
 Das Skript ist auf erneutes Ausführen ausgelegt (Re-Run). Ob ein zweiter
@@ -177,17 +178,22 @@ Umgebungsvariable überschreibbar:
 | `CODER_ALLOW_DOWNGRADE` | (leer) | nur `yes` erlaubt ein bewusstes Zurücksetzen einer Version (A5-Downgrade-Schutz) |
 | `ACME_CA` | (leer) | optionaler eigener ACME-Endpunkt, z. B. Let's-Encrypt-Staging statt Produktions-CA |
 
-Versionen ändern sich nie von selbst. Prometheus-/Grafana-Updates brauchen
-einen erneuten Lauf von `setup-coder.sh`, `update.sh` allein reicht nicht
-(exakte Pins). Die vollständige Dateiliste, Cron-Zeiten und
+`update.sh` sichert die Datenbank, zieht die in Compose eingetragenen Tags und
+prüft danach den Stack. Neue Images kommen dabei nur automatisch hinter den
+beweglichen Tags `caddy:2.10` und `postgres:15-alpine` an. Coder, Prometheus,
+Grafana und node-exporter sind exakt gepinnt: für deren Versionswechsel den
+Pin in `setup-coder.sh` ändern und Setup erneut ausführen. Docker-Engine- und
+Compose-Paketupdates sind davon getrennt und manuell; ein Engine-Update kann
+alle Workspaces unterbrechen. Die vollständige Dateiliste, Cron-Zeiten und
 Wartungsverfahren stehen in [OPERATIONS.md](OPERATIONS.md).
 
 ## Sicherheit und Hardening (Kurzfassung)
 
-- **SSH**: Port 22 ist von überall erreichbar, aber rate-limitiert
-  (`ufw limit 22/tcp`) und über fail2ban abgesichert. Passwort-Login bleibt
-  aktiv, bis `ssh-harden.sh` bewusst ausgeführt wird – dieses verlangt zwei
-  Bestätigungsflags (`--i-have-key-access --i-have-second-access`), einen
+- **SSH**: Auf dem Schulserver ist Port 22 laut Netzvorgabe nur aus dem
+  Schulnetz erreichbar. Passwort-Login bleibt für die erste Inbetriebnahme
+  bewusst aktiv; ufw rate-limitiert (`ufw limit 22/tcp`) und fail2ban
+  begrenzen Fehlversuche. `ssh-harden.sh` wird nicht automatisch ausgeführt;
+  es verlangt zwei Bestätigungsflags (`--i-have-key-access --i-have-second-access`), einen
   vorhandenen SSH-Key und bestätigt den Zweit-Zugang.
 - **Firewall**: ufw mit `default deny incoming`; 80/443 (tcp+udp) frei.
   Prometheus, node-exporter und Grafana sind ausschließlich an
@@ -198,16 +204,19 @@ Wartungsverfahren stehen in [OPERATIONS.md](OPERATIONS.md).
 - **Secrets**: `.env` mit 600/root, Passwörter ausschließlich hex,
   Rotation über `reset-passwords.sh`. Kein Secret im Repository
   (`.gitignore`).
-- **TLS**: Caddy On-Demand-TLS mit Wildcard. Der `ask`-Endpunkt
-  (`127.0.0.1:9123`, nur im Container erreichbar) prüft den beantragten
+- **TLS**: Caddy On-Demand-TLS mit Wildcard. Das `permission http`-Modul nutzt
+  den lokalen `ask`-Endpunkt (`127.0.0.1:9123`, nur im Container erreichbar).
+  Dieser prüft den beantragten
   Namen gegen das Coder-App-Subdomänen-Muster und antwortet mit 200 oder
   404 – Namen außerhalb des Musters bekommen kein Zertifikat. Das Muster
   ist bewusst ein **Filter, kein Budgetschutz**: für Namen darin kann ein
   Angreifer das Zertifikat weiterhin auslösen, das Let's-Encrypt-
   Wochenbudget (50/Domain) bleibt mit allen Schuldiensten geteilt
   (Grenzen und Folgen: [SECURITY.md](SECURITY.md)).
-- **Updates**: unattended-upgrades inkl. automatischem Reboot um 03:00 Uhr
-  (Betriebsfenster ist **nicht** mit dem Schulbetrieb abgestimmt).
+- **Updates**: Debian-Paketupdates per unattended-upgrades inkl. automatischem
+  Reboot um 03:00 Uhr (Betriebsfenster ist **nicht** mit dem Schulbetrieb
+  abgestimmt). Docker Engine wird manuell aktualisiert, um ungeplante
+  Workspace-Unterbrechungen zu vermeiden.
 
 Grenzen, Nachweisbefehle und offene Entscheidungen: [SECURITY.md](SECURITY.md).
 
@@ -234,15 +243,16 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-09-29, tatsächlich ausgeführt (Stand nach Review-Runde 2): alle 10
-Skripte Exit 0 (316 `PASS`, 0 `FAIL`); `bash -n` ohne Befund; ShellCheck mit genau einem
-Befund (SC2034, ungenutzter Zähler in der Retry-Schleife), `ssh-harden.sh`
-ohne Befund.
+Stand nach Prüfung der angehängten Punkte am 2026-09-29: alle 10 Testskripte
+Exit 0 (311 `PASS`, 0 `FAIL`); `bash -n` ohne Befund; ShellCheck mit einem
+vorhandenen Befund (SC2034, ungenutzter Retry-Schleifenzähler). Der lokale
+Caddy-Parsertest wurde übersprungen, weil kein Caddy-Image lokal vorhanden
+war; ein vollständiger Setup-/VM-Lauf wurde nicht ausgeführt.
 
 Was die Tests **belegen**: das Verhalten der extrahierten Codestellen
 (Backup-Headercheck, TLS-/Boot-Gates, Hex-Migration, ufw-Downgrade-Gate
 inkl. Abbruchfall „restriktiv + worldwide-Limit", Reset-Precheck, Drift-Hashes
-über 17 Dateien, Port-Preflight, `ON_ERROR_STOP` im Restore-Runbook) anhand
+über 16 Dateien, Port-Preflight, `ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
 (`t-b1-on-demand-ask.sh`: Muster-Falluntersuchung, optional `caddy validate`
 + `caddy adapt`).
