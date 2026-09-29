@@ -28,14 +28,14 @@ nicht im Repository.
 
 | Punkt | Stand |
 |---|---|
-| Quellstand | Branch `ai/implementation-v3`, `main`/Tag `baseline` bleibt der Ausgangsstand (siehe [CHANGELOG.md](CHANGELOG.md)) |
-| Lokale Tests | 10 Skripte in `tests/`, alle 2026-09-29 ausgeführt: 10× Exit 0, 314 `PASS`, 0 `FAIL` |
+| Quellstand | Branch `main`, letzter Commit `252ebc8` (Review-Runde 1, Phasen 1–7); die Änderungen der **Review-Runde 2** (zweite Fundliste) sind im Arbeitsstand **nicht committet** (siehe [CHANGELOG.md](CHANGELOG.md)) |
+| Lokale Tests | 10 Skripte in `tests/`, alle 2026-09-29 ausgeführt: 10× Exit 0, 316 `PASS`, 0 `FAIL` (Drift-Test jetzt auf 17 Dateien) |
 | Syntax/ShellCheck | `bash -n` für `setup-coder.sh` und `ssh-harden.sh` OK; `shellcheck -S warning` meldet genau einen Befund (SC2034, ungenutzter Zähler), `ssh-harden.sh` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | 2026-09-29 auf dem Test-Host `2.29.11.30` (Debian 13): Läufe 8 und 9 je Exit 0, 0 `[FEHLER]`, Lauf 9 ohne Drift und ohne Container-Neustart (Idempotenz). **TLS bleibt offen** – `…/healthz` lief in den Läufen 3 bis 9 nie HTTP 200, weil ein externer nginx am öffentlichen IP 80/443 beantwortet (Details [CHANGELOG.md](CHANGELOG.md)) |
+| Vollständiger Setup-Lauf auf echtem System | 2026-09-29 auf dem Test-Host `2.29.11.30` (Debian 13): Läufe 8 und 9 (Review-Runde 1) sowie **Läufe 10 und 11** (Review-Runde 2) je Exit 0, 0 `[FEHLER]`, 0 Drift; Lauf 11 ohne Container-Neustart (Idempotenz), Lauf 10 startete nur Prometheus neu (4. Alarmregel). **TLS bleibt offen** – `…/healthz` lief in den Läufen 3 bis 11 nie HTTP 200, weil ein externer nginx am öffentlichen IP 80/443 beantwortet (Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **nicht geprobt**, RTO unbekannt ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **nicht eingerichtet** – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | **Minimalvariante** (Entscheidung 2026-09-29): Schutz gegen fehlgeschlagene Logins läuft (ufw `limit 22/tcp` + fail2ban, Root-Passwort-Login gesperrt); Zielserver ist **derzeit nur per Passwort** erreichbar → erst Key setzen und testen, dann ggf. `ssh-harden.sh` ([SECURITY.md](SECURITY.md) §1) |
-| Offene Befunde | u. a. B2-005 (TLS-Zählung blind gegenüber Log-Rotation) – Details [CHANGELOG.md](CHANGELOG.md) |
+| Offene Befunde | u. a. B5 (Client-IPs im Audit: Env-Namen belegt, aus Datenschutzgründen bewusst nicht gesetzt), DNS-01 als Alternative nur dokumentiert – Details [CHANGELOG.md](CHANGELOG.md) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
@@ -96,9 +96,10 @@ deterministisch neu – Hand-Anpassungen gehen dabei verloren, Details in
 Volumes: `postgres_data`, `caddy_data`, `caddy_config`, `prometheus_data`,
 `grafana_data`. Container-Logs: `json-file`, 10 MB × 3 Dateien je Container
 (daemon-weit in `daemon.json` festgelegt, nicht nur compose-seitig).
-Bind-Mounts aus `/opt/coder/`: `prometheus.yml`, `rules/` (drei Alarmregeln),
-`grafana/provisioning/datasources/` und `node-textfile/` (Backup-Metrik für
-den textfile-collector von node-exporter).
+Bind-Mounts aus `/opt/coder/`: `prometheus.yml`, `rules/` (vier Alarmregeln,
+dazu TLS-Ausstellungen >20 pro 7 Tage), `grafana/provisioning/datasources/`
+und `node-textfile/` (Backup- und TLS-Metrik für den textfile-collector von
+node-exporter).
 
 ## Voraussetzungen
 
@@ -233,15 +234,15 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-09-29, tatsächlich ausgeführt: alle 10 Skripte Exit 0
-(314 `PASS`, 0 `FAIL`); `bash -n` ohne Befund; ShellCheck mit genau einem
+Stand 2026-09-29, tatsächlich ausgeführt (Stand nach Review-Runde 2): alle 10
+Skripte Exit 0 (316 `PASS`, 0 `FAIL`); `bash -n` ohne Befund; ShellCheck mit genau einem
 Befund (SC2034, ungenutzter Zähler in der Retry-Schleife), `ssh-harden.sh`
 ohne Befund.
 
 Was die Tests **belegen**: das Verhalten der extrahierten Codestellen
 (Backup-Headercheck, TLS-/Boot-Gates, Hex-Migration, ufw-Downgrade-Gate
 inkl. Abbruchfall „restriktiv + worldwide-Limit", Reset-Precheck, Drift-Hashes
-über 16 Dateien, Port-Preflight, `ON_ERROR_STOP` im Restore-Runbook) anhand
+über 17 Dateien, Port-Preflight, `ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
 (`t-b1-on-demand-ask.sh`: Muster-Falluntersuchung, optional `caddy validate`
 + `caddy adapt`).
@@ -309,6 +310,10 @@ Produktivsystem geprüft werden:
 9. Externe Sicht: Ports 22/80/443 offen, 9090/9100/3001 von außen
    geschlossen; Wildcard-DNS und Workspace-App-Subdomain im Test.
 10. Offsite-Backup-Transport und Wiederanlauf danach (Entscheidung steht aus).
+11. Erstanlage des Owner-Kontos über `CODER_FIRST_USER_*` beim ersten Lauf
+    (B1): muss das Konto entstehen, ohne dass jemand die Anmeldeseite
+    erreicht – und der Re-Run (Konto existiert) darf scheitern, ohne
+    abzubrechen.
 
 ## Detaildokumentation
 

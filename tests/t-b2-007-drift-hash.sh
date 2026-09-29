@@ -1,7 +1,7 @@
 #!/bin/bash
 # T-026-Delta / B2-007: remember_hash an der Schreibstelle statt in Schritt 10.
 # Geprueft: Struktur (note_drift VOR dem Schreiben, remember_hash NACH
-# erfolgreichem tee/chmod, 15/15 Dateien, keine Schritt-10-Schleife) und
+# erfolgreichem tee/chmod, 17/17 Dateien, keine Schritt-10-Schleife) und
 # Verhalten der ECHTEN note_drift-/remember_hash-Funktionen aus
 # setup-coder.sh (ausextrahiert, sudo-Shim, Hashstore in /tmp):
 #   (a) gruener Lauf -> keine WARN
@@ -21,7 +21,7 @@ SETUP="${REPO_ROOT}/setup-coder.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
-# --- 1. Struktur: 15 note_drift / 15 remember_hash, korrekte Reihenfolge ----
+# --- 1. Struktur: 17 note_drift / 17 remember_hash, korrekte Reihenfolge ----
 EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/Caddyfile
 /opt/coder/prometheus.yml
@@ -35,6 +35,7 @@ EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/backup.sh
 /etc/cron.d/coder-backup
 /etc/logrotate.d/coder-backup
+/etc/logrotate.d/coder-logs
 /opt/coder/update.sh
 /opt/coder/reset-passwords.sh
 /opt/coder/reset-coder.sh"
@@ -42,8 +43,8 @@ EXPECTED="/opt/coder/docker-compose.yml
 N_NOTE=$(grep -c '^note_drift "' "${SETUP}")
 N_REM=$(grep -c '^remember_hash "' "${SETUP}")
 echo "INFO: note_drift=${N_NOTE} remember_hash=${N_REM}"
-[ "${N_NOTE}" -eq 16 ] && pass "genau 16 note_drift-Aufrufe" || fail "note_drift-Anzahl=${N_NOTE} (erwartet 16)"
-[ "${N_REM}" -eq 16 ] && pass "genau 16 remember_hash-Aufrufe" || fail "remember_hash-Anzahl=${N_REM} (erwartet 16)"
+[ "${N_NOTE}" -eq 17 ] && pass "genau 17 note_drift-Aufrufe" || fail "note_drift-Anzahl=${N_NOTE} (erwartet 17)"
+[ "${N_REM}" -eq 17 ] && pass "genau 17 remember_hash-Aufrufe" || fail "remember_hash-Anzahl=${N_REM} (erwartet 17)"
 
 nl_idx() { grep -nF "$1" "${SETUP}" | head -n1 | cut -d: -f1; }
 

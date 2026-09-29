@@ -58,7 +58,7 @@ abgleichen (und die Zeile dann streichen).
 `D-Reboot-Fenster` (03:00), `D-Firewall` (`DOCKER-USER`), `D-Socket`
 (Trennung Workspace/Host), `templates/allowlist.md` (Erstinventar).
 
-## 4. Teststand (tatsächlich ausgeführt, 2026-09-29)
+## 4. Teststand Runde 1 (tatsächlich ausgeführt, 2026-09-29; neuerer Stand in Abschnitt 6)
 
 ```
 bash -n setup-coder.sh                      → 0 Befunde
@@ -87,3 +87,60 @@ echtem Cron-Lauf.
   (Fehlerbild C5).
 - Das ask-Muster ist ein Filter, kein Budgetschutz (P-005) – bewusst so
   entschieden und in [SECURITY.md](../SECURITY.md) Abschnitt 3 beschrieben.
+
+---
+
+## 6. Review-Runde 2 (zweite Fundliste 2026-09-29)
+
+**Grundlage:** zweite, eigenständige Fundliste mit **neu gestarteter
+Numerierung** A1–A7, B1–B6, C1–C7 (nicht verwechseln mit Runde 1).
+Bewertung je Punkt: *zugestimmt → umgesetzt* oder *abgelehnt → Beleg*.
+
+| ID | Befund | Bewertung | Umsetzung / Beleg |
+|---|---|---|---|
+| A1 | `versions.env` wurde vor `mkdir /opt/coder` geschrieben (Abbruch auf frischem Host) | zugestimmt | Schreibvorgang erst nach erfolgreichem `up -d` inkl. `install -d -m 0755 /opt/coder` |
+| A2 | Domain-Auswertung per awk über die Caddyfile traf die Matcher-Zeile `@askOK` → leere Domain → TLS-Smoke still übersprungen | zugestimmt | explizites `/opt/coder/domain` (vor Caddyfile-Drift), beide Leser nutzen `tr -d '[:space:]'` und melden leer |
+| A3 | Pipe mit 64-KB-Buffer könne bei `sshd -T`/`apt-config dump`/`ufw status` zu 141/SIGPIPE führen | **abgelehnt** | gemessen: `sshd -T` 4 700 B, `apt-config dump` 10 903 B, `ufw status` 633 B, `crontab -l` 0 B – alles deutlich unter dem Pipe-Buffer, Abbruch nicht erreichbar (der frühere Fund B2-001 lag daran, dass ein Dump 1,2 MB hatte) |
+| A4 | Container-Schleife in `boot-check.sh` lief vor jedem Warten | zugestimmt | PG-Health-Warte-Schleife zuerst, dann Warten auf **alle** Container, danach Meldung |
+| A5 | Volume-Guard fehlte bei vorhandenem `coder_postgres_data` (P-011 deckt nur unvollständige `.env`) | zugestimmt | Abbruch direkt nach dem `.env`-Guard, Hinweis auf RESTORE statt Volume-Löschung |
+| A6 | `fail2ban-client get sshd logpath` liefert rc=0 ohne Aussagekraft | zugestimmt | `fail2ban-client status sshd` → `Total failed` numerisch geprüft; **Drop-in geändert nicht nötig**: Debian-Filter enthält bereits `journalmatch … _COMM=sshd-session`, 63/63 Fehlversuche laufen auf `sshd-session` |
+| A7 | Persistenz-Fall 2 stand vor dem erfolgreichen `up -d` | zugestimmt | wie A1, ein gemeinsamer Fix |
+| B1 | Erster Nutzer (= Owner) wird derjenige, der zuerst die Seite öffnet | zugestimmt | optional über `CODER_FIRST_USER_EMAIL/USERNAME/PASSWORD/_FULL_NAME` beim ersten Lauf; Flags in `coder login --help` von v2.36.6 geprüft; Passwort per stdin, nie als exec-Argument |
+| B2 | Docker-Socket | bereits erledigt | Trennung = offene Entscheidung `D-Socket`, Allowlist in [templates/allowlist.md](../templates/allowlist.md) |
+| B3 | Backups nur DB, gleiche Platte, kein Restore-Test | bereits erledigt | offene Punkte `D-Offsite` + Restore-Probe in [SECURITY.md](../SECURITY.md) §8, [README.md](../README.md) |
+| B4 | TLS-Budget-Überschreitung nur im Log sichtbar | zugestimmt | `check-tls.sh` schreibt `node-textfile/coder_tls.prom`, vierte Regel `TlsIssuanceBudgetHigh` (>20/7 d) |
+| B4b | Wildcard ohne offene 80/443 nur über DNS-01 | zugestimmt, nur Doku | Alternative in [OPERATIONS.md](../OPERATIONS.md) §11: `_acme-challenge.`-CNAME, braucht DNS-Provider-Zugang **und** ein Caddy-Image mit DNS-Plugin (Standardimage hat keines) |
+| B5 | Coder sieht hinter Caddy nur dessen Container-IP | **Entscheidung offen** | Env-Namen belegt: `CODER_PROXY_TRUSTED_HEADERS`, `CODER_PROXY_TRUSTED_ORIGINS`. Nicht konfiguriert, weil das Vertrauen auf das ganze Compose-Netz durch einen Workspace-Container im selben Netz fälschbar wäre; für die Schule vorher festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz) |
+| B6 | `ufw`-Regeln würden auch bei anderem SSH-Port gesetzt | zugestimmt | Port-Vorabprüfung aus `sshd -T` vor der ersten `ufw`-Änderung, sonst Abbruch |
+| C1 | Zeitzone nie gesetzt → 03:00-Uhr-Restart nicht garantiert | zugestimmt | `timedatectl set-timezone Europe/Berlin` idempotent zu Beginn von Schritt 1/10 |
+| C2 | Nach `reset-passwords.sh` neu erstellte Container nur beim nächsten `up -d` | zugestimmt | Hinweis in der Ausgabe des Skripts **und** in [OPERATIONS.md](../OPERATIONS.md) §7 |
+| C3 | Doppelter Container-Check in `reset-passwords.sh` | zugestimmt | zweiter Block entfernt (Prüfung genau einmal, vor dem Backup) |
+| C4 | `/var/log/coder-boot.log` und `/var/log/coder-tls.log` ohne Rotation | zugestimmt | `/etc/logrotate.d/coder-logs` (wöchentlich, 8×, `copytruncate`), Drift-Test auf 17 Dateien |
+| C5 | Datei-Split von `setup-coder.sh` | **abgelehnt** | Tests extrahieren Code über Zeilenmarker in `setup-coder.sh`; jeder Split bricht `tests/t-b2-*.sh`. Legende unten ersetzt die vermissten Definitionsstellen |
+| C6 | Tippfehler (`konfigurgerecht`, `Prometheums`, `Kontrabuch`, `einmallig`, `präsizt`) | zugestimmt | alle fünf korrigiert |
+| C7 | Zugangsdaten als Klartext auf stdout ohne Hinweis | zugestimmt | Hinweis zum Leeren des Scrollbacks in `setup-coder.sh` und in `reset-passwords.sh` |
+
+**ID-Legende (C5):** `A…/B…/C…/D…` = Fundlisten-IDs; Runde 1 und Runde 2
+starten jeweils neu. `B2-001 … B2-010` = Tickets der Umsetzungsrunde 1,
+identisch mit den Dateien `tests/t-b2-00*.sh`. `P-0xx` = geplante
+Maßnahmen aus dem Plan, `F-0xx` = Fehlerbefunde desselben Plans;
+`D-…` = offene Entscheidungen, `D-Socket`, `D-Offsite`,
+`D-Monitoring`, `D-TLS`, `D-SSH`, `D-Reboot-Fenster`, `D-Firewall`.
+
+### Teststand nach Runde 2 (tatsächlich ausgeführt, 2026-09-29)
+
+```
+bash -n setup-coder.sh                      → 0 Befunde
+shellcheck -S warning setup-coder.sh        → genau 1 Befund (SC2034, Retry-Zähler, wie in Runde 1)
+for f in tests/t-*.sh; do bash "$f"; done   → 10/10 Exit 0, 316 PASS, 0 FAIL
+yaml.safe_load (coder-alerts.yml)           → 4 Regeln, u. a. TlsIssuanceBudgetHigh
+yaml.safe_load (prometheus.yml)           → ok (docker-compose.yml unverändert in Runde 2)
+logrotate -d (coder-logs) auf dem Test-Host → Syntax akzeptiert, 2 Pfade
+Linkprüfung über 37 Markdown-Dateien        → 198 lokale Links, 0 tote
+```
+
+Zusätzlich auf dem Test-Host `2.29.11.30` ausgeführt: Lauf 10 und Lauf 11
+je Exit 0 / 0 `[FEHLER]` / 0 Drift (Lauf 11 ohne Container-Neustart),
+`check-tls.sh` → `coder_tls_issuances_7d 32` → Regel `TlsIssuanceBudgetHigh`
+firing, `boot-check.sh` → PG zuerst, dann Container, dann `/healthz` ROT
+(wegen externem nginx), `logrotate -d` für `coder-logs` ohne Fehler.

@@ -30,9 +30,11 @@ Abschnitt 7, Drift-Warnung).
 | `/opt/coder/docker-compose.yml` | Stack-Definition, Logs, Ports, Volumes | ja |
 | `/opt/coder/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard | ja |
 | `/opt/coder/prometheus.yml` | Scrape-Jobs `coder`, `node`, Einbindung `rule_files` | ja |
-| `/opt/coder/rules/coder-alerts.yml` | drei Alarmregeln (Target down, Platte <10 %, Backup >25 h) | nein |
+| `/opt/coder/rules/coder-alerts.yml` | vier Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20) | nein |
 | `/opt/coder/grafana/provisioning/datasources/prometheus.yml` | Datasource `Prometheus` wird automatisch angelegt | nein |
 | `/opt/coder/node-textfile/coder_backup.prom` | Zeitstempel des letzten erfolgreichen Backups (vom Setup angelegt, vom Lauf beschrieben) | nein |
+| `/opt/coder/node-textfile/coder_tls.prom` | Let's-Encrypt-Ausstellungen der letzten 7 Tage (schreibt `check-tls.sh` wöchentlich) | nein |
+| `/opt/coder/domain` | Apex-Domain, Quelle für TLS-Smoke und Update-Gate (644) – wird bei jedem Lauf aus `DOMAIN_CODER` überschrieben, daher bewusst ohne Hashstore | nein |
 | `/opt/coder/versions.env` | wirksam gewesene Versionen der fünf Images (644) | nein |
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
 | `/opt/coder/update.sh` | manuelles Update mit Pre-Backup und Health-Gate | ja |
@@ -41,11 +43,12 @@ Abschnitt 7, Drift-Warnung).
 | `/opt/coder/boot-check.sh` | lesendes Boot-Gate nach Reboot | ja |
 | `/opt/coder/check-tls.sh` | zählt Let's-Encrypt-Ausstellungen (7 Tage) | ja |
 | `/opt/coder/RESTORE.md` | Runbook-Kopie (Quelle liegt im Repository) | nein |
-| `/opt/coder/.generated-hashes` | sha256 der 16 generierten Dateien (600, root) | – |
+| `/opt/coder/.generated-hashes` | sha256 der 17 generierten Dateien (600, root) | – |
 | `/etc/cron.d/coder-backup` | Cron: täglich 01:00 | ja |
 | `/etc/cron.d/coder-tlscheck` | Cron: Montag 06:30 | ja |
 | `/etc/cron.d/coder-bootcheck` | Cron: `@reboot` | ja |
 | `/etc/logrotate.d/coder-backup` | Rotation `/var/log/coder-backup.log` | ja |
+| `/etc/logrotate.d/coder-logs` | Rotation `/var/log/coder-boot.log` und `/var/log/coder-tls.log` (wöchentlich, 8×) | ja |
 | `/etc/fail2ban/jail.d/10-coder-sshd.local` | Drop-In: Jail `sshd` (backend systemd) | ja |
 | `/etc/apt/apt.conf.d/52-coder-reboot` | automatischer Reboot 03:00 | ja |
 | `/etc/apt/apt.conf.d/52-coder-docker-upgrades` | Docker-Origin in den Sicherheitsupdates (C6) | ja |
@@ -161,7 +164,10 @@ docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=evil.gh
 cat /opt/coder/node-textfile/coder_backup.prom
 curl -s http://127.0.0.1:9100/metrics | grep '^coder_backup'
 
-# Alarmregeln geladen (3 Stück)?
+# TLS-Ausstellungen der letzten 7 Tage (fehlend bis zum ersten Montagslauf)
+curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_issuances'
+
+# Alarmregeln geladen (4 Stück)?
 curl -s http://127.0.0.1:9090/api/v1/rules | grep -o '"name":"[A-Za-z]*"' | sort -u
 
 # Docker-Pakete in den Sicherheitsupdates enthalten?
@@ -289,12 +295,21 @@ Reihenfolge im Skript: Vorab-Backup → `.env`-Sicherung (eine Generation)
 `up -d --no-deps coder`. Bei Abbruch nennt das Skript die Phase und den
 Weg zurück; erneutes Ausführen heilt in der Regel.
 
+**C2 – Folge des geänderten `.env`:** Coder läuft sofort mit dem neuen
+Passwort weiter, **Postgres und Grafana aber erst, wenn sie neu erstellt
+werden**, denn der Env-Hash von `docker compose up -d` ändert sich. Beim
+nächsten vollständigen `docker compose up -d` werden diese beiden Container
+**neu erstellt** – kurzfristige Unterbrechung von DB und Grafana einplanen
+(kein Datenverlust, Volumes bleiben). Wer das nicht will, führt die Rotation
+bewusst kurz vor einem Wartungsfenster aus.
+
 ### Reboot
 
 - Automatisch bei Kernel-Updates um 03:00 Uhr
   (`/etc/apt/apt.conf.d/52-coder-reboot`) – **Fenster ist nicht mit dem
   Schulbetrieb abgestimmt**; laufende Workspaces/Sessions werden
-  abgerissen.
+  abgerissen. Die Zeitzone steht auf `Europe/Berlin` (Setup setzt sie
+  idempotent, C1), damit 03:00 wirklich 03:00 MEZ/MESZ sind.
 - Nach jedem Reboot schreibt `boot-check.sh` (per `@reboot`) nach
   `/var/log/coder-boot.log` und ins Journal: Container-Status, Postgres
   `healthy`, `/healthz` 200 innert 5 Minuten. Das Gate ist **lesend**
@@ -325,7 +340,7 @@ funktionierendes Backup durch und verlangt eine zweite Eingabe
 
 ### Drift-Warnung (generierte Dateien)
 
-Das Setup hält sha256 der 16 generierten Dateien in
+Das Setup hält sha256 der 17 generierten Dateien in
 `/opt/coder/.generated-hashes`. Ändert sich eine Datei durch Handarbeit,
 kommt beim nächsten Setup-Lauf:
 
@@ -396,8 +411,8 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-09-29 (tatsächlich ausgeführt): 10/10 Skripte Exit 0, 314 `PASS`,
-0 `FAIL`; ShellCheck `-S warning` genau ein Befund (SC2034).
+Stand 2026-09-29 (tatsächlich ausgeführt, nach Review-Runde 2): 10/10 Skripte
+Exit 0, 316 `PASS`, 0 `FAIL`; ShellCheck `-S warning` genau ein Befund (SC2034).
 
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder
 Root noch Docker und berühren keine Produktion. Sie belegen das Verhalten
@@ -423,6 +438,13 @@ einfach erneut ausführen).
 | 4 | Falls ein Proxy/Reverse-Proxy bestehen bleibt: `/.well-known/acme-challenge/` durchreichen **und** HTTPS als TLS-Passthrough (SNI) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft |
 | 5 | SSH-Route zum Server bleibt Schulnetz/VPN | kein Eingriff nötig, Rate-Limiting läuft über ufw + fail2ban auf dem Server |
 
+**Alternative, falls 80/443 nicht 1:1 erreichbar sind (DNS-01, B4b):**
+Ein Zertifikat ohne eingehende 80/443 geht nur über den DNS-01-Challenge
+(`/opt/coder/Caddyfile` müsste den `_acme-challenge.`-CNAME tragen und der
+`caddy`-Image bräuchte ein DNS-Plugin, das das Standardimage **nicht**
+enthält). Das braucht Zonen-Zugang beim DNS-Provider – erst anfragen, wenn
+Zeile 3 hakt; bis dahin ist http-01/tls-alpn-01 der eingeschlagene Weg.
+
 ### Betreiber (Auftraggeber)
 
 1. **Vorab:** `./setup-coder.sh` am Zielserver ausführen (erster Lauf legt
@@ -430,7 +452,23 @@ einfach erneut ausführen).
 2. **DNS/Weiterleitung abwarten** (Schritt 1–4 oben).
 3. **Zweiter Lauf:** `./setup-coder.sh` erneut ausführen – idempotent,
    erzeugt dann das Zertifikat bzw. meldet weiterhin WARN, falls es fehlt.
-4. **Abnahme mit den Checks aus [Abschnitt 5](#5-checks-gesundheit-prüfen):**
+4. **Erstkonto anlegen – SOFORT, bevor die URL irgendjemand weitergegeben
+   wird:** Wer sich als Erster anmeldet, wird automatisch Owner. Entweder
+   beim ersten Lauf über die drei Variablen (nur so sieht das Skript sie,
+   `sudo` leitet fremde Variablen nicht durch):
+
+   ```bash
+   sudo env CODER_FIRST_USER_EMAIL='admin@ghse-unterricht.de' \
+            CODER_FIRST_USER_USERNAME='admin' \
+            CODER_FIRST_USER_PASSWORD='<starkes, eigenes Passwort>' \
+            CODER_FIRST_USER_FULL_NAME='Schulverwaltung' \
+            ./setup-coder.sh
+   ```
+
+   oder unmittelbar danach selbst anmelden. Danach ein **zweites**
+   Owner-Konto anlegen, damit die Administration nicht an einem Zugang
+   hängt (siehe [SECURITY.md](SECURITY.md)).
+5. **Abnahme mit den Checks aus [Abschnitt 5](#5-checks-gesundheit-prüfen):**
 
    ```bash
    getent hosts coder.ghse-unterricht.de
@@ -439,7 +477,7 @@ einfach erneut ausführen).
    sudo docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=8080--main--ws--user.coder.ghse-unterricht.de'   # ok
    ```
 
-5. **Danach:** `ssh-harden.sh` nur mit getestetem Key-Login und Zweit-Zugang
+6. **Danach:** `ssh-harden.sh` nur mit getestetem Key-Login und Zweit-Zugang
    ausführen (siehe [SECURITY.md](SECURITY.md)), `RESTORE.md`-Restore-Probe
    einmalig durchspielen.
 

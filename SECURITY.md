@@ -210,6 +210,11 @@ wiederhergestellt und per `grep` gegen das After-Log verifiziert, sonst
 Exit 1. Before/After liegen unter
 `/var/log/coder-ssh-downgrade-<zeitstempel>.{before,after}.log`.
 
+**Port-Vorabprüfung (B6):** Bevor das Setup die erste Firewall-Regel
+anfasst, liest es die konfigurierten SSH-Ports aus `sshd -T`. Weicht die
+Liste von exakt `22` ab (z. B. `2222`), bricht es ab, statt eine Regel auf
+`22/tcp` zu setzen und den eigentlichen SSH-Port ungeschützt zu lassen.
+
 **Was ufw hier nicht schützt** (vom Setup selbst so dokumentiert):
 Docker trägt für per `ports:` publizierte Container-Ports eigene
 iptables-Regeln ein, die ufw dabei üblicherweise umgehen. Für 80/443 ist
@@ -255,18 +260,21 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   (Rotation dort abgleichen, nicht blind übernehmen).
 - Retry-Begrenzung: `apt`/`curl`/`pull` max. 3 Versuche mit 10 s Pause –
   keine endlosen Wiederholungen, kein Retry um Let's-Encrypt.
-- Log-Rotation existiert für `/var/log/coder-backup.log`; für
-  `/var/log/coder-boot.log` und `/var/log/coder-tls.log` fehlt sie.
+- Log-Rotation für alle drei Logs des Stacks: `/var/log/coder-backup.log`
+  (`coder-backup`) sowie `/var/log/coder-boot.log` und
+  `/var/log/coder-tls.log` (`coder-logs`, wöchentlich, 8×, `copytruncate`).
+  Container-Logs sind zusätzlich daemon-weit begrenzt (s. u.).
 - Container-Logs sind daemon-weit begrenzt (`daemon.json`, json-file
   10 MB × 3). Liegt eine fremde `daemon.json` ohne diese Schlüssel vor,
   bricht das Setup ab, statt sie umzuschreiben (C2).
 - Docker-Pakete laufen in die automatischen Sicherheitsupdates mit ein
   (`52-coder-docker-upgrades`, C6); ohne diesen Origin fielen
   `docker-ce`/`containerd.io` still heraus.
-- Es gibt **Alarmregeln, aber kein Alerting**: drei Prometheus-Regeln
-  (Coder-Target down, Root-Partition <10 % frei, letztes Backup >25 h)
-  sind in Prometheus/Grafana sichtbar, aber **kein Kanal**, der jemanden
-  weckt – kein Alertmanager, keine Benachrichtigung. Gesundheit meldet
+- Es gibt **Alarmregeln, aber kein Alerting**: vier Prometheus-Regeln
+  (Coder-Target down, Root-Partition <10 % frei, letztes Backup >25 h,
+  TLS-Ausstellungen >20/7 d) sind in Prometheus/Grafana sichtbar, aber
+  **kein Kanal**, der jemanden weckt – kein Alertmanager, keine
+  Benachrichtigung. Ein Contact Point bräuchte SMTP-Zugang (D-Monitoring). Gesundheit meldet
   sich nur, wer sie abfragt (Boot-Gate, TLS-Check, manuelle Checks in
   [OPERATIONS.md](OPERATIONS.md)).
 - Image-Pinning: Coder/Prometheus/Grafana/node-exporter exakt, Caddy minor
@@ -338,13 +346,15 @@ ss -tlnp; ss -ulnp | grep 443
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | Trennung offen (D-Socket), Allowlist greift bis dahin |
 | 2 | SSH-Passwort-Login aktiv; im Zielbetrieb nur Schulnetz/VPN erreichbar, auf dem Test-Host weltweit | Brute-Force trotz ufw/fail2ban möglich (Test-Host; im Schulnetz nur durch jeden Rechner dort) | Entscheidung 2026-09-29: vorerst keine Härtung, `ssh-harden.sh` vorbereitet (D-SSH) |
 | 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1), Budget-Schutz bleibt bis D-TLS mit Frist |
-| 4 | TLS-Zählung blind gegenüber Log-Rotation | Budget-DoS fällt unter Umständen nicht auf (B2-005) | offen |
+| 4 | TLS-Zählung blind gegenüber Log-Rotation | Budget-DoS fällt unter Umständen nicht auf (B2-005) | `coder_tls_issuances_7d` + Regel TlsIssuanceBudgetHigh seit 2026-09-29 (B4); Meldung fehlt weiterhin |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | offen (D-Offsite) |
 | 6 | Restore nie geprobt, RTO unbekannt | im Ernstfall ist der Wiederherstellungsweg ungeprüft | offen, Probe nur auf Test-VM |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | offen (D-Reboot-Fenster) |
-| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins, Logs ohne Rotation (boot/tls) | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden, Kanal offen (D-Monitoring) |
+| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (4 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
 | 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
+| 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | Entscheidung offen (B5): erst festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz/Schule) |
+| 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |
 
 **Regel für Reparaturen:** Kein Fehlerbild wird durch Abschalten von
 Prüfungen, Zurücklassen von Firewall-Regeln im ungünstigen Zustand oder

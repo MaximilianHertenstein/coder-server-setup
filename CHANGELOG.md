@@ -15,6 +15,84 @@ dieses Eintrags sind **nicht committet** – Arbeitsstand im Repo).
 
 ---
 
+## 2026-09-29 – Review-Runde 2 (zweite Fundliste A1–C7)
+
+**Umfang:** zweite Fundliste bewertet und umgesetzt (ohne Deployment –
+der Test-Host läuft weiterhin auf dem Stand von Lauf 9 / Commit `252ebc8`).
+Bewertung je Punkt in
+[ai-review/REVIEW-2026-09-29-AUSWERTUNG.md](ai-review/REVIEW-2026-09-29-AUSWERTUNG.md)
+Abschnitt 6.
+
+- **Bewertung:** zugestimmt und umgesetzt A1, A2, A4, A5, A6, A7, B1, B4,
+  B4b (nur Doku), B6, C1, C2, C3, C4, C6, C7. **Abgelehnt:** A3 (Pipe-/SIGPIPE-Risiko
+  ist bei gemessenen 4 700 B / 10 903 B / 633 B / 0 B nicht erreichbar),
+  C5 (Datei-Split bricht die zeilenmarkerbasierten Tests; stattdessen
+  ID-Legende). **Offen als Entscheidung:** B5 (Client-IPs im Audit –
+  Datenschutzfrage, Env-Namen `CODER_PROXY_TRUSTED_HEADERS`/
+  `CODER_PROXY_TRUSTED_ORIGINS` belegt, bewusst nicht gesetzt). B2/B3
+  waren bereits in der Doku erledigt.
+- **Code (`setup-coder.sh`):** A1/A7 `versions.env` erst nach
+  erfolgreichem `up -d` (+`install -d /opt/coder`), A2 explizite Datei
+  `/opt/coder/domain` und `tr`-Leser in `boot-check.sh`/`update.sh`,
+  A4 Boot-Gate: PG-Health-Warten → Warten auf alle Container → Meldung,
+  A5 Volume-Guard bei vorhandenem `coder_postgres_data`, A6
+  `fail2ban-client status sshd` statt `get … logpath`, B1 optionale
+  Erstanlage des Owner-Kontos über `CODER_FIRST_USER_*` (Passwort per
+  stdin in den Container, Flags in `coder login --help` von v2.36.6
+  geprüft), B4 `check-tls.sh` schreibt `node-textfile/coder_tls.prom` +
+  vierte Prometheus-Regel `TlsIssuanceBudgetHigh`, B6 SSH-Port-Vorabprüfung
+  (`sshd -T`) vor der ersten `ufw`-Änderung, C1 Zeitzone `Europe/Berlin`,
+  C2 Hinweis zur Container-Neuerstellung nach Passwort-Rotation,
+  C3 doppelter Container-Check in `reset-passwords.sh` entfernt, C4
+  `/etc/logrotate.d/coder-logs` für `coder-boot.log`/`coder-tls.log`,
+  C6 fünf Tippfehler, C7 Hinweis zum Leeren des Scrollbacks bei
+  Klartext-Zugangsdaten.
+- **Dokumentation:** README (vier Alarmregeln, Prüfpunkt 11 für die
+  Erstanlage), SECURITY (Log-Rotation für alle drei Logs, vier Regeln ohne
+  Kanal, Grenzen-Tabelle 4/9 aktualisiert + neue Zeilen 11 (B5) und 12
+  (DNS-01), Port-Vorabprüfung in §4), OPERATIONS (Dateitabelle: `coder-logs`,
+  `coder_tls.prom`, `/opt/coder/domain`; §5 TLS-Metrik-Check + 4 Regeln;
+  §7 C2-Folge und Zeitzone; §11 Schritt 4 Erstkonto + DNS-01-Alternative),
+  TROUBLESHOOTING (Budget-Zählung über Metrik/Regel), Auswertungsdok
+  Abschnitt 6 mit Bewertung und ID-Legende.
+- **Tatsächlich ausgeführt am 2026-09-29 (lokal):**
+  - `bash -n setup-coder.sh` 0 Befunde; `shellcheck -S warning
+    setup-coder.sh` genau 1 Befund (SC2034, Retry-Zähler, unverändert).
+  - **10 Testskripte Exit 0, 316 PASS, 0 FAIL**
+    (`tests/t-b2-007-drift-hash.sh` von 16 auf **17** Drift-Dateien
+    hochgezählt, `coder-logs` in der EXPECTED-Liste).
+  - `yaml.safe_load` für `coder-alerts.yml` (4 Regeln inkl.
+    `TlsIssuanceBudgetHigh`) und `prometheus.yml` ok.
+  - Linkprüfung über 37 Markdown-Dateien: 192 lokale Links, 0 tot.
+- **Tatsächlich ausgeführt auf dem Test-Host `2.29.11.30`:**
+  - `logrotate -d` für den neuen `coder-logs`-Inhalt (nach `/tmp` kopiert,
+    eigener State): Syntax akzeptiert, beide Pfade erkannt.
+  - `docker exec coder coder login --help`: Flags `--first-user-email`
+    `-username` `-password` `-full-name` `-trial` vorhanden (v2.36.6).
+  - **Lauf 10** (neues Skript auf den Host gespielt) → **Exit 0,
+    0 `[FEHLER]`, 0 Drift**, 17 Hashes, `/opt/coder/domain` und
+    `/etc/logrotate.d/coder-logs` angelegt, Prometheus startete neu
+    (Regel-Datei geändert) und kennt jetzt **4 Regeln** inkl.
+    `TlsIssuanceBudgetHigh`; alle übrigen Container unverändert
+    (`StartedAt` identisch).
+  - **Lauf 11** (Idempotenz) → **Exit 0, 0 `[FEHLER]`, 0 Drift, keine
+    Container-Neustarts**; beide Läufe zeigen nur die beiden bekannten
+    Warnungen (externer nginx blockiert `healthz`, SSH-Passwort-Login).
+  - `timedatectl`: `Etc/UTC → Europe/Berlin (CEST)` gesetzt; A6-Meldung
+    `[OK] fail2ban zählt SSH-Fehlversuche (Total failed: 1011)`; B6-Prüfung
+    still (bricht nur ab, wenn sshd ≠ 22); B2-Hinweis „Noch kein
+    Nutzerkonto vorhanden" (B1-Variablen waren nicht gesetzt, Zweig blieb aus).
+  - `sudo /opt/coder/check-tls.sh` manuell: schreibt
+    `coder_tls.prom` mit `coder_tls_issuances_7d 32`; daraufhin meldet
+    Prometheus `TlsIssuanceBudgetHigh` **firing** – auf dem Test-Host
+    korrekt (32 Zertifikats-Ausstellungen in 7 Tagen durch die früheren
+    Läufe), ohne Benachrichtigungskanal.
+  - `sudo /opt/coder/boot-check.sh` manuell: PG zuerst healthy, dann alle
+    sechs Container, dann `/healthz` → **BOOT-GATE ROT** mit 000 (bekannter
+    externer nginx), A4-Reihenfolge laut `/var/log/coder-boot.log` korrekt.
+  - `logrotate -d /etc/logrotate.d/coder-logs` (echte Datei): Syntax ok.
+---
+
 ## 2026-09-29 – Review-Runde: Umsetzung (Phasen 1–7) + Live-Läufe 8 und 9
 
 **Umfang:** Umsetzung der Befunde aus der Review-Runde im vereinbarten

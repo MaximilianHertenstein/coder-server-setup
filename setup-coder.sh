@@ -134,18 +134,9 @@ for _vv in ${VERSION_VARS}; do
     fi
   fi
 done
-# Erst NACH dem Guard persistieren: eine abgebrochene Ausführung darf nicht so
-# aussehen, als liefen die neuen Versionen bereits.
-sudo tee "${VERSIONS_FILE}" > /dev/null <<VERSIONSEOF
-# Von setup-coder.sh erzeugt – wirksam gewesene Versionen des letzten Laufs.
-# Kein Geheimnis, daher 644 (unten ohne sudo lesbar).
-CODER_VERSION=${CODER_VERSION}
-CADDY_VERSION=${CADDY_VERSION}
-PROMETHEUS_VERSION=${PROMETHEUS_VERSION}
-GRAFANA_VERSION=${GRAFANA_VERSION}
-NODE_EXPORTER_VERSION=${NODE_EXPORTER_VERSION}
-VERSIONSEOF
-sudo chmod 644 "${VERSIONS_FILE}"
+# Persistierung steht NICHT hier (A1/A7): /opt/coder gibt es an dieser Stelle
+# noch nicht (erst ab Schritt 2), und eine Version darf erst eingetragen
+# werden, wenn sie wirklich läuft. Siehe direkt nach "docker compose up -d".
 
 # ---- Hilfsfunktionen für die Zusammenfassung ab Schritt 4 -----------------
 declare -a SUMMARY=()
@@ -227,7 +218,21 @@ retry3() {
 echo "############################################################"
 echo "# [1/10] Docker Engine installieren"
 echo "############################################################"
-# C7: Paketinstallationen nicht-interaktiv und konfigurgerecht. Ohne
+# C1: Alle Cron-Zeiten dieses Skripts (Backup 01:00, Reboot 03:00, TLS-Check
+# Mo 06:30) gelten in LOCALTIME. Neue VMs laufen oft auf UTC, dann schlägt das
+# Backup um 03:00 Berlin an (Sommerzeit 04:00) und der Reboot mitten in der
+# Nacht. Explizit setzen statt raten; idempotenter No-Op, wenn schon Berlin.
+if command -v timedatectl >/dev/null 2>&1; then
+  _tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  if [ "${_tz}" != "Europe/Berlin" ]; then
+    if sudo timedatectl set-timezone Europe/Berlin; then
+      echo "Zeitzone '${_tz:-unbekannt}' -> Europe/Berlin gesetzt (C1): Backup 01:00 und Reboot 03:00 laufen in lokaler Zeit."
+    else
+      echo "Hinweis: Zeitzone konnte nicht gesetzt werden – Cron-Zeiten gelten in '${_tz:-unbekannt}' (C1)." >&2
+    fi
+  fi
+fi
+# C7: Paketinstallationen nicht-interaktiv und konform. Ohne
 # DEBIAN_FRONTEND=noninteractive können Pakete bei vorhandener
 # modifizierter Konfigurationsdatei (z.B. nach operatorseitiger Anpassung)
 # auf Nachfragen warten und das Skript hängen; "--force-confold" behält in
@@ -344,6 +349,20 @@ if ! [[ "${DOCKER_GID:-}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 if [ ! -f /opt/coder/.env ]; then
+  # A5/P-011: fehlt die .env NUR teilweise, bricht das Skript unten ab. Fehlt
+  # sie ganz, würde dieser Zweig frische Passwörter würfeln, während
+  # coder_postgres_data die alten behält – Coder käme nicht mehr an die DB
+  # (Crashloop) und nichts würde warnen. Also vor dem Würfeln prüfen, ob die
+  # Datenbank-Volume schon existiert; im Zweifel abbrechen statt zerstören.
+  if printf '%s\n' "$(sudo docker volume ls -q 2>/dev/null || true)" \
+    | grep -qx 'coder_postgres_data'; then
+    echo "Fehler: /opt/coder/.env fehlt, aber das Volume coder_postgres_data existiert." >&2
+    echo "Abbruch ohne Änderung – neu gewürfelte Passwörter würden die bestehende" >&2
+    echo "Datenbank-Anmeldung zerstören (A5/P-011)." >&2
+    echo "Reparatur: .env aus dem Backupsatz wiederherstellen (RESTORE.md) oder die" >&2
+    echo "Passwörter angleichen, dann Setup erneut. Volume NICHT löschen." >&2
+    exit 1
+  fi
   # hex statt base64: garantiert nur 0-9a-f, kann also nie ein "/", "+" oder
   # "=" enthalten, das in der Postgres-Connection-URL (postgres://user:PASS@host)
   # die URL zerlegen bzw. falsch interpretiert werden würde.
@@ -374,6 +393,8 @@ EOF
   echo "  Postgres-Passwort:      ${POSTGRES_PASSWORD}"
   echo "  Grafana-Admin-Passwort: ${GRAFANA_ADMIN_PASSWORD}"
   echo "  (stehen auch in /opt/coder/.env, nur für root lesbar)"
+  echo "  C7: Klartext erscheint nur in diesem Fenster – danach Scrollback und"
+  echo "      Session-Log leeren, nicht in Tickets/Chats kopieren."
   echo "------------------------------------------------------------"
 elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   && sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env \
@@ -657,6 +678,14 @@ fi
 # TLS-Unterbrechung bei jedem Re-Run).
 CADDY_BEFORE=$(sudo sha256sum /opt/coder/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
 CADDY_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
+# A2: Domain einmalig ablegen. boot-check.sh und update.sh haben sie vorher
+# per awk aus der Caddyfile gezogen und dabei auf die @askOK-Matcherzeile
+# gegriffen (enthält "*" und "{2,}", Zeile beginnt mit Leerzeichen -> $1 leer):
+# Ergebnis "Apex nicht parsbar" und übersprungener TLS-Smoke. Datei ist ein
+# reines Artefakt dieses Skripts, wird bei jedem Lauf neu geschrieben – kein
+# Drift-Check nötig.
+echo "${DOMAIN_CODER}" | sudo tee /opt/coder/domain > /dev/null
+sudo chmod 644 /opt/coder/domain
 note_drift "/opt/coder/Caddyfile" "Caddyfile"
 sudo tee /opt/coder/Caddyfile > /dev/null <<EOF
 {
@@ -732,7 +761,7 @@ scrape_configs:
 EOF
 remember_hash "/opt/coder/prometheus.yml"
 
-# C3: Alarmregeln (einzige Alarmkanäle ohne Alertmanager: Prometheums eigenen
+# C3: Alarmregeln (einzige Alarmkanäle ohne Alertmanager: Prometheus-eigenen
 # /alerts + Grafana). Drei Regeln, alle mit messbarer Grundlage:
 #   1. Coder-Target down  2. Root-Partition <10% frei  3. letztes Backup >25h.
 # Kein "absent()"-Zweig für Regel 3: fehlende Metrik = seit Aufsetzen noch
@@ -767,9 +796,17 @@ groups:
         annotations:
           summary: "Kein erfolgreiches Backup seit über 25 Stunden"
           description: "Letzter Erfolg siehe /opt/coder/node-textfile/coder_backup.prom, Log: /var/log/coder-backup.log"
+      - alert: TlsIssuanceBudgetHigh
+        expr: coder_tls_issuances_7d > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Über 20 Zertifikats-Ausstellungen in 7 Tagen"
+          description: "On-Demand-TLS zehrt am geteilten Let's-Encrypt-Wochenbudget der Domain. Wert: /opt/coder/node-textfile/coder_tls.prom (schreibt /opt/coder/check-tls.sh wöchentlich), Log: /var/log/coder-tls.log"
 EOF
 
-# C3: Datasource für Grafana provisioning statt manuelle UI-Kontrabuch-
+# C3: Datasource für Grafana provisioning statt manuelle UI-Konfigurations-
 # Eintragung. Betrifft nur den Beginn der Container-Welt; ob provisioniert
 # wurde, sieht der erste Start in den Grafana-Logs.
 sudo install -d -m 0755 /opt/coder/grafana/provisioning/datasources
@@ -909,6 +946,23 @@ retry3 sudo docker compose pull
 
 sudo docker compose up -d
 
+# A7/A1: wirksam gewesene Versionen erst JETZT persistieren – genau ab dem
+# Moment, in dem die neuen Images laufen (ein Abbruch vor "up -d" darf keine
+# nie gelaufene Version als wirksam eintragen, ein Abbruch DANACH darf keine
+# bereits migrierte DB ungeschützt lassen). "install -d" sichert den Pfad,
+# falls diese Blocke je früher stünde (A1: tee legt keine Verzeichnisse an).
+sudo install -d -m 0755 /opt/coder
+sudo tee "${VERSIONS_FILE}" > /dev/null <<VERSIONSEOF
+# Von setup-coder.sh erzeugt – wirksam gewesene Versionen des letzten Laufs.
+# Kein Geheimnis, daher 644 (unten ohne sudo lesbar).
+CODER_VERSION=${CODER_VERSION}
+CADDY_VERSION=${CADDY_VERSION}
+PROMETHEUS_VERSION=${PROMETHEUS_VERSION}
+GRAFANA_VERSION=${GRAFANA_VERSION}
+NODE_EXPORTER_VERSION=${NODE_EXPORTER_VERSION}
+VERSIONSEOF
+sudo chmod 644 "${VERSIONS_FILE}"
+
 # Docker Compose erkennt Änderungen am Inhalt einer eingebundenen Datei
 # (Caddyfile) nicht automatisch, nur Änderungen an der docker-compose.yml
 # selbst. P-025: trotzdem NICHT blind neu starten (TLS-Unterbrechung + Ban-/
@@ -962,6 +1016,18 @@ echo "############################################################"
 echo "# [4/10] Firewall (ufw) + SSH-Schutz einrichten"
 echo "############################################################"
 apt_install ufw fail2ban
+
+# B6: Die SSH-Regel unten ist fest auf "22/tcp". Lauscht sshd auf einem
+# anderen Port, würde "ufw enable" den eigenen Zugang abschneiden – deshalb
+# VOR der ersten Firewall-Änderung prüfen und hart abbrechen, statt sich
+# auszusperren (Zugriff dann nur noch über Konzolenzugang des Hosts).
+SSHD_PORTS="$(sudo sshd -T 2>/dev/null | awk '/^port /{print $2}' | sort -u | xargs echo 2>/dev/null || true)"
+if [ -n "${SSHD_PORTS}" ] && [ "${SSHD_PORTS}" != "22" ]; then
+  echo "Fehler: sshd lauscht auf Port '${SSHD_PORTS}', dieses Skript erlaubt aber nur 22/tcp (B6)." >&2
+  echo "Abbruch vor jeder Firewall-Änderung – sonst würde 'ufw enable' den SSH-Zugang schneiden." >&2
+  echo "Port in setup-coder.sh anpassen (Suchbegriff: 'ufw limit 22/tcp') und erneut ausführen." >&2
+  exit 1
+fi
 
 # B-007: explizite Default-Policy (idempotent – gleicher Wert zweimal ist No-Op).
 # Verlass auf Debian-Defaults nach Härtungsdrift wäre stiller Schutzverlust.
@@ -1226,10 +1292,19 @@ if sudo fail2ban-client status sshd > /dev/null 2>&1; then
 else
   fail "fail2ban-Jail 'sshd' ist nicht aktiv – prüfen mit: sudo fail2ban-client status"
 fi
-if sudo fail2ban-client get sshd logpath > /dev/null 2>&1 || sudo journalctl -u ssh -n1 > /dev/null 2>&1; then
-  ok "journald liefert SSH-Logs – fail2ban (backend=systemd) kann Login-Versuche sehen"
+# A6: Der alte Check ("fail2ban-client get sshd logpath" || "journalctl -n1")
+# war immer grün – beides liefert ohne Bezug zum Jail Exit 0, der Zustand des
+# Filters wurde nie geprüft. Jetzt: das Jail muss "Total failed" als Zahl
+# führen, d. h. der Filter zählt wirklich Fehlversuche. Dass der Debian-13-
+# Filter auch die Session-Prozesse sieht, ist ausgeliefert und 2026-09-29
+# gemessen: journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd +
+# _COMM=sshd-session, 63/63 Fehlversuche hatten _COMM=sshd-session.
+F2B_STATUS="$(sudo fail2ban-client status sshd 2>/dev/null || true)"
+F2B_FAILED="$(printf '%s\n' "${F2B_STATUS}" | awk -F: '/Total failed/ {gsub(/[ \t]/,"",$2); print $2; exit}')"
+if [ -n "${F2B_FAILED}" ] && [ "${F2B_FAILED}" -eq "${F2B_FAILED}" ] 2>/dev/null; then
+  ok "fail2ban zählt SSH-Fehlversuche (Total failed: ${F2B_FAILED})"
 else
-  warn "Konnte SSH-Logs über journald nicht bestätigen – prüfen mit: sudo fail2ban-client status sshd"
+  fail "fail2ban-Jail 'sshd' zählt keine Fehlversuche – prüfen mit: sudo fail2ban-client status sshd (A6)"
 fi
 if sudo sshd -T 2>/dev/null | grep -qi '^passwordauthentication no' && \
    sudo sshd -T 2>/dev/null | grep -qi '^kbdinteractiveauthentication no'; then
@@ -1342,14 +1417,6 @@ OUT=$(mktemp)
 {
 echo "=== boot-check $(date -Is) ==="
 OK=true
-for c in coder-postgres coder coder-caddy coder-prometheus coder-node-exporter coder-grafana; do
-  if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
-    echo "ROT: Container ${c} läuft nicht nach Boot"
-    OK=false
-  else
-    echo "OK: ${c} läuft"
-  fi
-done
 PG_HEALTH="none"
 # Postgres meldet "healthy" erst nach dem ersten Health-Probe (interval 5 s);
 # @reboot startet boot-check.sh Sekunden zuvor und läse ohne Wartezeit
@@ -1367,7 +1434,32 @@ if [ "${PG_HEALTH}" != "healthy" ]; then
 else
   echo "OK: Postgres healthy nach Boot"
 fi
-DOMAIN=$(awk -F'[ ,{]+' '/\*.*\{/ {print $1; exit}' /opt/coder/Caddyfile 2>/dev/null || true)
+# A4: Container-Status erst JETZT prüfen. @reboot läuft parallel zu dockerd,
+# die Container starten erst kurz danach – der frühe "läuft/läuft nicht"-Lauf
+# oben (vor der Wartezeit) hätte jedes Boot fälschlich ROT gemeldet. Auch hier
+# max. 120 s warten, bis alle sechs laufen, danach ist das ROT echt.
+for _ in $(seq 1 24); do
+  _all_running=true
+  for c in coder-postgres coder coder-caddy coder-prometheus coder-node-exporter coder-grafana; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
+      _all_running=false
+    fi
+  done
+  if [ "${_all_running}" = "true" ]; then break; fi
+  sleep 5
+done
+for c in coder-postgres coder coder-caddy coder-prometheus coder-node-exporter coder-grafana; do
+  if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
+    echo "ROT: Container ${c} läuft nicht nach Boot"
+    OK=false
+  else
+    echo "OK: ${c} läuft"
+  fi
+done
+# A2: Domain aus der vom Setup abgelegten Datei. Der frühere awk-Ansatz griff
+# in der Caddyfile auf die @askOK-Matcherzeile und lieferte leer – der
+# TLS-Smoke wurde still übersprungen.
+DOMAIN=$(tr -d '[:space:]' < /opt/coder/domain 2>/dev/null || true)
 if [ -n "${DOMAIN:-}" ]; then
   CODE="000"
   for _ in $(seq 1 30); do
@@ -1383,7 +1475,7 @@ if [ -n "${DOMAIN:-}" ]; then
     echo "OK: /healthz via Caddy 200"
   fi
 else
-  echo "WARN: Apex nicht parsbar – TLS-Smoke übersprungen"
+  echo "WARN: /opt/coder/domain fehlt oder ist leer – TLS-Smoke übersprungen"
 fi
 if [ "${OK}" = "true" ]; then echo "BOOT-GATE GRÜN"; else echo "BOOT-GATE ROT – prüfen mit: docker logs coder / docker logs coder-postgres"; fi
 } > "${OUT}" 2>&1
@@ -1421,14 +1513,29 @@ fi
 note_drift "/opt/coder/check-tls.sh" "check-tls.sh"
 sudo tee /opt/coder/check-tls.sh > /dev/null <<'EOF'
 #!/bin/bash
-# check-tls.sh (B-005): zählt LE-Ausstellungen der letzten 7 Tage im Caddy-Log.
-# Lesend, Exit 0 immer. Auffällige Werte (> 20/Woche inkl. eigener Apps) dem
+# check-tls.sh (B-005/B4): zählt LE-Ausstellungen der letzten 7 Tage im
+# Caddy-Log, legt sie als textfile-Metrik ab und meldet sie an syslog.
+# Lesend bis auf die Metrik-Datei, Exit 0 immer. Der Wert > 20 löst die
+# Prometheus-Regel TlsIssuanceBudgetHigh aus – ohne diese Metrik wäre der
+# Befund nur im Log zu sehen (B4). Auffällige Werte zusätzlich dem
 # D-TLS-Eigentümer melden.
 set -uo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 COUNT=$(docker logs --since 168h coder-caddy 2>&1 | grep -c "obtaining certificate" || true)
 echo "TLS-Ausstellungen letzte 7 Tage (Caddy-Log, 'obtaining certificate'): ${COUNT}"
 logger -t coder-tls "Ausstellungen/7d: ${COUNT}" || true
+# Atomar schreiben: der textfile-Collector ignoriert Dateien, die mit "."/an-
+# fangen, ein abgebrochener Lauf erzeugt also keine Metrik, sondern Müll.
+if [ -d /opt/coder/node-textfile ]; then
+  if TMP=$(mktemp /opt/coder/node-textfile/.coder_tls.prom.XXXXXX 2>/dev/null); then
+    {
+      echo "# HELP coder_tls_issuances_7d Let's-Encrypt-Ausstellungen der letzten 7 Tage (Caddy-Log)."
+      echo "# TYPE coder_tls_issuances_7d gauge"
+      echo "coder_tls_issuances_7d ${COUNT}"
+    } > "${TMP}"
+    chmod 644 "${TMP}" && mv "${TMP}" /opt/coder/node-textfile/coder_tls.prom
+  fi
+fi
 EOF
 sudo chmod +x /opt/coder/check-tls.sh
 remember_hash "/opt/coder/check-tls.sh"
@@ -1649,6 +1756,25 @@ EOF
 sudo chmod 644 /etc/logrotate.d/coder-backup
 remember_hash "/etc/logrotate.d/coder-backup"
 
+# C4: die beiden anderen Logdateien des Stacks liefen bisher ohne Rotation und
+# wuchsen unbegrenzt (coder-boot.log wächst bei jedem Reboot, coder-tls.log
+# pro Woche). Eigene Datei statt Anhängen an coder-backup, weil deren Inhalt
+# nach Server-Konvention Backup-spezifisch bleibt.
+note_drift "/etc/logrotate.d/coder-logs" "coder-logs-logrotate"
+sudo tee /etc/logrotate.d/coder-logs > /dev/null <<'EOF'
+/var/log/coder-boot.log
+/var/log/coder-tls.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+sudo chmod 644 /etc/logrotate.d/coder-logs
+remember_hash "/etc/logrotate.d/coder-logs"
+
 if [ -f /etc/cron.d/coder-backup ] && grep -qF "/opt/coder/backup.sh" /etc/cron.d/coder-backup; then
   ok "Täglicher Backup-Cronjob ist eingetragen (01:00 Uhr, /etc/cron.d/coder-backup)"
 else
@@ -1766,11 +1892,13 @@ if [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)
   GATE_OK=false
 fi
 # B-009: /healthz-200 via Caddy (TLS-Smoke): prüft Caddy-TLS + Reverse-Proxy +
-# Coder-App in einem Schritt. Apex aus Caddyfile (erste Server-Adresse), SNI-
-# korrekte lokale Probe per --resolve (SNI + Host = Domain, Verbindung lokal).
-# Timeout 60 s: deckt On-Demand-Erstverzögerung (5-30 s) ab, ohne legitime
-# Updates rot zu melden.
-GATE_DOMAIN=$(awk -F'[ ,{]+' '/\*.*\{/ {print $1; exit}' /opt/coder/Caddyfile 2>/dev/null || true)
+# Coder-App in einem Schritt. Apex aus der vom Setup abgelegten Datei
+# /opt/coder/domain (A2: der awk-Ansatz aus der Caddyfile griff auf die
+# @askOK-Matcherzeile und lieferte leer -> Smoke wurde still übersprungen),
+# SNI-korrekte lokale Probe per --resolve (SNI + Host = Domain, Verbindung
+# lokal). Timeout 60 s: deckt On-Demand-Erstverzögerung (5-30 s) ab, ohne
+# legitime Updates rot zu melden.
+GATE_DOMAIN=$(tr -d '[:space:]' < /opt/coder/domain 2>/dev/null || true)
 if [ -n "${GATE_DOMAIN:-}" ]; then
   if HEALTH_CODE=$(curl -sk --max-time 60 -o /dev/null -w "%{http_code}" --resolve "${GATE_DOMAIN}:443:127.0.0.1" "https://${GATE_DOMAIN}/healthz" 2>/dev/null); then
     :
@@ -1784,7 +1912,7 @@ if [ -n "${GATE_DOMAIN:-}" ]; then
     echo "Caddy-TLS-Smoke grün: /healthz via Caddy antwortet 200."
   fi
 else
-  echo "Warnung: Apex nicht aus Caddyfile parsbar – TLS-Smoke übersprungen (kein Fail)." >&2
+  echo "Warnung: /opt/coder/domain fehlt oder ist leer – TLS-Smoke übersprungen (kein Fail)." >&2
 fi
 if [ "${GATE_OK}" != "true" ]; then
   echo "FEHLER: Update-Gate rot – Stack prüfen, ggf. Rollback (siehe Kommentar unten)." >&2
@@ -1907,13 +2035,8 @@ echo "Sicherung der alten .env: ${ENV_BAK}"
 PHASE="Vorbereitung"
 trap 'rc=$?; rm -f .env.tmp.??????; if [ "${rc}" -ne 0 ]; then echo "ABBRUCH in Phase [${PHASE}]." >&2; case "${PHASE}" in Postgres-ALTER-USER|Postgres-Verifikation) echo "Fenster PG: DB-Passwort evtl. bereits neu, .env noch alt, Grafana noch alt." >&2;; Grafana-Reset) echo "Fenster Grafana: DB-Passwort bereits neu, Grafana evtl. neu, .env noch alt." >&2;; .env-Tausch|Coder-Recreate) echo "Fenster .env: DB+Grafana neu, .env evtl. bereits getauscht – Coder-Recreate ggf. unvollständig." >&2;; *) echo "Fenster Vorbereitung: noch nichts geändert (.bak liegt vor)." >&2;; esac; echo "Reparatur: 1) Skript erneut laufen lassen (heilt in der Regel). 2) Falls DB-Login danach scheitert: altes Passwort aus ${ENV_BAK} per psql setzen (ALTER USER coder WITH PASSWORD ...). 3) Grafana ggf. erneut per grafana-cli angleichen." >&2; fi' EXIT
 
-for c in coder-postgres coder-grafana; do
-  if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
-    echo "Fehler: Container ${c} läuft nicht. Erst 'docker compose up -d' ausführen." >&2
-    exit 1
-  fi
-done
-
+# C3: Der Container-Check lief vorher ein zweites Mal (identischer Block nach
+# der trap-Zeile) – die Prüfung passiert genau einmal oben, vor dem Backup.
 OLD_PG_PW=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
 # hex statt base64: garantiert nur 0-9a-f, kann also nie ein "/", "+" oder "="
 # enthalten, das in der Postgres-Connection-URL Probleme machen würde.
@@ -2032,6 +2155,10 @@ echo "Neue Zugangsdaten (jetzt sicher notieren!):"
 echo "  Postgres-Passwort:      ${NEW_PG_PW}"
 echo "  Grafana-Admin-Passwort: ${NEW_GF_PW}"
 echo "  (stehen auch in /opt/coder/.env, nur für root lesbar)"
+echo "  C7: Klartext nur in diesem Fenster – danach Scrollback/Session-Log leeren."
+echo "  C2: .env ist geändert. Coder wurde sofort neu erstellt; Postgres und"
+echo "      Grafana werden beim nächsten 'docker compose up -d' neu erstellt"
+echo "      (Env-Hash) – Fenster dafür einplanen, kurzfristige DB-Unterbrechung."
 echo "------------------------------------------------------------"
 EOF
 sudo chmod +x /opt/coder/reset-passwords.sh
@@ -2283,7 +2410,7 @@ fi
 #
 # (a) LOKALER Pfad: --resolve zwingt die Verbindung auf 127.0.0.1 und macht
 #     die Probe damit unabhängig von öffentlichem DNS und Hairpin-NAT – sie
-#     präsizt genau das, was auf diesem Host läuft (Caddy-TLS, Reverse-Proxy,
+#     prüft präzise das, was auf diesem Host läuft (Caddy-TLS, Reverse-Proxy,
 #     Coder). 6 Versuche à max. 10 s mit 5 s Pause (curl-Budget 60 s,
 #     schlimmstenfalls 85 s), weil Caddy beim Erstlauf noch ein Zertifikat
 #     beantragen muss und das nicht in der ersten Sekunde fertig ist.
@@ -2352,6 +2479,29 @@ fi
 # künftige Systemkonten sind per COALESCE-Ausschluss keine Treffer.
 HUMAN_USERS="$(sudo docker exec coder-postgres psql -U coder -d coder -tAc \
   'SELECT count(*) FROM users WHERE NOT COALESCE(is_system,false) AND NOT COALESCE(is_service_account,false) AND NOT COALESCE(deleted,false)' 2>/dev/null || true)"
+# B1: optional die Erstanlage DURCH DAS SETUP, solange kein Konto existiert –
+# sonst würde der erste zufällige Aufrufer der Anmeldeseite Owner. Nur aktiv,
+# wenn der Betreiber alle drei Variablen setzt (sonst unverändertes Verhalten).
+# Passwort läuft per stdin in den Container, nie als docker-exec-Argument
+# (dasselbe Prinzip wie der ALTER-USER unten: nichts in "ps" sichtbar).
+if [ "${HUMAN_USERS}" = "0" ] \
+  && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
+  && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
+  && [ -n "${CODER_FIRST_USER_PASSWORD:-}" ]; then
+  if FIRST_OUT=$(printf '%s\n' "${CODER_FIRST_USER_PASSWORD}" | \
+      sudo docker exec -i \
+        -e CODER_CONFIG_DIR=/tmp/coder-firstuser \
+        -e CODER_FIRST_USER_EMAIL="${CODER_FIRST_USER_EMAIL}" \
+        -e CODER_FIRST_USER_USERNAME="${CODER_FIRST_USER_USERNAME}" \
+        -e CODER_FIRST_USER_FULL_NAME="${CODER_FIRST_USER_FULL_NAME:-}" \
+        coder sh -c 'read -rs P
+          export CODER_FIRST_USER_PASSWORD="$P"
+          exec coder login http://127.0.0.1:3000 --first-user-trial=false ${CODER_FIRST_USER_FULL_NAME:+--first-user-full-name "$CODER_FIRST_USER_FULL_NAME"}' 2>&1); then
+    ok "Erstkonto (Owner) angelegt: ${CODER_FIRST_USER_USERNAME} (B1)"
+  else
+    warn "Erstkonto NICHT angelegt (B1): $(printf '%s' "${FIRST_OUT}" | tr '\n' ' ' | tail -c 300) – Konto manuell auf der Anmeldeseite anlegen, bevor die URL weitergegeben wird"
+  fi
+fi
 case "${HUMAN_USERS}" in
   '')
     warn "Nutzeranzahl nicht lesbar (coder-postgres/psql nicht erreichbar) – B2-Check übersprungen" ;;
@@ -2385,7 +2535,7 @@ echo "Coder/Caddy/Postgres/Grafana/Prometheus aktualisieren: sudo /opt/coder/upd
 echo "Grafana weiterhin nur per SSH-Tunnel: 127.0.0.1:3001"
 
 # Provisoriums-Dauer: der Zeitstempel wird beim ersten Lauf mit aktivem
-# Passwort-Login einmallig festgeschrieben – "date -Is" am Ausgabepunkt zeigt
+# Passwort-Login einmalig festgeschrieben – "date -Is" am Ausgabepunkt zeigt
 # sonst immer "jetzt" und ist damit wertlos (B-006).
 PW_LOGIN_SINCE_FILE="/opt/coder/.ssh-password-login-since"
 if ! (sudo sshd -T 2>/dev/null | grep -qi '^passwordauthentication no' && \
