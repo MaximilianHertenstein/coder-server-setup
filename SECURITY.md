@@ -16,24 +16,26 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 
 **Ist-Zustand**
 
-- **Zielbetrieb (Schulserver):** Passwort-Login ist für die erste
-  Inbetriebnahme bewusst aktiv. SSH ist laut Netzvorgabe **nur aus dem
+- **Zielbetrieb (Schulserver):** Passwort-Login ist **Standard und bleibt
+  es** (Entscheidung D-SSH, 2026-09-30). SSH ist laut Netzvorgabe **nur aus dem
   Schulnetz** erreichbar; diese äußere Beschränkung liegt in der
   Netzwerkinfrastruktur, nicht in diesem Setup. ufw rate-limitiert Port 22
-  zusätzlich, fail2ban sperrt wiederholte Fehlversuche. `ssh-harden.sh` wird
-  nicht vom Setup ausgeführt. Der Passwortzugang bleibt aktiv, bis der
-  Betreiber später einen Schlüsselzugang eingerichtet und getestet hat und
-  die Zugangspolitik ändern möchte. Das Skript verlangt vor einer solchen
-  Änderung beide Bestätigungsflags und einen erkannten Schlüssel.
+  zusätzlich, fail2ban sperrt wiederholte Fehlversuche. `ssh-harden.sh`
+  wird weder vom Setup noch als Standard-Schritt ausgeführt – es bleibt eine
+  manuelle Option, für die beide Bestätigungsflags und ein erkannter
+  Schlüssel verlangt werden.
 - **Test-Host (Hetzner `2.29.11.30`):** Login **nur per Key** – es existiert
   kein Konto mit Passwort in `/etc/shadow`, ein Passwort-Login schlägt bei
   jedem Konto fehl. Port 22 ist auf dieser separaten Test-VM von überall
   erreichbar; das ist nicht die Netzvorgabe für den Schulserver.
 - Schutz zusätzlich zur jeweiligen Netzvorgabe: `ufw limit 22/tcp`
   (eingebautes Rate-Limiting von ufw) und fail2ban als zweite Linie.
-- Passwort-Login ist **nicht** deaktiviert. Das Setup führt `ssh-harden.sh`
-  nicht aus; der Abschlusscheck meldet den Zustand bei jedem Lauf. Für die
-  erste Inbetriebnahme des Schulservers ist diese Warnung erwartbar.
+- Passwort-Login ist **nicht** deaktiviert – mit D-SSH (2026-09-30) ist das
+  der gewollte Dauerzustand, nicht nur der Zustand der ersten
+  Inbetriebnahme. Das Setup führt `ssh-harden.sh` nicht aus; der
+  Abschlusscheck meldet den Zustand bei jedem Lauf, Warnung G2 in
+  [TROUBLESHOOTING.md](TROUBLESHOOTING.md) bleibt deshalb dauerhaft
+  erwartbar.
 - **Restrisiko der Entscheidung:** Jedes Gerät im Schulnetz erreicht Port 22
   und kann per Passwort raten; ein geteiltes oder weitergegebenes Passwort
   bleibt gültig. Die Netzbegrenzung verhindert Internetzugriffe, ersetzt
@@ -90,10 +92,11 @@ Sicherheitsvorkehrungen im Skript selbst:
 4. Bei erfolgreicher Härtung bleibt der manuelle Rückweg:
    `sudo rm /etc/ssh/sshd_config.d/60-coder-hardening.conf && sudo systemctl reload ssh`.
 
-**Vor der Härtung**: Zweit-Zugang testen, Key-Login aus einem zweiten
-Fenster verifizieren, Termin + Eigentümer festhalten (D-SSH). Bis dahin
-gilt als Provisorium: starkes Passwort, fail2ban-Beobachtung, reduzierte
-Zugriffswege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
+**Wenn die Härtung doch gewünscht wird** – mit D-SSH (2026-09-30) ist sie
+**nicht** Standard: Zweit-Zugang testen, Key-Login aus einem zweiten Fenster
+verifizieren, Termin + Eigentümer festhalten. Dauerzustand bis dahin:
+starkes Passwort, fail2ban-Beobachtung, ufw-`limit`, reduzierte Zugriffs-
+wege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
 (Tropfen-/Rollback-Verhalten ist hier nicht belegt).
 
 ## 2. Secrets
@@ -340,9 +343,11 @@ vorbehalten.
   [templates/allowlist.md](templates/allowlist.md) – verboten sind dort
   u. a. Socket-Mounts, `privileged`, `pid/host`/`network_mode: host`,
   Host-Root-Mounts und gemeinsame Netze mit `postgres`.
-- Der Erstinventar aller Templates und der Workspace-Selbsttest (T-063)
-  sind in der Allowlist-Tabelle als `_offen_` eingetragen – sie sind
-  **noch nicht** durchgeführt.
+- Das Erstinventar (Schritt 1 der Abnahme: Prüfung gegen die Verbotsliste)
+  ist am 2026-09-30 für die sechs Templates aus dem separaten Repository
+  `coder_templates` durchgeführt und in der Allowlist-Tabelle eingetragen;
+  der Workspace-Selbsttest (T-063, Schritt 2) ist **noch nicht**
+  durchgeführt, ebenso die fachliche Freigabe.
 
 Weiteres: `node-exporter` läuft mit `pid: host` und bringt `/proc`, `/sys`
 und `/` nur lesend eingebunden. Weil es **kein** `network_mode: host` nutzt,
@@ -377,7 +382,7 @@ ss -tlnp; ss -ulnp | grep 443
 | # | Grenze | Risiko in einem Satz | Status |
 |---|---|---|---|
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | entschieden 2026-09-30 (D-Socket): keine zweite VM, Restrisiko akzeptiert, Allowlist gilt dauerhaft |
-| 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | bewusst aktiv für die erste Inbetriebnahme; `ssh-harden.sh` bleibt ein späterer, manueller Schritt nach getestetem Schlüsselzugang |
+| 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | entschieden 2026-09-30 (D-SSH): Passwort-Login bleibt Standard, Restrisiko getragen; `ssh-harden.sh` nur auf gesonderten Wunsch |
 | 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1); D-TLS 2026-09-30 teilentschieden (Beobachtung über `TlsLogTruncated`), Budget-Schutz bleibt, DNS-01 offen |
 | 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh`, `TlsCheckStale` und `TlsLogTruncated` (Metriken `coder_tls_log_window_seconds`, `coder_tls_log_truncated`); Zählung bleibt Untergrenze, der Verlust ist jetzt gemeldet |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | entschieden 2026-09-30 (D-Offsite): kein zweiter Standort, Risiko akzeptiert |
@@ -385,33 +390,33 @@ ss -tlnp; ss -ulnp | grep 443
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | entschieden 2026-09-30 (D-Reboot-Fenster): 03:00 bleibt, Unterrichtsbeginn 07:45 |
 | 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (6 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
-| 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
+| 10 | Workspace-Selbsttest (T-063) und fachliche Freigabe noch offen | unbekannte Templates könnten Socket/Privilegien nutzen | Erstinventar (Schritt 1) am 2026-09-30 für 6 Templates ohne Befund; T-063 offen, siehe [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | Entscheidung offen (B5): erst festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz/Schule). Empfehlung 2026-09-29: **so lassen**. Wenn doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |
 | 13 | PostgreSQL 15 hat ein bekanntes Support-Ende | Sicherheitsupdates für diese Major-Version enden am 11. November 2027; ein später Major-Wechsel braucht eine Datenmigration | Migration mit Coder-Kompatibilität, Restore-Probe und Wartungsfenster vorab planen; [Upstream-Lifecycle](https://www.postgresql.org/support/versioning/) |
 
 ## 9. Offene Entscheidungen (Entscheidungsliste)
 
-**Stand 2026-09-30:** vier Entscheidungen sind getroffen (D-Socket,
-D-Firewall, D-Reboot-Fenster, D-Offsite), D-TLS ist teilentschieden, zwei
-bleiben offen (D-SSH, D-Monitoring). Eigentümer jedes Punktes ist der
+**Stand 2026-09-30:** fünf Entscheidungen sind getroffen (D-Socket,
+D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH), D-TLS ist teilentschieden,
+eine bleibt offen (D-Monitoring). Eigentümer jedes Punktes ist der
 Betreiber ([OPERATIONS.md](OPERATIONS.md) Abschnitt 11), bei D-TLS
-zusätzlich der DNS-/Netzwerk-Verantwortliche; **Fristen sind nur noch für
-die offenen Punkte zu setzen**. Die Abschnitte 1–7 begründen die Lage,
-diese Tabelle ist der Sammelpunkt.
+zusätzlich der DNS-/Netzwerk-Verantwortliche; **die einzige Frist, die noch
+offen ist, betrifft D-Monitoring bzw. den DNS-01-Teil**. Die Abschnitte 1–7
+begründen die Lage, diese Tabelle ist der Sammelpunkt.
 
 | ID | Entscheidung | Optionen | Empfehlung | Voraussetzung | Status 2026-09-30 |
 |---|---|---|---|---|---|
 | D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | DNS-/Zonen-Zugang des Anbieters, Frist vom Betreiber | teilentschieden: Beobachtung übernommen (`TlsLogTruncated`), DNS-01 bleibt offen |
 | D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo + Allowlist bleiben dauerhaft; Erstinventar und T-063 bleiben Pflicht | – | entschieden: Empfehlung übernommen – keine zweite VM |
-| D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Härtung, sobald Key-Login und Zweit-Zugang aus einem zweiten Fenster getestet sind | Schlüssel auf allen Admin-Geräten, getesteter Zweit-Zugang, Termin + Eigentümer | offen – braucht getesteten Key- und Zweit-Zugang |
+| D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, `ssh-harden.sh` ist nicht Standard |
 | D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
 | D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | 03:00 bleibt, abgestimmt gegen Unterrichtsbeginn 07:45 | – | entschieden: Empfehlung übernommen – 03:00 bleibt |
 | D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | mindestens `BackupStale`, `RootPartitionFillingUp` und `CoderTargetDown` an einen Kanal, bevor Produktion läuft | SMTP- oder Webhook-Zugang vom Betreiber | offen – braucht SMTP- oder Webhook-Zugang |
 | D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | kein zweiter Standort; lokal bleiben Dumps 700/600 und die Restore-Probe der Schutz | – | entschieden: kein zweiter Standort, Restrisiko akzeptiert |
 
-Nicht mitentschieden, weil es Zugänge braucht: D-SSH (Schlüssel),
-D-Monitoring (Kanal), DNS-01/Zonen-Zugang (D-TLS-Teil).
+Nicht mitentschieden, weil es Zugänge braucht: D-Monitoring (Kanal),
+DNS-01/Zonen-Zugang (D-TLS-Teil).
 Ähnlich offen, aber ohne D-Kürzel: **B5** (Client-IPs im Audit – Empfehlung
 2026-09-29: so lassen, Abschnitt 8 Zeile 11) und **B4b** (DNS-01-Zonen-Zugang,
 deckt sich mit D-TLS). Nicht Teil dieser Liste, weil sie Schritte und keine

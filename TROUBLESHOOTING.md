@@ -354,8 +354,8 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | | |
 |---|---|
 | **Diagnose** | `sudo sshd -T \| grep -iE '^(passwordauthentication\|kbdinteractiveauthentication\|permitrootlogin)'` |
-| **Erwartete Ursache** | Passwort-Login ist für die erste Inbetriebnahme des Schulservers bewusst aktiv; die Netzvorgabe beschränkt SSH auf das Schulnetz. |
-| **Sichere Behebung** | Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Eine spätere Umstellung auf Schlüsselzugang braucht einen getesteten Key und einen zweiten Zugang; erst dann kann `ssh-harden.sh` bewusst ausgeführt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
+| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv; die Netzvorgabe beschränkt SSH auf das Schulnetz. Die Warnung bleibt deshalb dauerhaft erwartbar. |
+| **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann `ssh-harden.sh` bewusst ausgeführt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
 
 ### G3. Warnung: `ufw-IPv6-Pfad unklar (kein IPV6=yes …)`
 

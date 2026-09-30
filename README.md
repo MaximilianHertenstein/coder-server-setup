@@ -33,8 +33,8 @@ nicht im Repository.
 | Vollständiger Setup-Lauf auf echtem System | Letzter Lauf auf dem Test-Host `2.29.11.30` am 2026-09-30 (nach B2-005 und Restore-Probe), Exit 0, 0 Fehler, Firewall unverändert (Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **teilweise geprobt** 2026-09-30: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Stack-Restore auf frischer VM und volle RTO weiter offen ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg |
-| SSH-Härtung | Schulserver: Passwort-Login ist für die erste Inbetriebnahme bewusst aktiv, SSH ist laut Netzvorgabe nur aus dem Schulnetz erreichbar; ufw `limit 22/tcp` und fail2ban laufen zusätzlich. `ssh-harden.sh` bleibt unaufgerufen ([SECURITY.md](SECURITY.md) §1) |
-| Offene Entscheidungen | **offen:** D-SSH, D-Monitoring, DNS-01-Teil von D-TLS. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; außerdem B5 (Client-IPs im Audit bewusst nicht gesetzt) und PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
+| SSH-Härtung | **Entschieden (D-SSH, 2026-09-30):** Passwort-Login bleibt Standard, `ssh-harden.sh` ist nicht Standard und bleibt unaufgerufen; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `limit 22/tcp` und fail2ban zusätzlich ([SECURITY.md](SECURITY.md) §1) |
+| Offene Entscheidungen | **offen:** D-Monitoring, DNS-01-Teil von D-TLS. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; außerdem B5 (Client-IPs im Audit bewusst nicht gesetzt) und PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
@@ -201,8 +201,8 @@ Siehe [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/)
 ## Sicherheit und Hardening (Kurzfassung)
 
 - **SSH**: Auf dem Schulserver ist Port 22 laut Netzvorgabe nur aus dem
-  Schulnetz erreichbar. Passwort-Login bleibt für die erste Inbetriebnahme
-  bewusst aktiv; ufw rate-limitiert (`ufw limit 22/tcp`) und fail2ban
+  Schulnetz erreichbar. Passwort-Login bleibt bewusst aktiv (D-SSH,
+  2026-09-30); ufw rate-limitiert (`ufw limit 22/tcp`) und fail2ban
   begrenzen Fehlversuche. `ssh-harden.sh` wird nicht automatisch ausgeführt;
   es verlangt zwei Bestätigungsflags (`--i-have-key-access --i-have-second-access`), einen
   vorhandenen SSH-Key und bestätigt den Zweit-Zugang.
@@ -330,10 +330,11 @@ Produktivsystem geprüft werden:
    wird keine weltweite `limit`-Regel daneben gesetzt.
 7. `reset-coder.sh` mit echten Containern/Volumes und fremden
    Workspace-Containern im Inventar.
-8. `ssh-harden.sh` – nur mit getestetem Key-Login und Zweit-Zugang.
+8. `ssh-harden.sh` – optional, nicht Teil der Standard-Abnahme (D-SSH);
+   nur mit getestetem Key-Login und Zweit-Zugang.
 9. Externe Sicht: Ports 22/80/443 offen, 9090/9100/3001 von außen
    geschlossen; Wildcard-DNS und Workspace-App-Subdomain im Test.
-10. Offsite-Backup-Transport und Wiederanlauf danach (Entscheidung steht aus).
+10. Offsite-Backup-Transport – entfällt (D-Offsite: kein zweiter Standort).
 11. Erstanlage des Owner-Kontos über `CODER_FIRST_USER_*` beim ersten Lauf
     (B1): muss das Konto entstehen, ohne dass jemand die Anmeldeseite
     erreicht – und der Re-Run (Konto existiert) darf scheitern, ohne

@@ -555,9 +555,10 @@ Zeile 3 hakt; bis dahin ist http-01/tls-alpn-01 der eingeschlagene Weg.
    sudo docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=8080--main--ws--user.coder.ghse-unterricht.de'   # ok
    ```
 
-6. **Danach:** `ssh-harden.sh` nur mit getestetem Key-Login und Zweit-Zugang
-   ausführen (siehe [SECURITY.md](SECURITY.md)), `RESTORE.md`-Restore-Probe
-   einmalig durchspielen.
+6. **Danach:** `ssh-harden.sh` ist mit D-SSH (2026-09-30) **nicht** Teil der
+   Inbetriebnahme – nur auf gesonderten Wunsch, mit getestetem Key-Login und
+   Zweit-Zugang (siehe [SECURITY.md](SECURITY.md)). `RESTORE.md`-Restore-
+   Probe einmalig durchspielen.
 
 Nicht Teil der Inbetriebnahme, aber betriebsrelevant: die Wildcard-Zertifikate
 laufen über On-Demand-TLS mit dem gemeinsamen Let's-Encrypt-Budget der Domain

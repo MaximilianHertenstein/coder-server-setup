@@ -9,8 +9,58 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `300972b` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `6afd75e` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – D-SSH entschieden (Passwort bleibt) und Template-Erstinventar
+
+Aktualisiert zwei Zeilen der Liste „Offene Punkte" weiter oben
+(SSH-Härtung, Template-Erstinventar) und die Entscheidungs-Spalte.
+
+- **D-SSH entschieden:** Passwort-Login ist der Dauerzustand und bleibt
+  Standard; `ssh-harden.sh` ist ausdrücklich **nicht** Standard und wird
+  nur auf gesonderten Wunsch ausgeführt. Restrisiko (Raten im Schulnetz)
+  wird getragen, abgefedert durch ufw `limit 22/tcp`, fail2ban und die
+  Netzbegrenzung. Umgesetzt als reine Dokuänderung – weder `sshd` noch
+  `ssh-harden.sh` noch die Firewall wurden angefasst.
+- **Template-Erstinventar (Schritt 1) durchgeführt:** Quelle ist das
+  separate Repository
+  `/home/max/Dokumente/referendariat/SJ2022_2023/informatik/coder_templates`
+  (Stand `7bd2b92`), sechs Templates (`cpp`, `html-css`, `java`,
+  `java-intellij`, `python`, `sql`; `server/` leer). Grep gegen die
+  Verbotsliste der Allowlist (docker.sock, `privileged`, `pid/host`,
+  `network_mode host`, `ipc/host`, `--gpus`, `cap_add`/`SYS_ADMIN`,
+  Host-Mounts, `postgres`-Netz) über **alle** Dateien ohne Treffer;
+  CPU-/Memory-Limits in allen sechs `main.tf` gesetzt. Ergebniszeilen
+  stehen jetzt in der Abnahmen-Tabelle von
+  [templates/allowlist.md](templates/allowlist.md), inklusive Vermerk zum
+  container-lokalen sudoers-Eintrag in `sql`.
+- **Was dabei geprüft wurde (tatsächlich ausgeführt, im Template-Repo):**
+  `terraform fmt -check -recursive` (rc 0), `terraform validate` je
+  Template (6× OK), `shellcheck -S warning` über alle Skripte (sauber).
+  Das Template-Repo wurde **nicht** verändert (Baum sauber).
+- **Weiter offen bei den Templates:** Schritt 2 (Workspace-Selbsttest
+  T-063) und die fachliche Freigabe. Der Test-Host `2.29.11.30` hat 0
+  Templates in der Coder-DB und keine `coder`-CLI; ein Selbsttest braucht
+  also erst ein Veröffentlichen der Templates plus Zugang
+  (`test-workspaces.sh` im Template-Repo).
+- **Doku:** SECURITY.md (§1 Passwort-Dauerzustand und Härtungsoption,
+  §6 Inventarstand, §8 Zeilen 2 und 10, §9 Intro/D-SSH-Zeile/Fußnote),
+  README.md (Status-Zeile SSH, Entscheidungs-Zeile, Hardening-Kurzfassung,
+  Testmatrix-Punkte 8 und 10), OPERATIONS.md (§11 Punkt 6),
+  TROUBLESHOOTING.md (G2 dauerhaft erwartbar, kein Handlungsbedarf),
+  templates/allowlist.md (Stand, Status, Abnahmen-Tabelle mit sechs Zeilen).
+- **Geänderte Dateien:** `SECURITY.md`, `README.md`, `OPERATIONS.md`,
+  `TROUBLESHOOTING.md`, `templates/allowlist.md`.
+- **Teststand (tatsächlich ausgeführt):** nach den Änderungen alle 12
+  Dateien in `tests/` grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh
+  ssh-harden.sh` und `shellcheck -S warning setup-coder.sh ssh-harden.sh`
+  ohne Befund.
+- **Offene Punkte:** D-Monitoring (Kanal fehlt), DNS-01/Zonen-Zugang
+  (D-TLS-Teil), T-063 + fachliche Template-Freigabe, volles
+  Restore-Prozedere auf frischer VM (RTO), Testmatrix.
 
 ---
 
