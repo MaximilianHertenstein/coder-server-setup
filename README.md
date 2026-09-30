@@ -45,6 +45,8 @@ Zertifikate ausstellen. Laut Betreiber (2026-09-30) soll der Schulserver
 künftig mit **IServ** auf dem zentralen Netzwerkserver laufen; bis
 feststeht, wer DNS, Wildcard und 80/443 übernimmt, bleiben die TLS-
 Umstellung auf DNS-01 (D-TLS) und der Inbetriebnahme-Termin aufgeschoben.
+Der Betreiber hat **keinen** DNS-Zugang – Anforderungen laufen über den
+Netzwerkadmin ([OPERATIONS.md](OPERATIONS.md) §11).
 Der aktuelle Test-Host `2.29.11.30` ist eine
 Hetzner-VM, die irgendwann abgeschaltet wird. **Wer was macht** (DNS +
 Wildcard, Portweiterleitung, Abnahme): [OPERATIONS.md](OPERATIONS.md)

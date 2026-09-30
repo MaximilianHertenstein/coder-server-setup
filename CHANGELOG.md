@@ -9,8 +9,35 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `d9b4ce7` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `80608ea` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Korrektur: KAS-Zugang gehört zum Domainverwalter
+
+- **Korrektur zum Eintrag „DNS-01 recherchiert und aufgeschoben" von heute:**
+  die KAS-Zugangsdaten von All-Inkl kann und soll der Betreiber **nicht**
+  besorgen – er hat keinen DNS-Zugang und kann sich nur an den
+  Netzwerkadmin wenden. Zugangsdaten und eine Umstellung auf DNS-01 sind
+  Aufgabe des Domainverwalters und nur dann nötig, wenn 80/443 dauerhaft
+  nicht 1:1 weitergeleitet werden können.
+- **Was der Betreiber vom Netzwerkadmin anfordert (und nichts weiter):**
+  OPERATIONS.md §11, Zeilen 1–4 – A-Record, Wildcard, 80/443-Weiterleitung
+  und im Proxy-Fall ACME-Durchreichung/TLS-Passthrough. Zeile 6 (KAS/DNS-01)
+  ist dessen eigene Aufgabe, falls Zeile 3 nicht geht.
+- **Doku:** OPERATIONS.md (§11 Zeile 6 in der Netzwerkadmin-Tabelle,
+  DNS-01-Absatz mit Zuständigkeit statt „siehe unten"), SECURITY.md (§3
+  Zuständigkeit, §9 Voraussetzung der D-TLS-Zeile), README.md
+  (Zielbetrieb-Absatz: kein DNS-Zugang beim Betreiber).
+- **Geänderte Dateien:** `OPERATIONS.md`, `SECURITY.md`, `README.md`.
+- **Teststand (tatsächlich ausgeführt):** nach den Änderungen alle 12
+  Dateien in `tests/` grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh
+  ssh-harden.sh` und `shellcheck -S warning setup-coder.sh ssh-harden.sh`
+  ohne Befund.
+- **Offene Punkte:** unverändert – IServ-/Hosting-Klärung und
+  Netzwerkadmin-Zeilen 1–4, Schritt 4 der Template-Abnahme, Restore auf
+  frischer VM, Testmatrix, PostgreSQL-15-Migration.
 
 ---
 

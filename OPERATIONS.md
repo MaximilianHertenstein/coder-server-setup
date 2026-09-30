@@ -520,6 +520,7 @@ einfach erneut ausführen).
 | 3 | Firewall/Router: **80/tcp und 443/tcp 1:1 an den Server** weiterleiten (443/udp optional für HTTP/3) | ACME braucht 80 (http-01) und 443 (tls-alpn-01); ohne beides kein Zertifikat |
 | 4 | Falls ein Proxy/Reverse-Proxy bestehen bleibt: `/.well-known/acme-challenge/` durchreichen **und** HTTPS als TLS-Passthrough (SNI) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft |
 | 5 | SSH/22 bleibt ausschließlich aus dem Schulnetz erreichbar; keine öffentliche Weiterleitung | Passwortzugang ist für die erste Inbetriebnahme vorgesehen; ufw + fail2ban begrenzen Fehlversuche zusätzlich |
+| 6 | Nur wenn Zeile 3 dauerhaft nicht geht: KAS-Zugang für DNS-01 (Modul `caddy-dns/all-inkl`) selbst beschaffen bzw. herausgeben | Der Betreiber hat **keinen** DNS-Zugang – Zugangsdaten und Umstellung sind Aufgabe des Domainverwalters; der Betreiber fordert nur an, was in den Zeilen 1–4 steht |
 
 **Alternative, falls 80/443 nicht 1:1 erreichbar sind (DNS-01, B4b):**
 Ein Zertifikat ohne eingehende 80/443 geht nur über den DNS-01-Challenge.
@@ -527,9 +528,12 @@ Zone `ghse-unterricht.de` liegt bei **All-Inkl**; dafür existiert das
 Caddy-Modul `caddy-dns/all-inkl` (`dns.providers.allinkl`, KAS-Username/
 -Passwort). Das Standard-`caddy`-Image enthält es **nicht** – nötig wären
 ein eigenes Image (xcaddy-Build) und die KAS-Zugangsdaten in einer
-`600`-Datei auf dem Server, nie im Repository. **Die Umstellung ist am
-2026-09-30 aufgeschoben**, solange unklar ist, ob die Zone bei All-Inkl
-bleibt und wer DNS/Ports künftig übernimmt (IServ, siehe unten); bis
+`600`-Datei auf dem Server, nie im Repository – die KAS-Zugangsdaten
+liegen beim **Domainverwalter**, nicht beim Betreiber (der hat keinen
+Zugang und muss sie nur anfordern, wenn Zeile 3 dauerhaft nicht geht).
+**Die Umstellung ist am 2026-09-30 aufgeschoben**, solange unklar ist, ob
+die Zone bei All-Inkl bleibt und wer DNS/Ports künftig übernimmt (IServ,
+siehe oben); bis
 dahin ist http-01/tls-alpn-01 der eingeschlagene Weg. Beachten: DNS-01
 löst nur die ACME-Frage – der Nutzerverkehr braucht weiterhin 80/443 bis
 zum Server.

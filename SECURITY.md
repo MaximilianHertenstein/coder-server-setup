@@ -181,7 +181,8 @@ Coder-Subdomänen-Muster entspricht, sonst `404`:
   bekannt: Zone `ghse-unterricht.de` liegt bei **All-Inkl** (KAS-API), und
   dafür existiert das Caddy-Modul `caddy-dns/all-inkl`
   (`dns.providers.allinkl`, KAS-Username/-Passwort; Modul seit 11/2025,
-  jung, 9 Sterne). Die Umstellung ist am 2026-09-30 **aufgeschoben**:
+  jung, 9 Sterne). Die Zugangsdaten liegen beim Domainverwalter, nicht beim
+  Betreiber – der hat keinen DNS-Zugang. Die Umstellung ist am 2026-09-30 **aufgeschoben**:
   unklar ist, ob die Zone bei All-Inkl bleibt und ob der Schulserver
   künftig mit IServ auf dem zentralen Netzwerkserver läuft (Lage laut
   Betreiber offen). Bis dahin gilt: Budget über `check-tls.sh` beobachten.
@@ -416,7 +417,7 @@ begründen die Lage, diese Tabelle ist der Sammelpunkt.
 
 | ID | Entscheidung | Optionen | Empfehlung | Voraussetzung | Status 2026-09-30 |
 |---|---|---|---|---|---|
-| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | KAS-Zugang von All-Inkl, erst nach Klärung von Zone/IServ | teilentschieden: Beobachtung übernommen (`TlsLogTruncated`); DNS-01 aufgeschoben bis Zone, Hosting und IServ geklärt sind (Modul `caddy-dns/all-inkl` bekannt) |
+| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | KAS-Zugang von All-Inkl (beim Domainverwalter, nicht beim Betreiber), erst nach Klärung von Zone/IServ | teilentschieden: Beobachtung übernommen (`TlsLogTruncated`); DNS-01 aufgeschoben bis Zone, Hosting und IServ geklärt sind (Modul `caddy-dns/all-inkl` bekannt) |
 | D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo + Allowlist bleiben dauerhaft; Erstinventar und T-063 bleiben Pflicht | – | entschieden: Empfehlung übernommen – keine zweite VM |
 | D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, `ssh-harden.sh` ist nicht Standard |
 | D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
