@@ -34,7 +34,7 @@ nicht im Repository.
 | Restore-Test | **teilweise geprobt** 2026-09-30: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Stack-Restore auf frischer VM und volle RTO weiter offen ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **nicht eingerichtet** – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | Schulserver: Passwort-Login ist für die erste Inbetriebnahme bewusst aktiv, SSH ist laut Netzvorgabe nur aus dem Schulnetz erreichbar; ufw `limit 22/tcp` und fail2ban laufen zusätzlich. `ssh-harden.sh` bleibt unaufgerufen ([SECURITY.md](SECURITY.md) §1) |
-| Offene Befunde | u. a. B5 (Client-IPs im Audit bewusst nicht gesetzt), kein Alert-Empfänger, kein Offsite-Backup und geplante PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
+| Offene Entscheidungen | D-TLS, D-Socket, D-SSH, D-Firewall, D-Reboot-Fenster, D-Monitoring, D-Offsite – alle mit Optionen und Empfehlung in [SECURITY.md](SECURITY.md) §9; außerdem B5 (Client-IPs im Audit bewusst nicht gesetzt) und PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 

@@ -9,8 +9,36 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `60bae56` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `eeed209` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Entscheidungsliste für die sieben D-Entscheidungen
+
+- **Warum:** D-TLS, D-Socket, D-SSH, D-Firewall, D-Reboot-Fenster,
+  D-Monitoring und D-Offsite waren an sieben Stellen verstreut als
+  „offene Entscheidung" vermerkt, aber nirgends gebündelt – der Betreiber
+  konnte sie nicht in einem Rutsch entscheiden.
+- **Neu:** SECURITY.md Abschnitt 9 „Offene Entscheidungen" mit Tabelle
+  (ID, Entscheidung, Optionen, Empfehlung, Voraussetzung) für alle sieben;
+  Eigentümer (Betreiber, OPERATIONS.md §11) und fehlende Fristen sind
+  einmalig über der Tabelle benannt, statt sie siebenmal zu wiederholen.
+  Empfehlungen sind als Empfehlung markiert, nichts davon ist entschieden.
+  Fußnote nennt die zwei ähnlichen offenen Punkte ohne D-Kürzel (B5, B4b)
+  und trennt sie von den reinen Schritten (T-063, Restore-Pfad A/B,
+  Testmatrix).
+- **Doku:** README.md Status-Zeile „Offene Befunde" heißt jetzt „Offene
+  Entscheidungen" und verweist auf SECURITY.md §9 (die früher genannten
+  Punkte B5 und PostgreSQL-15 bleiben genannt).
+- **Geänderte Dateien:** `SECURITY.md`, `README.md`.
+- **Teststand (tatsächlich ausgeführt):** nach der Änderung alle 12 Dateien
+  in `tests/` grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh` und
+  `shellcheck -S warning setup-coder.sh` ohne Befund.
+- **Offene Punkte:** die sieben Entscheidungen selbst (jetzt entscheidungs-
+  bereit), volles Restore-Prozedere auf frischer VM (RTO),
+  Template-Erstinventar, Testmatrix, Offsite-Backup, SSH-Härtung nach
+  getestetem Key-Zugang.
 
 ---
 

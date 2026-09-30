@@ -384,6 +384,30 @@ ss -tlnp; ss -ulnp | grep 443
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |
 | 13 | PostgreSQL 15 hat ein bekanntes Support-Ende | Sicherheitsupdates für diese Major-Version enden am 11. November 2027; ein später Major-Wechsel braucht eine Datenmigration | Migration mit Coder-Kompatibilität, Restore-Probe und Wartungsfenster vorab planen; [Upstream-Lifecycle](https://www.postgresql.org/support/versioning/) |
 
+## 9. Offene Entscheidungen (Entscheidungsliste)
+
+Alle sieben Entscheidungen sind **offen**: keine ist im Repo entschieden,
+kein Termin steht fest. Eigentümer jedes Punktes ist der Betreiber
+([OPERATIONS.md](OPERATIONS.md) Abschnitt 11), bei D-TLS zusätzlich der
+DNS-/Netzwerk-Verantwortliche; die **Frist ist jeweils noch zu setzen**.
+Die Abschnitte 1–7 begründen die Lage, diese Tabelle ist der Sammelpunkt.
+
+| ID | Entscheidung | Optionen | Empfehlung | Voraussetzung |
+|---|---|---|---|---|
+| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | DNS-/Zonen-Zugang des Anbieters, Frist vom Betreiber |
+| D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo bis Erstinventar und T-063 abgeschlossen; Ziel für den nächsten Ausbauschritt: separater Host | zweite VM und Provisioner-Konzept (Ressourcenentscheidung) |
+| D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Härtung, sobald Key-Login und Zweit-Zugang aus einem zweiten Fenster getestet sind | Schlüssel auf allen Admin-Geräten, getesteter Zweit-Zugang, Termin + Eigentümer |
+| D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | nur nötig, falls ein Container-Port ohne Caddy öffentlich werden soll |
+| D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | vor Produktionsfreigabe abstimmen; Abschalten hieße Sicherheitsupdates ohne Neustart | Abstimmung mit Schulbetrieb/IT |
+| D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | mindestens `BackupStale`, `RootPartitionFillingUp` und `CoderTargetDown` an einen Kanal, bevor Produktion läuft | SMTP- oder Webhook-Zugang vom Betreiber |
+| D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | zweiter Standort, weil die Dumps Passwörter und Personendaten enthalten; Ziel verschlüsselt, danach einmal Restore durchspielen | Zielhost/Zugang, Verschlüsselung am Ziel, erweiterter Restore-Test |
+
+Ähnlich offen, aber ohne D-Kürzel: **B5** (Client-IPs im Audit – Empfehlung
+2026-09-29: so lassen, Abschnitt 8 Zeile 11) und **B4b** (DNS-01-Zonen-Zugang,
+deckt sich mit D-TLS). Nicht Teil dieser Liste, weil sie Schritte und keine
+Entscheidungen sind: Template-Erstinventar (T-063), volle Restore-Probe auf
+frischer VM, Testmatrix.
+
 **Regel für Reparaturen:** Kein Fehlerbild wird durch Abschalten von
 Prüfungen, Zurücklassen von Firewall-Regeln im ungünstigen Zustand oder
 Überspringen der Verifikation gelöst. Wenn eine Maßnahme die Sicherheit
