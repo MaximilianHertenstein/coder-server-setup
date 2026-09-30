@@ -113,7 +113,7 @@ ENV_TMP_GID=""
 MANAGED_TMP=""
 release_setup_lock() {
   if [ -n "${SETUP_LOCK_WRITE_FD}" ]; then
-    printf 'RELEASE\n' 2>/dev/null >&"${SETUP_LOCK_WRITE_FD}" || true
+    { printf 'RELEASE\n' >&"${SETUP_LOCK_WRITE_FD}"; } 2>/dev/null || true
   fi
 }
 setup_cleanup() {
@@ -266,7 +266,6 @@ forget_hash() {
 # unnötige Reloads und schützt laufende Leser. Modus und Hash werden trotzdem
 # nachgezogen. MANAGED_TMP wird vom EXIT-Cleanup entfernt, falls der Lauf vor
 # dem mv abbricht.
-WRITE_MANAGED_CHANGED=0
 write_managed() { # $1=Pfad $2=Modus $3=Drift-Label; Inhalt via stdin
   local file="$1" mode="$2" label="$3" dir base
   dir="${file%/*}"
@@ -294,10 +293,8 @@ write_managed() { # $1=Pfad $2=Modus $3=Drift-Label; Inhalt via stdin
   if sudo cmp -s -- "${MANAGED_TMP}" "${file}"; then
     sudo chmod "${mode}" "${file}"
     sudo rm -f -- "${MANAGED_TMP}"
-    WRITE_MANAGED_CHANGED=0
   else
     sudo mv -f -- "${MANAGED_TMP}" "${file}"
-    WRITE_MANAGED_CHANGED=1
   fi
   MANAGED_TMP=""
   if [ "${label}" != "-" ]; then
@@ -432,7 +429,13 @@ fi
 
 # GID der docker-Gruppe merken – wird gleich für den Docker-Socket-Zugriff
 # des Coder-Containers gebraucht (offizielles Coder-Docker-Setup verlangt das).
-DOCKER_GID=$(getent group docker | cut -d: -f3)
+# pipefail würde einen fehlenden Group-Eintrag sonst als stillen Abbruch ohne
+# Meldung beenden (cut läuft trotzdem, Pipeline-Status != 0) – hier laut.
+DOCKER_GID=$(getent group docker | cut -d: -f3 || true)
+if [ -z "${DOCKER_GID}" ]; then
+  echo "Fehler: Gruppe 'docker' nicht gefunden – Docker-Installation prüfen (groupadd docker)." >&2
+  exit 1
+fi
 
 # Optional: eigenen Benutzer der docker-Gruppe hinzufügen, damit du Docker
 # ohne sudo bedienen kannst (danach einmal neu einloggen).
@@ -632,7 +635,12 @@ services:
       - "443:443"
       - "443:443/udp"  # HTTP/3 (QUIC) - Caddy nutzt das automatisch, wenn der Port da ist
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
+      # Verzeichnis statt Einzeldatei: docker bindet eine Datei beim Container-
+      # start an deren Inode. write_managed ersetzt sie per mv – der Container
+      # sähe sonst bis zum Recreate die ALTE Datei, während validate/reload im
+      # Container die neue bestätigen würden. Ein Verzeichnis-Mount zeigt auf
+      # den jeweils aktuellen Inode.
+      - ./caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
@@ -651,11 +659,12 @@ services:
       # kleinen Schul-VM anwachsen kann.
       - --storage.tsdb.retention.time=15d
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      # C3/B10: Alarmregeln. Prometheus liest rule_files beim Start und lädt
-      # Konfiguration + Regeln auf SIGHUP neu; Schritt 3 sendet das Signal nur
-      # bei einer tatsächlichen Änderung.
-      - ./rules:/etc/prometheus/rules:ro
+      # Dasselbe Prinzip wie oben bei caddy: Verzeichnis-Mount, damit eine per
+      # mv ersetzte prometheus.yml den laufenden Container wirklich erreicht.
+      # Die Alarmregeln liegen darunter (./prometheus/rules) und brauchen keinen
+      # eigenen Mount mehr; Schritt 3 sendet SIGHUP nur bei tatsächlicher
+      # Änderung (Konfiguration + Regeln werden erst neu geladen).
+      - ./prometheus:/etc/prometheus:ro
       - prometheus_data:/prometheus
     # Nur lokal erreichbar (kein öffentlicher Port, kein Login vorhanden)
     ports:
@@ -773,8 +782,9 @@ if [ -n "${ACME_CA:-}" ]; then
 fi
 # P-025: Hash VOR dem Schreiben merken – Schritt 3 lädt die neue
 # Konfiguration nur bei tatsächlicher Änderung neu (blinder Neustart =
-# TLS-Unterbrechung bei jedem Re-Run).
-CADDY_BEFORE=$(sudo sha256sum /opt/coder/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
+# TLS-Unterbrechung bei jedem Re-Run). Pfad unter /opt/coder/caddy, weil die
+# compose-Datei das Verzeichnis statt der Einzeldatei bindet.
+CADDY_BEFORE=$(sudo sha256sum /opt/coder/caddy/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
 CADDY_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
 # A2: Domain einmalig ablegen. boot-check.sh und update.sh haben sie vorher
 # per awk aus der Caddyfile gezogen und dabei auf die @askOK-Matcherzeile
@@ -785,7 +795,9 @@ CADDY_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-caddy 2>/d
 write_managed "/opt/coder/domain" 644 - <<EOF
 ${DOMAIN_CODER}
 EOF
-write_managed "/opt/coder/Caddyfile" 644 "Caddyfile" <<EOF
+# write_managed legt Verzeichnisse nicht an (Vorbild: rules/grafana unten).
+sudo install -d -m 0755 /opt/coder/caddy
+write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" <<EOF
 {
 ${CADDY_ACME_CA}
     on_demand_tls {
@@ -829,7 +841,7 @@ EOF
 # geändert hat (SIGHUP braucht kein --web.enable-lifecycle); ein blinder
 # Neustart bei jedem Re-Run würde Messlücken reißen (P-025-Prinzip).
 prom_cfg_sig() {
-  { sudo sha256sum /opt/coder/prometheus.yml /opt/coder/rules/coder-alerts.yml 2>/dev/null || true; } | sha256sum | cut -d' ' -f1
+  { sudo sha256sum /opt/coder/prometheus/prometheus.yml /opt/coder/prometheus/rules/coder-alerts.yml 2>/dev/null || true; } | sha256sum | cut -d' ' -f1
 }
 PROM_CFG_BEFORE=$(prom_cfg_sig)
 # Grafana liest Provisioning-Dateien ebenfalls nur beim Start.
@@ -839,8 +851,9 @@ GRAFANA_PROV_BEFORE=$(sudo sha256sum /opt/coder/grafana/provisioning/datasources
 PROM_CFG_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-prometheus 2>/dev/null || echo false)
 GRAFANA_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-grafana 2>/dev/null || echo false)
 
-# prometheus.yml
-write_managed "/opt/coder/prometheus.yml" 644 "prometheus.yml" <<'EOF'
+# prometheus.yml (komplettes Verzeichnis gemountet, siehe compose)
+sudo install -d -m 0755 /opt/coder/prometheus
+write_managed "/opt/coder/prometheus/prometheus.yml" 644 "prometheus.yml" <<'EOF'
 global:
   scrape_interval: 15s
 
@@ -862,8 +875,8 @@ EOF
 # Kein "absent()"-Zweig für Regel 3: fehlende Metrik = seit Aufsetzen noch
 # kein Backup gelaufen, das meldet ohnehin das erste erfolgreiche Laufdatum;
 # ehrlicher als ein Alarm direkt nach der Installation.
-sudo install -d -m 0755 /opt/coder/rules
-write_managed "/opt/coder/rules/coder-alerts.yml" 644 - <<'EOF'
+sudo install -d -m 0755 /opt/coder/prometheus/rules
+write_managed "/opt/coder/prometheus/rules/coder-alerts.yml" 644 - <<'EOF'
 groups:
   - name: coder
     rules:
@@ -908,6 +921,28 @@ groups:
           summary: "TLS-Ausstellungscheck fehlt oder ist älter als 8 Tage"
           description: "Cron, Caddy-Logs oder Textfile-Metrik pruefen; bei veralteter Metrik ist der 7-Tage-Zaehler nicht aussagekraeftig."
 EOF
+
+# Migration der alten Einzeldatei-Pfade (bis 09/2026 gemountet). Die Alt-Datei
+# wird nur entfernt, wenn sie exakt dem gerade neu Geschriebenen entspricht;
+# eine abweichende bleibt liegen und wird gemeldet, weil dort jemand von Hand
+# geändert haben könnte. Sie wird nicht mehr gemountet und ist damit wirkungslos.
+migrate_away() {
+  local old="$1" new="$2"
+  [ -e "${old}" ] || return 0
+  if cmp -s "${old}" "${new}" 2>/dev/null; then
+    sudo rm -f "${old}"
+    forget_hash "${old}"
+    echo "  Alte Einzeldatei entfernt (inhaltsgleich): ${old}"
+  else
+    warn "Alte Datei weicht von ${new} ab: ${old} bleibt liegen (nicht mehr gemountet) – bitte manuell prüfen"
+  fi
+}
+migrate_away /opt/coder/Caddyfile /opt/coder/caddy/Caddyfile
+migrate_away /opt/coder/prometheus.yml /opt/coder/prometheus/prometheus.yml
+migrate_away /opt/coder/rules/coder-alerts.yml /opt/coder/prometheus/rules/coder-alerts.yml
+# Leer hinterbliebenes Alt-Verzeichnis entfernen; sonst bleiben (z. B. bei
+# manuellen Zusatzdateien) Teile von /opt/coder/rules liegen.
+sudo rmdir /opt/coder/rules 2>/dev/null || true
 
 # C3: Datasource für Grafana provisioning statt manuelle UI-Konfigurations-
 # Eintragung. Betrifft nur den Beginn der Container-Welt; ob provisioniert
@@ -1051,9 +1086,12 @@ retry3 sudo docker compose pull
 # Caddy lädt Zertifikate erst zur Laufzeit; validate prüft die Caddyfile, ohne
 # den bestehenden Stack zu ändern. promtool prüft Konfiguration und Regeln.
 echo "Validiere Caddyfile, Prometheus-Konfiguration und Alarmregeln vor dem Start ..."
-sudo docker run --rm -v /opt/coder/Caddyfile:/etc/caddy/Caddyfile:ro "caddy:${CADDY_VERSION}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
-sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus.yml:/etc/prometheus/prometheus.yml:ro -v /opt/coder/rules:/etc/prometheus/rules:ro "prom/prometheus:${PROMETHEUS_VERSION}" check config /etc/prometheus/prometheus.yml
-sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/rules:/etc/prometheus/rules:ro "prom/prometheus:${PROMETHEUS_VERSION}" check rules /etc/prometheus/rules/coder-alerts.yml
+# caddy:2.10 hat KEINEN ENTRYPOINT (nur CMD ["caddy","run",...]) – ohne
+# --entrypoint würde "validate" selbst als Binary ausgeführt und scheitert
+# mit 'executable file not found in $PATH'.
+sudo docker run --rm --entrypoint caddy -v /opt/coder/caddy:/etc/caddy:ro "caddy:${CADDY_VERSION}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check config /etc/prometheus/prometheus.yml
+sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check rules /etc/prometheus/rules/coder-alerts.yml
 
 sudo docker compose up -d
 
@@ -1085,7 +1123,7 @@ VERSIONSEOF
 # lässt sich VORHER per "caddy validate" erkennen – im Fehlerfall behält
 # Caddy bewusst die alte, laufende Konfiguration (kein Ausfall durch einen
 # kaputten Schreibfehler). "restart" ist damit bewusst KEIN Fallback mehr.
-CADDY_AFTER=$(sudo sha256sum /opt/coder/Caddyfile | cut -d' ' -f1)
+CADDY_AFTER=$(sudo sha256sum /opt/coder/caddy/Caddyfile | cut -d' ' -f1)
 if [ "${CADDY_WAS_RUNNING}" = "true" ] && [ "${CADDY_BEFORE}" != "${CADDY_AFTER}" ]; then
   echo "Caddyfile geändert – prüfe und lade die Konfiguration neu (reload statt restart) ..."
   if sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
@@ -1705,6 +1743,14 @@ if [ -x /opt/coder/check-tls.sh ] && sudo bash -n /opt/coder/check-tls.sh \
 else
   fail "TLS-Erkennung fehlt (/opt/coder/check-tls.sh oder /etc/cron.d/coder-tlscheck)"
 fi
+# TlsCheckStale würde sonst ab dem ersten Scrape feuern: die Metrik
+# coder_tls_check_last_success_timestamp_seconds existiert erst nach dem
+# ersten Cron-Lauf (Mo 06:30), und absent() meldet den Check als veraltet.
+if sudo /opt/coder/check-tls.sh; then
+  ok "TLS-Check einmalig ausgeführt (Erfolgs-Timestamp gesetzt, kein TlsCheckStale bis Montag 06:30)"
+else
+  warn "einmaliger TLS-Check fehlgeschlagen – TlsCheckStale kann bis zum ersten Montag-Lauf feuern (/var/log/coder-tls.log)"
+fi
 
 echo "############################################################"
 echo "# [6/10] Tägliches Datenbank-Backup einrichten"
@@ -1960,7 +2006,7 @@ echo "Teste Backup einmal direkt..."
 # das auf einer sehr langsamen Platte trotzdem einmal nicht reicht, wartet
 # diese Schleife hier zusätzlich bis zu 60 Sekunden, statt einen falschen
 # Alarm zu melden.
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   [ "$(sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
   sleep 2
 done
@@ -2056,7 +2102,7 @@ for c in coder-postgres coder coder-caddy coder-prometheus coder-node-exporter c
     GATE_OK=false
   fi
 done
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
   sleep 2
 done
@@ -2300,12 +2346,11 @@ INNER_EOF
 
 echo "Setze neues Grafana-Admin-Passwort..."
 PHASE="Grafana-Reset"
-# Gleiches Prinzip wie oben bei Postgres: über STDIN statt als
-# docker-exec-Argument, sonst wäre das neue Passwort kurzzeitig über
-# "ps aux" auf dem Host sichtbar.
-docker exec -i coder-grafana sh <<INNER_EOF
-grafana cli --homepath /usr/share/grafana admin reset-admin-password "${NEW_GF_PW}"
-INNER_EOF
+# Nur STDIN, kein Argument und kein Heredoc in die Shell: sonst stünde das
+# neue Passwort in der Argumentliste der CLI bzw. kurzzeitig über
+# "ps aux" auf dem Host. --password-from-stdin gibt es seit Grafana 11.
+printf '%s\n' "${NEW_GF_PW}" | docker exec -i coder-grafana \
+  grafana cli --homepath /usr/share/grafana admin reset-admin-password --password-from-stdin
 
 # .env aktualisieren, damit Coder mit dem neuen Postgres-Passwort verbindet
 # und die Werte für später dokumentiert sind. F-010: atomar per Temp+mv statt
@@ -2407,7 +2452,7 @@ fi
 # Compose-Projektname determinieren (F-004/P-016): Default = Verzeichnisname
 # (/opt/coder -> "coder"), aber per -p/Env überstimmbar – daher aus
 # "docker compose config" lesen, nie raten. Leer/Fehler = Abbruch.
-PROJECT=$(docker compose config 2>/dev/null | awk '/^name:/ {print $2; exit}')
+PROJECT=$(docker compose config | awk '/^name:/ {print $2; exit}' || true)
 if [ -z "${PROJECT:-}" ]; then
   echo "Fehler: Compose-Projektname unklar (docker compose config liefert kein 'name:'). Abbruch, nichts wurde verändert." >&2
   exit 1

@@ -177,7 +177,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo sha256sum /opt/coder/Caddyfile`, `sudo docker ps --filter name=coder-caddy` |
+| **Diagnose** | `sudo sha256sum /opt/coder/caddy/Caddyfile`, `sudo docker ps --filter name=coder-caddy` |
 | **Erwartete Ursache** | Compose merkt sich Änderungen an eingebundenen Dateien nicht; das Setup lädt die Konfiguration nur bei geändertem Hash **und** grünem `caddy validate` per `reload` neu (kein `restart`: der bräche bestehende Verbindungen). |
 | **Sichere Behebung** | Zuerst validieren, dann laden: `docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` und danach dasselbe mit `caddy reload`. Schlägt `validate` fehl, behält Caddy die alte Konfiguration – dann erst den Fehler suchen. Besser: Änderung in `setup-coder.sh` vornehmen und das Setup erneut ausführen – sonst meldet der Folgelauf Drift (Abschnitt G). |
 
@@ -193,7 +193,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `curl -s http://127.0.0.1:9090/api/v1/rules \| grep -c '"name"'` (erwartet > 0); `docker logs coder-grafana --tail=50 \| grep -i provision`; `ls -l /opt/coder/rules/ /opt/coder/grafana/provisioning/datasources/` |
+| **Diagnose** | `curl -s http://127.0.0.1:9090/api/v1/rules \| grep -c '"name"'` (erwartet > 0); `docker logs coder-grafana --tail=50 \| grep -i provision`; `ls -l /opt/coder/prometheus/rules/ /opt/coder/grafana/provisioning/datasources/` |
 | **Erwartete Ursache** | Prometheus hat SIGHUP nicht verarbeitet oder Grafana hat die geänderte Provisioning-Datei noch nicht eingelesen. |
 | **Sichere Behebung** | Prometheus-Konfiguration prüfen und bei Bedarf `sudo docker kill -s HUP coder-prometheus`; Grafana mit `sudo docker restart coder-grafana` neu einlesen lassen. Danach die Diagnose wiederholen. Nicht die `rule_files`-Zeile oder die Provisioning-Mounts entfernen. |
 

@@ -52,10 +52,10 @@ fi
 
 N_Q="$(grep -cF "<<'INNER_EOF'" "${WORK}/reset-block.sh" || true)"
 N_U="$(grep -c '<<INNER_EOF' "${WORK}/reset-block.sh" || true)"
-if [ "${N_Q}" = "0" ] && [ "${N_U}" = "2" ]; then
-  pass "nur zwei unquotierte Heredocs für TCP-Verifikation und Grafana"
+if [ "${N_Q}" = "0" ] && [ "${N_U}" = "1" ]; then
+  pass "nur ein unquotierter Heredoc fuer die TCP-Verifikation"
 else
-  fail "Heredoc-Anzahl falsch (quotiert=${N_Q} unquotiert=${N_U}, erwartet 0/2)"
+  fail "Heredoc-Anzahl falsch (quotiert=${N_Q} unquotiert=${N_U}, erwartet 0/1)"
 fi
 
 if grep -vE '^[[:space:]]*#' "${SETUP}" | grep -qF -- 'docker exec -e'; then
@@ -155,7 +155,7 @@ if new_hex_ok 'zz$top'; then fail "NEU-Hex-Assert: Nicht-Hex passiert"; else pas
 # ---------- LIVE (Produktionszeilen, Docker stubbed: argv + stdin) ----------
 STMT_PG="$(awk '$0=="{" {p=1} p {print} p && /^} \| docker exec -i coder-postgres psql/ {exit}' "${WORK}/reset-block.sh")"
 STMT_VERIFY="$(awk '/docker exec -i coder-postgres sh <<INNER_EOF/,/^INNER_EOF$/' "${WORK}/reset-block.sh")"
-STMT_GRAFANA="$(awk '/docker exec -i coder-grafana sh <<INNER_EOF/,/^INNER_EOF$/' "${WORK}/reset-block.sh")"
+STMT_GRAFANA="$(awk '/printf .*NEW_GF_PW.*\| docker exec -i coder-grafana/,/reset-admin-password --password-from-stdin/' "${WORK}/reset-block.sh")"
 if [ -z "${STMT_PG}" ] || [ -z "${STMT_VERIFY}" ] || [ -z "${STMT_GRAFANA}" ]; then
   fail "Produktions-Statements nicht extrahierbar (Postgres/Verify/Grafana)"
 else

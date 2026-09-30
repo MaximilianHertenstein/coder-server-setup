@@ -9,8 +9,84 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-29 · Basisstand dieses Eintrags: `8b18621` auf `main`.
-Änderungen dieses Eintrags sind noch nicht committet.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `c66eb30` auf `main`.
+Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Fünf Fehler aus der Kritikliste: Mount-Inode, TLS-Metrik, pipefail, Grafana-Passwort, GID-Quote
+
+- **Mounts (Fehler 1):** Die Compose-Datei band `Caddyfile`,
+  `prometheus.yml` und `rules/` als **Einzeldateien** ein. Ein Datei-Mount
+  hält den Inode fest, `write_managed` ersetzt die Datei aber per Temp-Datei
+  und `mv` – der laufende Container hätte bis zum nächsten Recreate die alte
+  Fassung gesehen, während Hash-Vergleich und Preflight-Validierung die neue
+  bestätigt hätten. Jetzt gebunden: `./caddy:/etc/caddy:ro` und
+  `./prometheus:/etc/prometheus:ro` (Regeln darunter, eigener Mount entfällt).
+  Pfade entsprechend angepasst in `CADDY_BEFORE`/`CADDY_AFTER`, der
+  Prometheus-Hash-Signatur, den drei Preflight-Prüfungen. Die Alt-Dateien
+  `/opt/coder/Caddyfile`, `/opt/coder/prometheus.yml` und
+  `/opt/coder/rules/coder-alerts.yml` werden nach dem Neuschreiben nur
+  entfernt, wenn sie inhaltsgleich sind; eine abweichende Datei bleibt liegen
+  und wird als Warnung gemeldet.
+- **TLS-Metrik (Fehler 2):** `check-tls.sh` lief bislang nur wöchentlich
+  (Mo 06:30), die Metrik `coder_tls_check_last_success_timestamp_seconds`
+  existierte bis dahin nicht und die Regel `TlsCheckStale` meldete
+  `absent()` als veraltetes Ergebnis. Das Setup führt den Check jetzt einmal
+  direkt nach der Installation aus und meldet einen Fehlschlag als Warnung.
+- **pipefail (Fehler 3):** `getent group docker | cut …` brach unter
+  `set -o pipefail` ohne jede Meldung ab, ebenso `docker compose config` in
+  der von `reset-coder.sh` erzeugten Reparaturanleitung (dort war `stderr`
+  zusätzlich auf `/dev/null` geleitet). Beide Stellen laufen weiter
+  (`|| true`), eine fehlende Docker-Gruppe bricht jetzt mit Klartext ab.
+- **Grafana-Passwort (Fehler 4):** `reset-passwords.sh` übergab das neue
+  Passwort als **Argument** an `grafana cli` (sichtbar in `ps aux`), obwohl
+  der Kommentar STDIN behauptete. Jetzt `--password-from-stdin` (im
+  laufenden Image `grafana/grafana:12.4.5` vorhanden, per
+  `grafana cli --help` geprüft).
+- **Sonniges (Fehler 5):** GID-Wert in `grep -q` quotiert (sonst würde
+  `998` gegen `["998"]` fälschlich treffen), ungenutzte Schleifenvariable,
+  tote Variable `WRITE_MANAGED_CHANGED` und die konkurrierenden
+  Umleitungen beim Lock-Release (`SC2261`) entfernt.
+- **Preflight-Bug (beim Testlauf gefunden):** `docker run caddy:2.10 validate …`
+  scheiterte mit `exec: "validate": executable file not found in $PATH`,
+  weil das Image **keinen** ENTRYPOINT hat (nur
+  `CMD ["caddy","run",…]`) und `validate` damit als Binary ausgeführt wurde.
+  Die Erstlauf-Validierung hatte noch nie gelaufen (der Eintrag vom
+  2026-09-29 nennt diese Prüfungen ausdrücklich als nicht ausgeführt).
+  Jetzt `--entrypoint caddy`, passend zu `--entrypoint /bin/promtool` bei den
+  beiden Prometheus-Zeilen.
+- **Geänderte Dateien:** `setup-coder.sh`,
+  `tests/t-b1-on-demand-ask.sh` (Pfad des Caddyfile-Heredocs),
+  `tests/t-b2-003-hex-migration.sh` (einer statt zwei unquotierter Heredocs,
+  Grafana-Statement-Extraktion), `tests/t-b2-007-drift-hash.sh`
+  (Pfadliste), `README.md`, `OPERATIONS.md`, `TROUBLESHOOTING.md`.
+- **Teststand (tatsächlich ausgeführt):** `bash -n setup-coder.sh` ohne
+  Befund; `shellcheck -S warning setup-coder.sh` grün (bei `c66eb30` noch
+  rc=1 mit vier Befunden); Suite `tests/*.sh`: 8 von 10 Dateien grün,
+  `t-071b-headercheck.sh` (1 FAIL) und `t-b2-004-ufw-downgrade.sh`
+  (19 FAIL) rot – beide bereits vor der Änderung bei `c66eb30` rot
+  (veraltete statische Guards, nicht Gegenstand dieser Runde); die erzeugte
+  Compose-YAML geht durch `docker compose config`. Inode-Nachweis auf dem
+  Testhost `2.29.11.30`: nach `mv` zeigt der Datei-Mount im laufenden
+  Container weiter `ALT`, der Verzeichnis-Mount `NEU`; beide Probe-Container
+  wurden wieder entfernt.
+- **Testlauf Testhost `2.29.11.30` (zwei Läufe):** der erste endete im
+  Preflight (Befund oben), der zweite komplett ohne `[FEHLER]`. Nachweis vor
+  Ort: Mounts `…/caddy -> /etc/caddy` und `…/prometheus -> /etc/prometheus`
+  (Verzeichnisse, `ro`), `Valid configuration` im Preflight, alle fünf
+  Alarmregeln in Prometheus geladen, `coder_tls.prom` enthält jetzt beide
+  Metriken inklusive `coder_tls_check_last_success_timestamp_seconds`, und
+  `[OK] TLS-Check einmalig ausgeführt`. Die beiden Alt-Dateien wichen inhaltlich
+  ab (alter `ask`-Block bzw. fehlende `TlsCheckStale`-Regel – reine
+  Skript-Evolution, kein Hand-Edit), wurden nach Diff und Referenzprüfung
+  gelöscht; danach ist kein Alt-Pfad mehr irgendwo referenziert.
+- **Nicht ausgeführt:** kein Test des ufw-Downgrade-Pfads, kein Root-Lauf,
+  kein Lauf auf der Schul-Produktionsmaschine.
+- **Offene Punkte:** ufw-Block (Regel-Erhalt, `limit` als Ausnahme),
+  Root-Lauf (Root-Guard, Wartungs-Lock, sudo-Präfixe) und die
+  Ticket-Kürzel-Runde sind bewusst noch offen; Passwort-Login-Warnungen
+  bleiben unverändert.
 
 ---
 

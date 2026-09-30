@@ -23,8 +23,9 @@ trap 'rm -rf "${WORK}"' EXIT
 
 # --- 1. Struktur: verwaltete Dateien nutzen atomaren Schreibhelfer ----------
 EXPECTED="/opt/coder/docker-compose.yml
-/opt/coder/Caddyfile
-/opt/coder/prometheus.yml
+/opt/coder/caddy/Caddyfile
+/opt/coder/prometheus/prometheus.yml
+/opt/coder/prometheus/rules/coder-alerts.yml
 /etc/fail2ban/jail.d/10-coder-sshd.local
 /etc/apt/apt.conf.d/52-coder-reboot
 /opt/coder/boot-check.sh

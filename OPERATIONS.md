@@ -29,9 +29,9 @@ Setup-Version sie ersetzt (siehe Abschnitt 7).
 |---|---|---|
 | `/opt/coder/.env` | Secrets: `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `DOCKER_GID` (600, root) | nein (bewusst) |
 | `/opt/coder/docker-compose.yml` | Stack-Definition, Logs, Ports, Volumes | ja |
-| `/opt/coder/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard | ja |
-| `/opt/coder/prometheus.yml` | Scrape-Jobs `coder`, `node`, Einbindung `rule_files` | ja |
-| `/opt/coder/rules/coder-alerts.yml` | fünf Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20, TLS-Check veraltet) | nein |
+| `/opt/coder/caddy/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard (Verzeichnis `caddy/` wird vollständig gemountet) | ja |
+| `/opt/coder/prometheus/prometheus.yml` | Scrape-Jobs `coder`, `node`, Einbindung `rule_files` (Verzeichnis `prometheus/` wird vollständig gemountet) | ja |
+| `/opt/coder/prometheus/rules/coder-alerts.yml` | fünf Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20, TLS-Check veraltet) | nein |
 | `/opt/coder/grafana/provisioning/datasources/prometheus.yml` | Datasource `Prometheus` wird automatisch angelegt | nein |
 | `/opt/coder/node-textfile/coder_backup.prom` | Zeitstempel des letzten erfolgreichen Backups (vom Setup angelegt, vom Lauf beschrieben) | nein |
 | `/opt/coder/node-textfile/coder_tls.prom` | Untergrenze der TLS-Ausstellungen der letzten 7 Tage und Zeitstempel des letzten erfolgreichen Checks | nein |
@@ -56,6 +56,13 @@ Setup-Version sie ersetzt (siehe Abschnitt 7).
 | `/etc/docker/daemon.json` | Log-Limit json-file 10 MB × 3 (nur beim Fehlen geschrieben) | nein |
 | `/etc/apt/apt.conf.d/20auto-upgrades` | via debconf von unattended-upgrades | nein |
 | `/etc/apt/sources.list.d/docker.list`, `/etc/apt/keyrings/docker.gpg` | Docker-apt-Repo (Fingerprint geprüft) | nein |
+
+Die Konfigurationsdateien für Caddy und Prometheus stehen absichtlich in
+eigenen Unterverzeichnissen (`caddy/`, `prometheus/`): Docker bindet eine
+**Datei** beim Containerstart an deren Inode. Das Setup ersetzt sie atomar per
+Temp-Datei und `mv` – über einen Einzeldatei-Mount sähe der laufende Container
+bis zum nächsten Recreate die alte Fassung, während Hash- und Preflight-Prüfen
+die neue bestätigen. Verzeichnis-Mounts zeigen auf den jeweils aktuellen Inode.
 
 Nicht im Repository, nur auf dem Server: alle Backups, `.env`-Sicherungen
 (`.env.bak.*`, genau eine Generation), Logs.
@@ -280,7 +287,7 @@ werden.
   abrufen: `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`.
 - Die Datasource `Prometheus` wird beim Setup automatisch provisioniert
   (`/opt/coder/grafana/provisioning/datasources/`) – kein Eintragen im UI.
-- **Fünf Alarmregeln** liegen in Prometheus (`/opt/coder/rules/`):
+- **Fünf Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
   Coder-Target down, Root-Partition <10 % frei, letztes Backup älter als
   25 Stunden, TLS-Ausstellungen >20/7 Tage und ein fehlender oder mehr als
   8 Tage alter TLS-Check. Sie sind einsehbar unter
@@ -507,7 +514,7 @@ einfach erneut ausführen).
 
 **Alternative, falls 80/443 nicht 1:1 erreichbar sind (DNS-01, B4b):**
 Ein Zertifikat ohne eingehende 80/443 geht nur über den DNS-01-Challenge
-(`/opt/coder/Caddyfile` müsste den `_acme-challenge.`-CNAME tragen und der
+(`/opt/coder/caddy/Caddyfile` müsste den `_acme-challenge.`-CNAME tragen und der
 `caddy`-Image bräuchte ein DNS-Plugin, das das Standardimage **nicht**
 enthält). Das braucht Zonen-Zugang beim DNS-Provider – erst anfragen, wenn
 Zeile 3 hakt; bis dahin ist http-01/tls-alpn-01 der eingeschlagene Weg.
