@@ -9,8 +9,44 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `80608ea` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `c8816d1` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – PostgreSQL 15 → 18 im Setup
+
+- **Frage des Betreibers „warum nicht eine aktuellere Version?"** – Antwort:
+  15 war die Baseline des Original-Setups, der Major-Wechsel als eigener
+  Punkt bis zum Supportende (11/2027) vertagt. Da noch keine
+  Produktionsdaten im Volume liegen, ist der Wechsel jetzt am billigsten.
+- **Geprüft:** `postgres:18-alpine` existiert und zeigt aktuell auf **18.6**
+  (`18.5` existiert nicht mehr, `18.6-alpine` schon – Major-Tag `18-alpine`
+  holt künftige 18.x-Patches automatisch, gleiche Politik wie vorher bei 15).
+  Coder-Anforderung laut offizieller Doku: PostgreSQL **13 oder höher** – 18
+  ist damit gedeckt (Quelle: coder.com/docs, „version 13 or higher").
+- **Geändert (Commit davor):** `setup-coder.sh` (Image-Zeile
+  `postgres:18-alpine`, drei Kommentarstellen), README (Bildtabelle,
+  Update-Absatz, Versions-Absatz), OPERATIONS (§8 Bullets, neue
+  Major-Wechsel-Regel: nie reiner `pull`, sondern Dump/Restore im
+  Wartungsfenster), SECURITY (§7 Zeile und §9 Zeile 13). RESTORE.md folgt
+  mit dem Migrationstest auf dem Test-Host.
+- **Altes Verhalten:** `postgres:15-alpine` als beweglicher Major-Tag.
+- **Neues Verhalten:** `postgres:18-alpine`, sonst nichts – Port, Netz,
+  Backup und Restore-Verfahren bleiben unverändert.
+- **Mögliche Regressionen:** unbekanntes Major-Verhalten von Postgres 18
+  unter Coder; Rollback-Variante: altes (behaltenes) Volume plus vorherigen
+  Image-Tag, da kein Auto-Prune.
+- **Geänderte Dateien:** `setup-coder.sh`, `README.md`, `OPERATIONS.md`,
+  `SECURITY.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** Migration des Test-Host-Volumes von 15 auf 18 (Dump/
+  Restore, altes Volume als Rollback behalten) und Wiederholung der
+  Restore-Probe mit dem 18er-Bild – danach RESTORE.md aktualisieren; dann
+  Schritt 4 der Template-Abnahme, Restore-Pfad A/B, Testmatrix,
+  Inbetriebnahme-Termin.
 
 ---
 
