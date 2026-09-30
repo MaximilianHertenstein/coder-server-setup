@@ -9,8 +9,34 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `35d3a57` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `60bae56` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Testhost-Lauf: neuer TLS-Fenstercheck live verifiziert
+
+- **Durchgeführt:** zweiter Lauf von `setup-coder.sh` auf `2.29.11.30`
+  (Skript per `scp` nach `/tmp`, Aufruf als root, im Anschluss `/tmp`
+  aufgeräumt) – nach `ccc6181` (B2-005) und `35d3a57` (Restore-Probe).
+- **Ergebnis:** Exit 0, 0 `[FEHLER]`, 4 verschiedene `[WARNUNG]` (dieselben
+  vier wie zuvor: SSH-Passwort-Login, `RESTORE.md`/`ssh-harden.sh` fehlen
+  neben dem Skript in `/tmp`, healthz ohne HTTP 200). Firewall unverändert,
+  Regel weiter `22/tcp LIMIT`, Wartungs-Lock nach dem Lauf sofort frei.
+- **Neuer Check bestätigt:** `coder-alerts.yml` enthält 6 Regeln und
+  Prometheus lädt alle 6 (API-Abfrage: u. a. `TlsLogTruncated`); die
+  Metrikdatei führt `coder_tls_log_window_seconds 0` und
+  `coder_tls_log_truncated 0`, die Ausgabezeile nennt das Fenster
+  (`Logfenster: 0 Std.`) und meldet korrekt nur einen `HINWEIS` (frischer
+  Caddy-Container aus diesem Lauf), keine Fehlwarnung über Rotation.
+  Gleichzeitig sieht man die Untergrenze live: `coder_tls_issuances_7d 11`
+  bei 0 Std. Fenster.
+- **Geänderte Dateien:** keine (nur Dokumentation dieses Laufs).
+- **Teststand (tatsächlich ausgeführt):** vor dem Lauf alle 12 Dateien in
+  `tests/` grün (346 PASS, 0 FAIL); nach dem Lauf keine Dateien geändert.
+- **Offene Punkte:** volles Restore-Prozedere auf frischer VM (RTO),
+  D-TLS, Template-Erstinventar, Testmatrix, übrige D-Entscheidungen,
+  Offsite-Backup, SSH-Härtung nach getestetem Key-Zugang.
 
 ---
 
