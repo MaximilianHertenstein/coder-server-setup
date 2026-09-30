@@ -1189,14 +1189,15 @@ if [ "${SSHD_PORTS}" != "22" ]; then
   exit 1
 fi
 
-# B-007/B2-004: Re-Run-Downgrade-Schutz. Der alte Detektor
+# B-007/B2-004: Re-Run-Schutz für vorgefundene SSH-Regeln. Der alte Detektor
 #   22/(tcp|ssh).*(ALLOW|LIMIT).*([0-9]{1,3}\.)
 # übersah die reale ufw-Zeile "22 ALLOW 192.168.1.0/24" (ohne /tcp) und hat
 # danach trotz WARN die restriktive Regel gelöscht und SSH weltweit geöffnet.
-# Detektor wörtlich nach Plan B2-004 (POSIX grep -E, keine Wahl im
-# Implementierungs-PR): Pfad C (inaktiv) zuerst, danach Kandidat minus
-# "Anywhere"; nicht-leer = Pfad B = harter Abbruch vor jedem Löschen, sofern
-# nicht exakt CODER_ALLOW_SSH_DOWNGRADE=yes gesetzt ist.
+# Detektor (POSIX grep -E): Pfad C (inaktiv) zuerst, danach Kandidat minus
+# "Anywhere". Eine vorgefundene Quellbeschränkung wird NICHT gelöscht und
+# nicht ersetzt: dieses Skript löscht keine SSH-Regel, die es nicht selbst
+# angelegt hat. Einzige erlaubte Änderung an einer bestehenden 22-Regel ist
+# die Umwandlung einer weltweiten "allow"-Regel in "limit" (weiter unten).
 if ! UFW_OUT="$(sudo ufw status numbered 2>/dev/null)"; then
   fail "ufw-Status nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
@@ -1205,9 +1206,18 @@ if ! UFW_ADDED_OUT="$(sudo ufw show added 2>/dev/null)"; then
   fail "gespeicherte ufw-Regeln nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
 fi
-UFW_RESTRICTED="$(printf '%s\n' "${UFW_OUT}" \
-  | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' \
+UFW_SSH_ALL="$(printf '%s\n' "${UFW_OUT}" \
+  | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' || true)"
+UFW_RESTRICTED="$(printf '%s\n' "${UFW_SSH_ALL}" \
   | grep -Ev '[[:space:]]Anywhere([[:space:]\(]|$)' || true)"
+# Weltweite Kandidaten (Anywhere in der Quellspalte) – nur sie kommen für die
+# allow→limit-Umwandlung in Frage, nie eine Zeile mit Quelle.
+UFW_WORLDWIDE="$(printf '%s\n' "${UFW_SSH_ALL}" \
+  | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' || true)"
+UFW_WORLDWIDE_ALLOW="$(printf '%s\n' "${UFW_WORLDWIDE}" \
+  | grep -Ei '[[:space:]]ALLOW([[:space:]]|$)' || true)"
+UFW_WORLDWIDE_LIMIT="$(printf '%s\n' "${UFW_WORLDWIDE}" \
+  | grep -Ei '[[:space:]]LIMIT([[:space:]]|$)' || true)"
 # "ufw status" zeigt nur den aktiven Regelsatz. Bei Status inactive zusätzlich
 # "ufw show added" lesen: Debian dokumentiert diesen Report als die Befehle,
 # mit denen UFW-Regeln hinzugefügt wurden, unabhängig vom Laufzeitstatus.
@@ -1218,11 +1228,7 @@ UFW_ADDED_RESTRICTED="$(printf '%s\n' "${UFW_ADDED_OUT}" \
   | grep -Ei '[[:space:]]from[[:space:]]+' \
   | grep -Eiv '[[:space:]]from[[:space:]]+(any|0\.0\.0\.0/0|::/0)([[:space:]]|$)|Anywhere' || true)"
 
-UFW_TS=""
-UFW_BEFORE_LOG=""
-UFW_AFTER_LOG=""
-UFW_RESTORE_ACTION=""
-UFW_RESTORE_SRC=""
+UFW_RESTRICTED_LINE=""
 
 if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
   if [ -n "${UFW_ADDED_RESTRICTED}" ]; then
@@ -1235,68 +1241,15 @@ if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
   # unten fährt mit der bisherigen Rate-Limit-Regel fort.
   warn "ufw ist inaktiv (Status: inactive) – SSH-Regel wird jetzt gesetzt (B2-004 Pfad C, kein Abbruch)"
 elif [ -n "${UFW_RESTRICTED}" ]; then
-  # Pfad B: restriktive SSH-Regel (Quelle != Anywhere). Nie still entfernen.
-  UFW_TS="$(date +%Y%m%d-%H%M%S)"
-  UFW_BEFORE_LOG="/var/log/coder-ssh-downgrade-${UFW_TS}.before.log"
-  UFW_AFTER_LOG="/var/log/coder-ssh-downgrade-${UFW_TS}.after.log"
+  # Pfad B: restriktive SSH-Regel (Quelle != Anywhere). Sie bleibt stehen –
+  # weder Löschen noch Restore, deshalb auch kein weltweiter limit-Eintrag
+  # (der würde die Beschränkung neben sich wirkungslos machen).
   UFW_RESTRICTED_LINE="$(printf '%s\n' "${UFW_RESTRICTED}" | head -n 1)"
-  sudo ufw status numbered | sudo tee "${UFW_BEFORE_LOG}"
-
-  if [ "${CODER_ALLOW_SSH_DOWNGRADE:-}" != "yes" ]; then
-    # Harter Abbruch VOR den delete-Zeilen – die Härtung bleibt unangetastet.
-    printf '%s\n' \
-      "" \
-      "############ B2-004: Abbruch – restriktive SSH-Regel #############" \
-      "Vorgefunden und NICHT entfernt:" \
-      "  ${UFW_RESTRICTED_LINE}" \
-      "Protokoll (vor dem Lauf): ${UFW_BEFORE_LOG}" \
-      "" \
-      "Ohne Bypass würde das Setup SSH per 'limit 22/tcp' weltweit öffnen" \
-      "und damit die Quell-Beschränkung still aufweichen." \
-      "Es wurde bisher nichts gelöscht." \
-      "" \
-      "Downgrade-Lauf ausdrücklich erlauben (die restriktive Regel wird" \
-      "danach wiederhergestellt und per Protokoll verifiziert):" \
-      "  sudo env CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh" \
-      "  (als root: CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh)" \
-      "" \
-      "Oder ohne Bypass fortfahren, indem du die Regel selbst anpasst:" \
-      "  sudo ufw status numbered" \
-      "################################################################" >&2
-    exit 1
+  warn "quellbeschränkte SSH-Regel bleibt unangetastet: ${UFW_RESTRICTED_LINE} – keine weltweite 'limit 22/tcp'-Regel gesetzt"
+  UFW_COEXIST="$(printf '%s\n' "${UFW_WORLDWIDE}" | grep -v '^[[:space:]]*$' || true)"
+  if [ -n "${UFW_COEXIST}" ]; then
+    warn "weltweite SSH-Regel steht NEBEN der Beschränkung, ufw wertet beide (die Quelle greift deshalb nicht): ${UFW_COEXIST} – manuell auflösen: sudo ufw status numbered"
   fi
-
-  # Bypass: nur exakt "yes". NOTED_SRC = Quelle wörtlich aus before.log,
-  # Aktion quellengetreu (PV-009: allow vs. limit vs. deny vs. reject).
-  UFW_RESTORE_ACTION="$(printf '%s\n' "${UFW_RESTRICTED_LINE}" \
-    | grep -Eio '(^|[[:space:]])(allow|limit|deny|reject)([[:space:]]|$)' \
-    | head -n 1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)"
-  UFW_RESTORE_ACTION="${UFW_RESTORE_ACTION:-allow}"
-  UFW_RESTORE_SRC="$(printf '%s\n' "${UFW_RESTRICTED_LINE}" | awk '{
-      if (match($0, /from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22/)) {
-        s = substr($0, RSTART, RLENGTH)
-        sub(/^from[[:space:]]+/, "", s)
-        sub(/[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22/, "", s)
-      } else {
-        s = $NF
-        if (s == "(v6)") s = $(NF - 1)
-      }
-      print s
-    }')"
-
-  if ! printf '%s' "${UFW_RESTORE_SRC}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:/-]*$' \
-    || printf '%s' "${UFW_RESTORE_SRC}" \
-      | grep -Eq '^(Anywhere|ALLOW([[:space:]]+(IN|OUT))?|DENY([[:space:]]+(IN|OUT))?|REJECT([[:space:]]+(IN|OUT))?|LIMIT([[:space:]]+(IN|OUT))?|IN|OUT)$'
-  then
-    echo "B2-004: Quelle der restriktiven SSH-Regel konnte nicht eindeutig aus" >&2
-    echo "dem Protokoll gelesen werden (gelesen: '${UFW_RESTORE_SRC}')." >&2
-    echo "Ohne gesicherte Quelle gibt es keine verifizierte Wiederherstellung," >&2
-    echo "also Abbruch VOR dem Löschen. Protokoll: ${UFW_BEFORE_LOG}" >&2
-    echo "Regel manuell prüfen, dann ggf. ohne Quell-Beschränkung fortfahren." >&2
-    exit 1
-  fi
-
-  warn "Bypass CODER_ALLOW_SSH_DOWNGRADE=yes: restriktive SSH-Regel '${UFW_RESTRICTED_LINE}' wird nach dem Lauf wiederhergestellt und verifiziert (B2-004)"
 fi
 
 # B-007: explizite Default-Policy (idempotent – gleicher Wert zweimal ist No-Op).
@@ -1305,52 +1258,53 @@ fi
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 
-# A1/B2-004: Reihenfolge ist hier die Sicherheitsfunktion. Vorher stand
-#   (1) weltweite "limit 22/tcp" -> (2) Restriktive wiederherstellen.
-# Ein Abbruch zwischen (1) und (2) hinterließ SSH weltweit offen und die
-# Quell-Beschränkung war zusätzlich ohnehin wirkungslos, weil ufw beide
-# Regeln parallel zulässt (die eine schränkt die andere nicht ein). Jetzt:
-#   (1) erst zusperren, (2) dann die weltweite Regel entfernen, (3) erst danach
-# und nur noch lesend prüfen. Jeder Abbruchpunkt lässt die restriktive Regel
-# stehen – im schlimmsten Fall steht zusätzlich die alte weltweite Regel
-# weiter, also genau der Zustand von vor dem Lauf, nie ein neues Loch.
-#
-# Falls ein früherer Lauf schon eine engere oder App-Profil-Regel angelegt
-# hat: entfernen, bevor die neue Regel gesetzt wird. --force unterdrückt die
-# interaktive "Proceed? (y|n)"-Rückfrage von ufw, die das Skript sonst hier
-# hängen lassen würde.
-sudo ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
-sudo ufw --force delete allow 22/tcp > /dev/null 2>&1 || true
-# Die 10.16.0.0/12-Regel NICHT löschen, wenn sie genau die ist, die wir gerade
-# wiederherstellen würden – sonst entsteht ein Zeitfenster ohne SSH-Regel, in dem die
-# Beschränkung fehlt.
-if [ "${UFW_RESTORE_SRC}" != "10.16.0.0/12" ]; then
-  sudo ufw --force delete allow from 10.16.0.0/12 to any port 22 proto tcp > /dev/null 2>&1 || true
-fi
-
-if [ -n "${UFW_RESTORE_SRC}" ]; then
-  # Bypass-Lauf: erst die restriktive Regel (re) setzen und verifizieren ...
-  sudo ufw "${UFW_RESTORE_ACTION}" from "${UFW_RESTORE_SRC}" to any port 22 proto tcp
-  # ... danach die weltweite rate-limitierte Regel entfernen, sonst steht sie
-  # neben der restriktiven und macht sie wirkungslos.
-  sudo ufw --force delete limit 22/tcp > /dev/null 2>&1 || true
-  sudo ufw status numbered | sudo tee "${UFW_AFTER_LOG}"
-  if ! grep -F -- "${UFW_RESTORE_SRC}" "${UFW_AFTER_LOG}" > /dev/null; then
-    fail "Wiederherstellung der restriktiven SSH-Regel NICHT verifiziert – ${UFW_AFTER_LOG} enthält '${UFW_RESTORE_SRC}' nicht. Sofort prüfen: sudo ufw status numbered (B2-004/A1)"
+# Regelanwendung. Grundregel: dieses Skript löscht keine SSH-Regel, die es
+# nicht selbst angelegt hat. Genau ein Fall ändert etwas an einem Bestand:
+# eine weltweite "allow"-Regel wird in "limit" umgewandelt (Debian legt bei
+# der Installation `ufw allow OpenSSH` an). Denn ufw wertet "allow" und
+# "limit" nebeneinander: eine weltweite "allow"-Regel macht eine daneben
+# stehende Quell-Beschränkung wirkungslos. "limit" ist zugleich der
+# Normalfall dieses Setups (Rate-Limit statt IP-Liste, weil Heim-IPs dynamisch
+# sind – fail2ban sperrt zusätzlich nach Login-Versuchen). Ein Abbruch hier
+# verändert nichts an 22-Regeln: entweder stand vorher schon eine passende
+# Regel, oder es fehlte jede (dann greift nur die Zeile unten).
+# --force unterdrückt die interaktive "Proceed? (y|n)"-Rückfrage von ufw,
+# die das Skript sonst hängen lassen würde.
+if [ -n "${UFW_RESTRICTED}" ]; then
+  # Pfad B: Quell-Beschränkung vorhanden – an 22-Regeln nichts ändern (im
+  # Gate oben gemeldet), auch keine weltweite Regel ergänzen.
+  :
+elif [ -n "${UFW_WORLDWIDE_ALLOW}" ]; then
+  if grep -q 'OpenSSH' <<< "${UFW_WORLDWIDE_ALLOW}"; then
+    sudo ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
+  fi
+  if grep -Eq '(^|[[:space:]])22(/tcp)?([[:space:]]|\(v6\)|$)' <<< "${UFW_WORLDWIDE_ALLOW}"; then
+    sudo ufw --force delete allow 22/tcp > /dev/null 2>&1 || true
+    sudo ufw --force delete allow 22 > /dev/null 2>&1 || true
+  fi
+  # Verifikation statt Hoffnung: bleibt eine weltweite ALLOW-Zeile stehen
+  # (andere Regel-Schreibweise, Nebenregel), hart abbrechen, damit der Zustand
+  # nicht stillschweigend offen bleibt. `ufw limit` meldet vorhandene Regeln
+  # als "Skipping adding existing rule" und ist damit idempotent.
+  UFW_LEFTOVER="$(sudo ufw status numbered 2>/dev/null || true)"
+  UFW_LEFTOVER="$(printf '%s\n' "${UFW_LEFTOVER}" \
+    | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)' \
+    | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' \
+    | grep -Ei '[[:space:]]ALLOW([[:space:]]|$)' || true)"
+  if [ -n "${UFW_LEFTOVER}" ]; then
+    fail "weltweite 'allow'-SSH-Regel steht nach der Umwandlung noch (${UFW_LEFTOVER}) – manuell prüfen: sudo ufw status numbered"
     exit 1
   fi
-  if grep -Eq '22/tcp[[:space:]]+LIMIT.*Anywhere' "${UFW_AFTER_LOG}"; then
-    fail "Weltweite '22/tcp LIMIT Anywhere'-Regel steht nach dem Bypass-Lauf noch – die Quell-Beschränkung wäre wirkungslos. Sofort prüfen: sudo ufw status numbered (A1)"
-    exit 1
-  fi
-  ok "Restriktive SSH-Regel wiederhergestellt (${UFW_RESTORE_ACTION} from ${UFW_RESTORE_SRC}), weltweite limit-Regel entfernt, in ${UFW_AFTER_LOG} verifiziert (B2-004/A1)"
-else
-  # Normaler Pfad (keine vorgefundene Beschränkung): Zugriff von zuhause
-  # gewünscht, Herkunfts-Beschränkung ist bei einer dynamischen Heim-IP nicht
-  # praktikabel. "limit" statt "allow": ufw blockt automatisch IPs mit
-  # auffällig vielen Verbindungsversuchen in kurzer Zeit (eingebautes
-  # Rate-Limiting). fail2ban ist die zweite, schärfere Verteidigungslinie: es
-  # sperrt IPs nach mehreren fehlgeschlagenen Login-Versuchen komplett.
+  sudo ufw limit 22/tcp
+  ok "weltweite 'allow'-SSH-Regel entfernt und durch 'limit 22/tcp' ersetzt"
+elif [ -z "${UFW_WORLDWIDE_LIMIT}" ]; then
+  # Normaler Pfad (keine vorgefundene Beschränkung, keine passende Regel):
+  # Zugriff von zuhause gewünscht, Herkunfts-Beschränkung ist bei einer
+  # dynamischen Heim-IP nicht praktikabel. "limit" statt "allow": ufw blockt
+  # automatisch IPs mit auffällig vielen Verbindungsversuchen in kurzer Zeit
+  # (eingebautes Rate-Limiting). fail2ban ist die zweite, schärfere
+  # Verteidigungslinie: es sperrt IPs nach mehreren fehlgeschlagenen
+  # Login-Versuchen komplett.
   sudo ufw limit 22/tcp
 fi
 
@@ -1449,16 +1403,18 @@ if grep -q "Status: active" <<< "${UFW_STATUS}"; then
 else
   fail "ufw ist NICHT aktiv"
 fi
-# A1: Pfad-abhängig prüfen. Normaler Pfad: die weltweite Rate-Limit-Regel
-# muss existieren. Bypass-Pfaden (UFW_RESTORE_SRC gesetzt): sie darf NICHT
-# existieren – sonst steht sie neben der restriktiven Regel und macht sie
-# wirkungslos (genau der Fehler, den A1 schließt).
-UFW_SSH_LINES="$(grep -E '22/tcp[[:space:]]+(LIMIT|ALLOW)' <<< "${UFW_STATUS}" || true)"
-if [ -n "${UFW_RESTORE_SRC}" ]; then
-  if grep -q 'LIMIT' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
-    fail "Weltweite '22/tcp LIMIT Anywhere'-Regel existiert trotz wiederhergestellter Beschränkung – prüfen mit: sudo ufw status (A1)"
+# A1: Pfad-abhängig prüfen. Ohne vorgefundene Beschränkung muss die weltweite
+# Rate-Limit-Regel existieren. Mit Beschränkung (Pfad B) darf KEINE weltweite
+# 22-Regel daneben stehen – ufw wertet beide parallel, die Quell-Beschränkung
+# wäre dann wirkungslos (bei "ALLOW" sogar ohne Rate-Limit).
+UFW_SSH_LINES="$(grep -E '(22/tcp|OpenSSH)[[:space:]]+(LIMIT|ALLOW)' <<< "${UFW_STATUS}" || true)"
+if [ -n "${UFW_RESTRICTED}" ]; then
+  if grep -q 'ALLOW' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
+    fail "weltweite 'allow'-SSH-Regel steht neben der Quell-Beschränkung – jede IP könnte ohne Beschränkung auf SSH zugreifen; prüfen mit: sudo ufw status (A1)"
+  elif grep -q 'LIMIT' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
+    fail "weltweite 'limit'-SSH-Regel steht neben der Quell-Beschränkung – die Beschränkung greift dann nicht; prüfen mit: sudo ufw status (A1)"
   else
-    ok "SSH restriktiv (Bypass-Lauf): keine weltweite 22/tcp LIMIT-Regel, Beschränkung greift (A1)"
+    ok "SSH quellbeschränkt: keine weltweite 22-Regel daneben, Beschränkung greift"
   fi
 elif grep -q "22/tcp.*LIMIT" <<< "${UFW_SSH_LINES}"; then
   ok "SSH ist offen, aber per ufw rate-limitiert (22/tcp LIMIT)"

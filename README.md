@@ -180,7 +180,6 @@ Umgebungsvariable überschreibbar:
 | `PROMETHEUS_VERSION` | `v3.14.0` | exakter Pin |
 | `GRAFANA_VERSION` | `12.4.5` | exakter Pin |
 | `NODE_EXPORTER_VERSION` | `v1.12.1` | exakter Pin |
-| `CODER_ALLOW_SSH_DOWNGRADE` | (leer) | nur `yes` erlaubt einen Re-Run, der eine vorgefundene restriktive SSH-Regel ersetzt |
 | `CODER_ALLOW_DOWNGRADE` | (leer) | nur `yes` erlaubt ein bewusstes Zurücksetzen einer Version (A5-Downgrade-Schutz) |
 | `ACME_CA` | (leer) | optionaler eigener ACME-Endpunkt, z. B. Let's-Encrypt-Staging statt Produktions-CA |
 
@@ -256,14 +255,16 @@ for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 
 Stand nach Prüfung der angehängten Punkte am 2026-09-29: alle 10 Testskripte
 Exit 0 (311 `PASS`, 0 `FAIL`); `bash -n` ohne Befund; ShellCheck mit einem
-vorhandenen Befund (SC2034, ungenutzter Retry-Schleifenzähler). Der lokale
-Caddy-Parsertest wurde übersprungen, weil kein Caddy-Image lokal vorhanden
-war; ein vollständiger Setup-/VM-Lauf wurde nicht ausgeführt.
+vorhandenen Befund (SC2034, ungenutzter Retry-Schleifenzähler) ist inzwischen
+behoben; `shellcheck -S warning setup-coder.sh` meldet derzeit nichts. Der
+lokale Caddy-Parsertest wurde übersprungen, weil kein Caddy-Image lokal
+vorhanden war; ein vollständiger Setup-/VM-Lauf wurde nicht ausgeführt.
 
 Was die Tests **belegen**: das Verhalten der extrahierten Codestellen
-(Backup-Headercheck, TLS-/Boot-Gates, Hex-Migration, ufw-Downgrade-Gate
-inkl. Abbruchfall „restriktiv + worldwide-Limit", Reset-Precheck, Drift-Hashes
-über 16 Dateien, Port-Preflight, `ON_ERROR_STOP` im Restore-Runbook) anhand
+(Backup-Headercheck, TLS-/Boot-Gates, Hex-Migration, ufw-SSH-Regel-Gate
+inkl. „Beschränkung bleibt unangetastet, kein Delete von Bestandsregeln",
+Reset-Precheck, Drift-Hashes über 16 Dateien, Port-Preflight,
+`ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
 (`t-b1-on-demand-ask.sh`: Muster-Falluntersuchung, optional `caddy validate`
 + `caddy adapt`).
@@ -324,7 +325,8 @@ Produktivsystem geprüft werden:
 5. Reboot inkl. Boot-Gate (`/var/log/coder-boot.log`) und
    unattended-upgrades-Fenster 03:00.
 6. ufw-/fail2ban-Verhalten im Echtbetrieb, Re-Run mit vorhandener
-   restriktiver SSH-Regel (B2-004-Pfad B) und der Bypass-Lauf.
+   restriktiver SSH-Regel (B2-004-Pfad B): Regel bleibt unangetastet, es
+   wird keine weltweite `limit`-Regel daneben gesetzt.
 7. `reset-coder.sh` mit echten Containern/Volumes und fremden
    Workspace-Containern im Inventar.
 8. `ssh-harden.sh` – nur mit getestetem Key-Login und Zweit-Zugang.

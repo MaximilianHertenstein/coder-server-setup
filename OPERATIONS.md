@@ -72,7 +72,6 @@ Nicht im Repository, nur auf dem Server: alle Backups, `.env`-Sicherungen
 Überschreibbar per Umgebungsvariable beim Aufruf, ohne Datei zu ändern:
 `DOMAIN_CODER`, `ACME_EMAIL`, `CODER_VERSION`, `CADDY_VERSION`,
 `PROMETHEUS_VERSION`, `GRAFANA_VERSION`, `NODE_EXPORTER_VERSION`, dazu
-`CODER_ALLOW_SSH_DOWNGRADE` (nur `yes`, siehe [SECURITY.md](SECURITY.md)),
 `CODER_ALLOW_DOWNGRADE` (nur `yes`, erlaubt ein bewusstes Zurücksetzen einer
 Image-Version) und `ACME_CA` (eigener ACME-Endpunkt, z. B.
 Let's-Encrypt-Staging; leer = Caddys Standard).
@@ -254,7 +253,6 @@ existiert, weist er darauf hin, dass der erste Anmeldende Owner wird.
 | `/var/log/coder-backup.log` | Ausgabe des Backup-Crons | weekly, 8, compress |
 | `/var/log/coder-boot.log` | Boot-Gate je Reboot (`BOOT-GATE GRÜN/ROT`) | weekly, 8, compress |
 | `/var/log/coder-tls.log` | TLS-Ausstellungen je Woche | weekly, 8, compress |
-| `/var/log/coder-ssh-downgrade-*.before.log` / `.after.log` | ufw-Before/After bei Re-Run mit restriktiver SSH-Regel | keine |
 | Container-Logs | `json-file`, 10 MB × 3 pro Container | intern begrenzt |
 | `journalctl -u fail2ban`, `-u ssh`, `-u cron`, `-u unattended-upgrades` | Systemdienste | Debian-Defaults |
 
@@ -267,9 +265,7 @@ logger -t coder-backup -p user.info "..."     # wie die Skripte selbst loggen
 
 Die drei Setup-Logs werden über `/etc/logrotate.d/coder-backup` und
 `/etc/logrotate.d/coder-logs` wöchentlich rotiert; acht komprimierte
-Generationen bleiben erhalten. SSH-Downgrade-Protokolle haben keine eigene
-Rotation und sollten bei seltenen Änderungen manuell geprüft und entfernt
-werden.
+Generationen bleiben erhalten.
 
 ### Monitoring und Grafana
 

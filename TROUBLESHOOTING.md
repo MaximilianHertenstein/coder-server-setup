@@ -81,9 +81,9 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo sshd -T \| grep '^port '`, `sudo ufw status numbered`, `sudo ufw show added`; bei aktiver UFW zusätzlich `/var/log/coder-ssh-downgrade-*.before.log` |
-| **Erwartete Ursache** | `sshd -T` ist fehlgeschlagen, liefert keinen Port oder einen Port ungleich 22; oder eine engere SSH-Regel (z. B. `ALLOW 192.168.1.0/24`) existiert aktiv bzw. ist bei inaktiver UFW noch gespeichert. |
-| **Sichere Behebung** | Das Setup hat vor UFW-Policy-/Regeländerungen abgebrochen. Bei unbekanntem/falschem SSH-Port zuerst über einen funktionierenden Zugang den SSH-Port klären. Bei aktiver UFW: Regel prüfen; nur wenn die Beschränkung bewusst entfallen darf, den dokumentierten Bypass setzen: `sudo env CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh`, danach Before-/After-Log prüfen. Bei inaktiver UFW die gespeicherten Regeln (`ufw show added`) und Schulnetz-Regel erhalten; den Bypass nicht verwenden. |
+| **Diagnose** | `sudo sshd -T \| grep '^port '`, `sudo ufw status numbered`, `sudo ufw show added` |
+| **Erwartete Ursache** | `sshd -T` ist fehlgeschlagen, liefert keinen Port oder einen Port ungleich 22; oder `ufw status`/`ufw show added` ist nicht lesbar; bei inaktiver UFW zusätzlich eine gespeicherte SSH-Quellbeschränkung. |
+| **Sichere Behebung** | Das Setup hat vor jeder Firewall-Änderung abgebrochen. Bei unbekanntem/falschem SSH-Port zuerst über einen funktionierenden Zugang den SSH-Port klären, dann erneut ausführen. Bei inaktiver UFW die gespeicherten Regeln (`ufw show added`) und die Schulnetz-Regel prüfen und UFW anschließend bewusst aktivieren. Eine **aktive** quellbeschränkte SSH-Regel ist kein Abbruchgrund mehr: das Setup lässt sie stehen, meldet sie und setzt keine weltweite `limit 22/tcp`-Regel daneben; wer sie ändern will, tut das manuell (`sudo ufw status numbered`, `sudo ufw delete …`) – es gibt keinen Bypass-Parameter mehr. |
 
 ### A8. `Wenig Platte unter /opt/coder (< 1 GB)`
 
@@ -251,7 +251,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 |---|---|
 | **Diagnose** | `sudo ufw status verbose`, `grep IPV6 /etc/default/ufw` |
 | **Erwartete Ursache** | Lauf abgebrochen vor Schritt 4, oder Regeln wurden manuell verändert. |
-| **Sichere Behebung** | Setup erneut ausführen (Regeln werden idempotent gesetzt). Bei vorhandener restriktiver SSH-Regel siehe A7. **Nicht** einfach `ufw allow 22/tcp` setzen – das öffnet ohne Rate-Limit. |
+| **Sichere Behebung** | Setup erneut ausführen (Regeln werden idempotent gesetzt). Bei vorhandener restriktiver SSH-Regel zuerst `sudo ufw status numbered` prüfen – das Setup lässt sie stehen und setzt keine weltweite Regel daneben (siehe A7 und SECURITY.md). **Nicht** einfach `ufw allow 22/tcp` setzen – das öffnet ohne Rate-Limit. |
 
 ### E2. `[FEHLER] fail2ban läuft NICHT` / `Jail 'sshd' ist nicht aktiv`
 

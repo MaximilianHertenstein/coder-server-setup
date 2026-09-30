@@ -206,14 +206,17 @@ sudo /opt/coder/check-tls.sh
 | Aktivierung | `ufw --force enable` |
 | IPv6 | gleiche Policy für v4+v6, solange `IPV6=yes` in `/etc/default/ufw`; sonst WARN und nur v4 |
 
-**Re-Run-Schutz**: Findet das Setup beim erneuten Lauf eine
-restriktivere SSH-Regel (Quelle ≠ Anywhere), bricht es **vor** dem ersten
-`delete` ab und nennt den Bypass
-`sudo env CODER_ALLOW_SSH_DOWNGRADE=yes ./setup-coder.sh`. Nur exakt `yes`
-löst den Bypass aus; die vorgefundene Regel wird danach quellengetreu
-wiederhergestellt und per `grep` gegen das After-Log verifiziert, sonst
-Exit 1. Before/After liegen unter
-`/var/log/coder-ssh-downgrade-<zeitstempel>.{before,after}.log`.
+**Re-Run-Schutz**: Das Setup löscht keine SSH-Regel, die es nicht selbst
+angelegt hat. Findet es eine restriktivere SSH-Regel (Quelle ≠ Anywhere),
+lässt sie stehen, meldet sie und setzt daneben **keine** weltweite
+`limit 22/tcp`-Regel – ufw wertet beide parallel, die Beschränkung wäre
+dann wirkungslos. Steht schon eine weltweite 22-Regel neben der
+Beschränkung, wird auch das nur gemeldet; ihre Auflösung bleibt dem
+Operator überlassen (`sudo ufw status numbered`). Die einzige Änderung an
+einem Bestand ist die Umwandlung einer weltweiten `allow`- in eine
+`limit`-Regel, danach folgt ein erneuter `ufw status`: bleibt eine
+weltweite `ALLOW`-Zeile stehen, bricht das Setup mit `[FEHLER]` ab, statt
+still mit offenem SSH weiterzulaufen.
 Bei inaktiver UFW prüft das Setup zusätzlich `ufw show added`; findet es dort
 eine gespeicherte SSH-Quellbeschränkung, bricht es vor Policy- und Regel-
 Änderungen ab. Der Report `added` zeigt die gespeicherten UFW-Befehle auch,
@@ -235,13 +238,13 @@ kein Container) greifen ufw und fail2ban tatsächlich. Ein
 `DOCKER-USER`-Einbau ist eine offene Entscheidung (D-Firewall) und wurde
 bewusst nicht eingebaut.
 
-**Reihenfolge ist die Sicherheitsfunktion (A1)**: Im Bypass-Lauf steht
-zuerst die Wiederherstellung der vorgefundenen restriktiven Regel samt
-Verifikation gegen das After-Log, erst danach wird die weltweite
-`22/tcp LIMIT Anywhere` entfernt. Ein Abbruch dazwischen lässt die
-Beschränkung stehen; der schlimmste Fall ist der Ausgangszustand, nie ein
-neues Loch. Fehlt die Quelle im After-Log oder steht die weltweite Limit-
-Regel noch, bricht das Setup mit `[FEHLER]` ab.
+**Reihenfolge ist die Sicherheitsfunktion (A1)**: Gelöscht wird ausschließlich
+in der allow→limit-Umwandlung und nur die vorgefundene weltweite 22-Regel;
+eine Quellregel taucht nirgends als Löschziel auf. Nach dem Umwandeln liest
+das Setup den Status neu: bleibt eine weltweite `ALLOW`-Zeile stehen oder
+fehlt am Ende die rate-limitierte Regel, meldet `[FEHLER]` – der Lauf endet
+dann mit Fehlern statt still mit offenem SSH. Ein Abbruch vorher verändert
+keine 22-Regel, der Zustand bleibt also der Ausgangszustand.
 
 **fail2ban** – eigene Jails liegen im Drop-In
 `/etc/fail2ban/jail.d/10-coder-sshd.local` (B7), nicht in `jail.local`:

@@ -9,8 +9,45 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `413bf94` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `590f091` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – ufw-Runde: kein Löschen von SSH-Bestandsregeln, Bypass entfällt
+
+- **Befund:** Der B2-004-Block löschte beim Re-Run drei SSH-Regeln
+  (`allow OpenSSH`, `allow 22/tcp`, `allow from 10.16.0.0/12 …`) und setzte
+  sie danach neu – mit Bypass-Variable, Before-/After-Log und
+  Restore-Verifikation. Ein Abbruch zwischen Löschen und Wiederherstellen
+  ließ SSH ohne Regel bzw. ohne Beschränkung zurück; die Schulnetz-Regel
+  war zudem als hart kodiertes Löschziel im Skript. Eine vorgefundene
+  Quellbeschränkung brach den Lauf zusätzlich komplett ab, obwohl sie nicht
+  angefasst werden muss.
+- **Änderung:** Das Setup löscht keine SSH-Regel, die es nicht selbst
+  angelegt hat. Pfad B (Quellbeschränkung bei aktiver UFW): Warnung, keine
+  Änderung, kein Abbruch, keine weltweite `limit 22/tcp`-Regel daneben;
+  steht schon eine weltweite 22-Regel neben der Beschränkung, wird auch das
+  nur gemeldet. Einzige Bestandsänderung: Umwandlung einer weltweiten
+  `allow`- in eine `limit`-Regel (Debian-Default `ufw allow OpenSSH`), mit
+  erneutem `ufw status` und hartem `[FEHLER]`, wenn eine weltweite
+  `ALLOW`-Zeile stehen bleibt. Fehlt jede 22-Regel, wird
+  `ufw limit 22/tcp` gesetzt; eine vorhandene `limit`-Regel ist No-Op.
+  Entfernt: `CODER_ALLOW_SSH_DOWNGRADE`, Quellenextraktion/Restore,
+  Before-/After-Protokolle (`/var/log/coder-ssh-downgrade-*`), die
+  delete-Zeilen außerhalb der Umwandlung. Unverändert: sshd-Port-Preflight,
+  Status- und `show added`-Preflight (fail-closed), Pfad C (inaktiv ohne
+  gespeicherte Quellregel = Warnung, mit gespeichertem Bestand = Abbruch),
+  pfadabhängiger Abschlusscheck (jetzt gegen `UFW_RESTRICTED`).
+- **Geänderte Dateien:** `setup-coder.sh`,
+  `tests/t-b2-004-ufw-downgrade.sh` → `tests/t-b2-004-ufw-ssh-rules.sh`,
+  `OPERATIONS.md`, `README.md`, `SECURITY.md`, `TROUBLESHOOTING.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 10 Dateien in `tests/` grün
+  (306 PASS, 0 FAIL); `bash -n setup-coder.sh` und
+  `shellcheck -S warning setup-coder.sh` ohne Befund. Ein Lauf gegen den
+  Testhost wurde in dieser Runde nicht ausgeführt.
+- **Offene Punkte:** Sanierungslauf auf dem Testhost (unter den neuen Regeln
+  für 22-Regeln ein No-op), Ticket-Kürzel, Root-Lauf.
 
 ---
 
