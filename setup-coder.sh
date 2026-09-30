@@ -125,13 +125,13 @@ MANAGED_TMP=""
 setup_cleanup() {
   local rc=$?
   for _tmp in "${ENV_TMP}" "${ENV_TMP_GID}" "${MANAGED_TMP}"; do
-    [ -n "${_tmp}" ] && sudo -n rm -f -- "${_tmp}" 2>/dev/null || true
+    [ -n "${_tmp}" ] && rm -f -- "${_tmp}" 2>/dev/null || true
   done
   return "${rc}"
 }
 
-sudo mkdir -p /opt/coder
-sudo sh -c 'umask 077; : >> /opt/coder/.maintenance.lock; chown root:root /opt/coder/.maintenance.lock; chmod 600 /opt/coder/.maintenance.lock'
+mkdir -p /opt/coder
+sh -c 'umask 077; : >> /opt/coder/.maintenance.lock; chown root:root /opt/coder/.maintenance.lock; chmod 600 /opt/coder/.maintenance.lock'
 exec 8>>/opt/coder/.maintenance.lock
 if ! flock -w 300 8; then
   echo "Fehler: gemeinsamer Wartungs-Lock nach 300 s nicht erhalten; Setup abgebrochen (Exit 75)." >&2
@@ -206,7 +206,7 @@ fail() { echo "  [FEHLER] $1"; SUMMARY+=("[FEHLER] $1"); ERROR_COUNT=$((ERROR_CO
 check_container_running() {
   local name="$1"
   local label="$2"
-  if [ "$(sudo docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || echo false)" = "true" ]; then
+  if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || echo false)" = "true" ]; then
     ok "${label} läuft"
   else
     fail "${label} läuft NICHT – prüfen mit: sudo docker logs ${name}"
@@ -225,21 +225,21 @@ check_container_running() {
 HASHSTORE="/opt/coder/.generated-hashes"
 note_drift() {
   local file="$1" label="$2" cur="" exp=""
-  cur=$(sudo sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
-  exp=$(sudo awk -v f="${file}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
+  cur=$(sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
+  exp=$(awk -v f="${file}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
   if [ -n "${cur}" ] && [ -n "${exp}" ] && [ "${cur}" != "${exp}" ]; then
     warn "Drift in ${label} (${file}): weicht von letzter Setup-Generation ab – wird deterministisch regeneriert, Hand-Anpassung geht verloren"
   fi
 }
 remember_hash() {
   local file="$1" h=""
-  h=$(sudo sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
+  h=$(sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
   [ -n "${h}" ] || return 0
-  sudo touch "${HASHSTORE}" 2>/dev/null || true
-  sudo awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | sudo tee "${HASHSTORE}.tmp" > /dev/null || true
-  echo "${h}  ${file}" | sudo tee -a "${HASHSTORE}.tmp" > /dev/null
-  sudo mv "${HASHSTORE}.tmp" "${HASHSTORE}"
-  sudo chmod 600 "${HASHSTORE}"
+  touch "${HASHSTORE}" 2>/dev/null || true
+  awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | tee "${HASHSTORE}.tmp" > /dev/null || true
+  echo "${h}  ${file}" | tee -a "${HASHSTORE}.tmp" > /dev/null
+  mv "${HASHSTORE}.tmp" "${HASHSTORE}"
+  chmod 600 "${HASHSTORE}"
 }
 # B7: Gegenstück, wenn das Skript eine Datei selbst wieder entfernt (alte
 # jail.local). Ohne diesen Aufruf bliebe der Hash der gelöschten Datei im
@@ -247,9 +247,9 @@ remember_hash() {
 forget_hash() {
   local file="$1"
   [ -f "${HASHSTORE}" ] || return 0
-  sudo awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | sudo tee "${HASHSTORE}.tmp" > /dev/null || true
-  sudo mv "${HASHSTORE}.tmp" "${HASHSTORE}"
-  sudo chmod 600 "${HASHSTORE}"
+  awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | tee "${HASHSTORE}.tmp" > /dev/null || true
+  mv "${HASHSTORE}.tmp" "${HASHSTORE}"
+  chmod 600 "${HASHSTORE}"
 }
 
 # Atomar eine vom Setup verwaltete Datei schreiben. Die temporäre Datei liegt
@@ -262,31 +262,31 @@ write_managed() { # $1=Pfad $2=Modus $3=Drift-Label; Inhalt via stdin
   local file="$1" mode="$2" label="$3" dir base
   dir="${file%/*}"
   base="${file##*/}"
-  MANAGED_TMP=$(sudo mktemp "${dir}/.${base}.tmp.XXXXXX")
-  if ! sudo tee "${MANAGED_TMP}" > /dev/null; then
-    sudo rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
+  MANAGED_TMP=$(mktemp "${dir}/.${base}.tmp.XXXXXX")
+  if ! tee "${MANAGED_TMP}" > /dev/null; then
+    rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
     MANAGED_TMP=""
     return 1
   fi
   case "${file}" in
     *.sh)
-      if ! sudo bash -n "${MANAGED_TMP}"; then
+      if ! bash -n "${MANAGED_TMP}"; then
         echo "Fehler: generiertes Skript ist syntaktisch ungültig: ${file}; vorhandene Datei bleibt erhalten." >&2
-        sudo rm -f -- "${MANAGED_TMP}"
+        rm -f -- "${MANAGED_TMP}"
         MANAGED_TMP=""
         return 1
       fi
       ;;
   esac
-  sudo chmod "${mode}" "${MANAGED_TMP}"
+  chmod "${mode}" "${MANAGED_TMP}"
   if [ "${label}" != "-" ]; then
     note_drift "${file}" "${label}"
   fi
-  if sudo cmp -s -- "${MANAGED_TMP}" "${file}"; then
-    sudo chmod "${mode}" "${file}"
-    sudo rm -f -- "${MANAGED_TMP}"
+  if cmp -s -- "${MANAGED_TMP}" "${file}"; then
+    chmod "${mode}" "${file}"
+    rm -f -- "${MANAGED_TMP}"
   else
-    sudo mv -f -- "${MANAGED_TMP}" "${file}"
+    mv -f -- "${MANAGED_TMP}" "${file}"
   fi
   MANAGED_TMP=""
   if [ "${label}" != "-" ]; then
@@ -323,7 +323,7 @@ echo "############################################################"
 if command -v timedatectl >/dev/null 2>&1; then
   _tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
   if [ "${_tz}" != "Europe/Berlin" ]; then
-    if sudo timedatectl set-timezone Europe/Berlin; then
+    if timedatectl set-timezone Europe/Berlin; then
       echo "Zeitzone '${_tz:-unbekannt}' -> Europe/Berlin gesetzt (C1): Backup 01:00 und Reboot 03:00 laufen in lokaler Zeit."
     else
       echo "Hinweis: Zeitzone konnte nicht gesetzt werden – Cron-Zeiten gelten in '${_tz:-unbekannt}' (C1)." >&2
@@ -335,26 +335,26 @@ fi
 # modifizierter Konfigurationsdatei (z.B. nach operatorseitiger Anpassung)
 # auf Nachfragen warten und das Skript hängen; "--force-confold" behält in
 # dem Fall die vorhandene Datei, statt eine neue Version zu überschreiben.
-# sudo leitet die Variable nicht weiter, daher "sudo env ...".
+# Die Variable gilt nur für diesen einen Aufruf (env, kein export).
 apt_install() {
-  retry3 sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  retry3 env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     -o Dpkg::Options::=--force-confold "$@"
 }
-retry3 sudo apt-get update
+retry3 apt-get update
 apt_install ca-certificates curl gnupg openssl cron logrotate iproute2
-sudo install -m 0755 -d /etc/apt/keyrings
+install -m 0755 -d /etc/apt/keyrings
 # --batch --yes: existiert die Datei bereits (jeder zweite Lauf), fragt gpg
 # beim Überschreiben per /dev/tty nach – ohne TTY (ssh ohne -t, nohup) kommt
 # "cannot open '/dev/tty'" mit exit 2 und set -e beendet den Lauf in Schritt 1.
-curl -fsSL --retry 3 --retry-delay 5 https://download.docker.com/linux/debian/gpg | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
+curl -fsSL --retry 3 --retry-delay 5 https://download.docker.com/linux/debian/gpg | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
 
 # K1/F-018 (billige Hälfte, kein Digest-Pin): Fingerprint des Docker-GPG-Keys
 # gegen den öffentlich dokumentierten Wert prüfen
 # (https://docs.docker.com/engine/install/debian/).
 # Bei Fehlschlag: Fingerprint dort neu abgleichen (Rotation), nicht einfach
 # übernehmen.
-DOCKER_FPR=$(sudo gpg --show-keys --with-colons /etc/apt/keyrings/docker.gpg 2>/dev/null | awk -F: '/^fpr:/ {print $10; exit}' || true)
+DOCKER_FPR=$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.gpg 2>/dev/null | awk -F: '/^fpr:/ {print $10; exit}' || true)
 if [ "${DOCKER_FPR}" != "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ]; then
   echo "Fehler: Docker-GPG-Fingerprint unerwartet ('${DOCKER_FPR:-leer}'). Mögliche Rotation – Fingerprint unter https://docs.docker.com/engine/install/debian/ abgleichen, dann Setup erneut laufen lassen." >&2
   exit 1
@@ -363,9 +363,9 @@ fi
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-retry3 sudo apt-get update
+retry3 apt-get update
 apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 # C2: Loggrößen begrenzen. Ohne Limit wächst das json-file-Logging der
@@ -380,7 +380,7 @@ apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-co
 DAEMON_JSON="/etc/docker/daemon.json"
 DOCKER_DAEMON_CHANGED=0
 if [ -f "${DAEMON_JSON}" ]; then
-  if sudo grep -q '"max-size"' "${DAEMON_JSON}" && sudo grep -q '"max-file"' "${DAEMON_JSON}"; then
+  if grep -q '"max-size"' "${DAEMON_JSON}" && grep -q '"max-file"' "${DAEMON_JSON}"; then
     echo "daemon.json vorhanden und enthält bereits max-size/max-file – wird nicht überschrieben."
   else
     echo "Fehler: ${DAEMON_JSON} existiert, enthält aber kein Log-Limit (max-size/max-file)." >&2
@@ -391,8 +391,8 @@ if [ -f "${DAEMON_JSON}" ]; then
     exit 1
   fi
 else
-  sudo install -d -m 0755 /etc/docker
-  sudo tee "${DAEMON_JSON}" > /dev/null <<'EOF'
+  install -d -m 0755 /etc/docker
+  tee "${DAEMON_JSON}" > /dev/null <<'EOF'
 {
   "log-driver": "json-file",
   "log-opts": {
@@ -401,7 +401,7 @@ else
   }
 }
 EOF
-  sudo chmod 644 "${DAEMON_JSON}"
+  chmod 644 "${DAEMON_JSON}"
   DOCKER_DAEMON_CHANGED=1
 fi
 # Die Optionen liest der Daemon nur beim Start. Neu starten nur, wenn WIR die
@@ -411,10 +411,10 @@ fi
 # dann erst beim nächsten geplanten Neustart, wird das hier ausdrücklich
 # gewarnt, statt es still hinzunehmen.
 if [ "${DOCKER_DAEMON_CHANGED}" -eq 1 ]; then
-  if [ -n "$(sudo docker compose -f /opt/coder/docker-compose.yml ps -q 2>/dev/null || true)" ]; then
+  if [ -n "$(docker compose -f /opt/coder/docker-compose.yml ps -q 2>/dev/null || true)" ]; then
     warn "daemon.json geschrieben, aber eigene Container laufen – Docker wird NICHT neu gestartet. Log-Limit greift erst nach 'sudo systemctl restart docker' (C2)"
   else
-    sudo systemctl restart docker
+    systemctl restart docker
     echo "Docker-Daemon neu gestartet – Log-Limit (10m x 3) gilt ab jetzt."
   fi
 fi
@@ -436,8 +436,8 @@ fi
 echo "############################################################"
 echo "# [2/10] Verzeichnis und Konfigurationsdateien anlegen"
 echo "############################################################"
-sudo mkdir -p /opt/coder/backups
-sudo chmod 700 /opt/coder/backups
+mkdir -p /opt/coder/backups
+chmod 700 /opt/coder/backups
 cd /opt/coder
 
 # Geheimnisse nur beim ersten Lauf erzeugen, damit ein erneutes Ausführen
@@ -446,8 +446,8 @@ cd /opt/coder
 # .env auf Vollständigkeit prüfen. Eine unvollständige .env wird NIEMALS
 # still neu gewürfelt (das würde die DB-Anmeldung zerstören) – stattdessen
 # Abbruch mit Reparaturanleitung. P-010: "umask 077" in dieser Shell wirkt
-# nicht durch "sudo tee" hindurch (tee läuft als root mit root-umask),
-# daher "sudo install -m 600" vor dem Schreiben.
+# nicht durch "tee" hindurch (tee läuft mit root-umask),
+# daher "install -m 600" vor dem Schreiben.
 if ! [[ "${DOCKER_GID:-}" =~ ^[0-9]+$ ]]; then
   echo "Fehler: docker-GID konnte nicht ermittelt werden (getent group docker lieferte '${DOCKER_GID:-leer}'). .env wird nicht angefasst." >&2
   exit 1
@@ -458,7 +458,7 @@ if [ ! -f /opt/coder/.env ]; then
   # coder_postgres_data die alten behält – Coder käme nicht mehr an die DB
   # (Crashloop) und nichts würde warnen. Also vor dem Würfeln prüfen, ob die
   # Datenbank-Volume schon existiert; im Zweifel abbrechen statt zerstören.
-  DOCKER_VOLUMES="$(sudo docker volume ls -q 2>/dev/null || true)"
+  DOCKER_VOLUMES="$(docker volume ls -q 2>/dev/null || true)"
   if grep -qx 'coder_postgres_data' <<< "${DOCKER_VOLUMES}"; then
     echo "Fehler: /opt/coder/.env fehlt, aber das Volume coder_postgres_data existiert." >&2
     echo "Abbruch ohne Änderung – neu gewürfelte Passwörter würden die bestehende" >&2
@@ -474,19 +474,19 @@ if [ ! -f /opt/coder/.env ]; then
   POSTGRES_PASSWORD=$(openssl rand -hex 24)
   GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)
 
-  ENV_TMP=$(sudo mktemp /opt/coder/.env.tmp.XXXXXX)
+  ENV_TMP=$(mktemp /opt/coder/.env.tmp.XXXXXX)
   # 600 VOR dem Schreiben festlegen: tee kürzt nur, erzeugt nicht neu,
   # der Modus bleibt also 600 – kein 644-Fenster (P-010).
-  sudo install -m 600 /dev/null "$ENV_TMP"
-  sudo chown root:root "$ENV_TMP"
-  sudo tee "$ENV_TMP" > /dev/null <<EOF
+  install -m 600 /dev/null "$ENV_TMP"
+  chown root:root "$ENV_TMP"
+  tee "$ENV_TMP" > /dev/null <<EOF
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
 DOCKER_GID=${DOCKER_GID}
 EOF
-  sudo chown root:root "$ENV_TMP"
-  sudo chmod 600 "$ENV_TMP"
-  sudo mv "$ENV_TMP" /opt/coder/.env
+  chown root:root "$ENV_TMP"
+  chmod 600 "$ENV_TMP"
+  mv "$ENV_TMP" /opt/coder/.env
   ENV_TMP=""
 
   echo "------------------------------------------------------------"
@@ -494,15 +494,15 @@ EOF
   echo "Bei Bedarf gezielt abrufen: sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env"
   echo "Das interne Postgres-Passwort bleibt ebenfalls in /opt/coder/.env."
   echo "------------------------------------------------------------"
-elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
-  && sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env \
-  && sudo grep -qE '^DOCKER_GID=[0-9]+$' /opt/coder/.env; then
+elif grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
+  && grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env \
+  && grep -qE '^DOCKER_GID=[0-9]+$' /opt/coder/.env; then
   echo "/opt/coder/.env existiert bereits und ist vollständig – wird nicht überschrieben."
   # B2-003: Newline/NUL im .env-Wert hart abweisen, bevor der Werteparitäts-
   # Check grün meldet. Ein Hand-Edit kann den Wert über eine zweite Zeile
   # fortsetzen; grep/cut und docker compose lesen dann nur die erste Zeile.
-  if [ "$(sudo sh -c 'LC_ALL=C tr -d -c "\000" < /opt/coder/.env | wc -c')" -ne 0 ] \
-    || sudo grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' /opt/coder/.env; then
+  if [ "$(sh -c 'LC_ALL=C tr -d -c "\000" < /opt/coder/.env | wc -c')" -ne 0 ] \
+    || grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' /opt/coder/.env; then
     echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
     echo "Reparatur: sudo /opt/coder/reset-passwords.sh setzt Postgres und Grafana neu auf Hex, danach Setup erneut." >&2
     exit 1
@@ -510,8 +510,8 @@ elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   # B-014/B2-003: Hex-Validierung bleibt fail-closed (auch im Setup-Re-Run),
   # Nicht-Hex-Werte brechen ALTER USER/Connection-URL. reset-passwords.sh
   # setzt Datenbank, Grafana und .env gemeinsam auf neu erzeugte Hex-Werte.
-  if ! sudo grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
-    || ! sudo grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
+  if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
+    || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
     echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter." >&2
     echo "Reparatur: sudo /opt/coder/reset-passwords.sh setzt Postgres und Grafana neu auf Hex, danach Setup erneut." >&2
     exit 1
@@ -528,21 +528,21 @@ fi
 # atomar), Guard gegen leere/nicht-numerische GID (oben bereits geprüft),
 # Recreate nur bei tatsächlichem Diff und nur wenn der Coder-Container schon
 # existiert – sonst erledigt Schritt 3 das Erstellen mit der neuen GID.
-OLD_DOCKER_GID=$(sudo grep '^DOCKER_GID=' /opt/coder/.env | cut -d= -f2-)
+OLD_DOCKER_GID=$(grep '^DOCKER_GID=' /opt/coder/.env | cut -d= -f2-)
 if [ "${OLD_DOCKER_GID}" != "${DOCKER_GID}" ]; then
   echo "docker-GID hat sich geändert (${OLD_DOCKER_GID} -> ${DOCKER_GID}), aktualisiere /opt/coder/.env ..."
-  ENV_TMP_GID=$(sudo mktemp /opt/coder/.env.tmp.XXXXXX)
-  sudo install -m 600 /dev/null "$ENV_TMP_GID"
-  sudo chown root:root "$ENV_TMP_GID"
-  sudo grep -v '^DOCKER_GID=' /opt/coder/.env | sudo tee "$ENV_TMP_GID" > /dev/null
-  echo "DOCKER_GID=${DOCKER_GID}" | sudo tee -a "$ENV_TMP_GID" > /dev/null
-  sudo chown root:root "$ENV_TMP_GID"
-  sudo chmod 600 "$ENV_TMP_GID"
-  sudo mv "$ENV_TMP_GID" /opt/coder/.env
+  ENV_TMP_GID=$(mktemp /opt/coder/.env.tmp.XXXXXX)
+  install -m 600 /dev/null "$ENV_TMP_GID"
+  chown root:root "$ENV_TMP_GID"
+  grep -v '^DOCKER_GID=' /opt/coder/.env | tee "$ENV_TMP_GID" > /dev/null
+  echo "DOCKER_GID=${DOCKER_GID}" | tee -a "$ENV_TMP_GID" > /dev/null
+  chown root:root "$ENV_TMP_GID"
+  chmod 600 "$ENV_TMP_GID"
+  mv "$ENV_TMP_GID" /opt/coder/.env
   ENV_TMP_GID=""
-  if [ "$(sudo docker inspect -f '{{.State.Running}}' coder 2>/dev/null || echo false)" = "true" ]; then
+  if [ "$(docker inspect -f '{{.State.Running}}' coder 2>/dev/null || echo false)" = "true" ]; then
     echo "Erstelle Coder-Container mit neuer GID neu ..."
-    sudo docker compose up -d --no-deps coder
+    docker compose up -d --no-deps coder
   else
     echo "Coder-Container läuft noch nicht – Schritt 3 erstellt ihn mit der neuen GID."
   fi
@@ -776,8 +776,8 @@ fi
 # Konfiguration nur bei tatsächlicher Änderung neu (blinder Neustart =
 # TLS-Unterbrechung bei jedem Re-Run). Pfad unter /opt/coder/caddy, weil die
 # compose-Datei das Verzeichnis statt der Einzeldatei bindet.
-CADDY_BEFORE=$(sudo sha256sum /opt/coder/caddy/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
-CADDY_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
+CADDY_BEFORE=$(sha256sum /opt/coder/caddy/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
+CADDY_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
 # A2: Domain einmalig ablegen. boot-check.sh und update.sh haben sie vorher
 # per awk aus der Caddyfile gezogen und dabei auf die @askOK-Matcherzeile
 # gegriffen (enthält "*" und "{2,}", Zeile beginnt mit Leerzeichen -> $1 leer):
@@ -788,7 +788,7 @@ write_managed "/opt/coder/domain" 644 - <<EOF
 ${DOMAIN_CODER}
 EOF
 # write_managed legt Verzeichnisse nicht an (Vorbild: rules/grafana unten).
-sudo install -d -m 0755 /opt/coder/caddy
+install -d -m 0755 /opt/coder/caddy
 write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" <<EOF
 {
 ${CADDY_ACME_CA}
@@ -833,18 +833,18 @@ EOF
 # geändert hat (SIGHUP braucht kein --web.enable-lifecycle); ein blinder
 # Neustart bei jedem Re-Run würde Messlücken reißen (P-025-Prinzip).
 prom_cfg_sig() {
-  { sudo sha256sum /opt/coder/prometheus/prometheus.yml /opt/coder/prometheus/rules/coder-alerts.yml 2>/dev/null || true; } | sha256sum | cut -d' ' -f1
+  { sha256sum /opt/coder/prometheus/prometheus.yml /opt/coder/prometheus/rules/coder-alerts.yml 2>/dev/null || true; } | sha256sum | cut -d' ' -f1
 }
 PROM_CFG_BEFORE=$(prom_cfg_sig)
 # Grafana liest Provisioning-Dateien ebenfalls nur beim Start.
-GRAFANA_PROV_BEFORE=$(sudo sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml 2>/dev/null | cut -d' ' -f1 || true)
+GRAFANA_PROV_BEFORE=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml 2>/dev/null | cut -d' ' -f1 || true)
 # Lauf-Status VOR dem Schreiben (gleiche Idee wie CADDY_WAS_RUNNING): nur ein
 # Container, der schon mit der alten Datei lief, braucht danach einen Neustart.
-PROM_CFG_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-prometheus 2>/dev/null || echo false)
-GRAFANA_WAS_RUNNING=$(sudo docker inspect -f '{{.State.Running}}' coder-grafana 2>/dev/null || echo false)
+PROM_CFG_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-prometheus 2>/dev/null || echo false)
+GRAFANA_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-grafana 2>/dev/null || echo false)
 
 # prometheus.yml (komplettes Verzeichnis gemountet, siehe compose)
-sudo install -d -m 0755 /opt/coder/prometheus
+install -d -m 0755 /opt/coder/prometheus
 write_managed "/opt/coder/prometheus/prometheus.yml" 644 "prometheus.yml" <<'EOF'
 global:
   scrape_interval: 15s
@@ -867,7 +867,7 @@ EOF
 # Kein "absent()"-Zweig für Regel 3: fehlende Metrik = seit Aufsetzen noch
 # kein Backup gelaufen, das meldet ohnehin das erste erfolgreiche Laufdatum;
 # ehrlicher als ein Alarm direkt nach der Installation.
-sudo install -d -m 0755 /opt/coder/prometheus/rules
+install -d -m 0755 /opt/coder/prometheus/rules
 write_managed "/opt/coder/prometheus/rules/coder-alerts.yml" 644 - <<'EOF'
 groups:
   - name: coder
@@ -922,7 +922,7 @@ migrate_away() {
   local old="$1" new="$2"
   [ -e "${old}" ] || return 0
   if cmp -s "${old}" "${new}" 2>/dev/null; then
-    sudo rm -f "${old}"
+    rm -f "${old}"
     forget_hash "${old}"
     echo "  Alte Einzeldatei entfernt (inhaltsgleich): ${old}"
   else
@@ -934,12 +934,12 @@ migrate_away /opt/coder/prometheus.yml /opt/coder/prometheus/prometheus.yml
 migrate_away /opt/coder/rules/coder-alerts.yml /opt/coder/prometheus/rules/coder-alerts.yml
 # Leer hinterbliebenes Alt-Verzeichnis entfernen; sonst bleiben (z. B. bei
 # manuellen Zusatzdateien) Teile von /opt/coder/rules liegen.
-sudo rmdir /opt/coder/rules 2>/dev/null || true
+rmdir /opt/coder/rules 2>/dev/null || true
 
 # C3: Datasource für Grafana provisioning statt manuelle UI-Konfigurations-
 # Eintragung. Betrifft nur den Beginn der Container-Welt; ob provisioniert
 # wurde, sieht der erste Start in den Grafana-Logs.
-sudo install -d -m 0755 /opt/coder/grafana/provisioning/datasources
+install -d -m 0755 /opt/coder/grafana/provisioning/datasources
 write_managed "/opt/coder/grafana/provisioning/datasources/prometheus.yml" 644 - <<'EOF'
 apiVersion: 1
 
@@ -956,10 +956,10 @@ EOF
 # C1: Zielverzeichnis der Backup-Metrik. MUSS 0755 sein: backup.sh läuft mit
 # "umask 077" und würde das Verzeichnis sonst anlegen, wenn es fehlt – dann
 # könnte node-exporter die Datei nicht lesen und die Metrik bliebe tot.
-sudo install -d -m 0755 /opt/coder/node-textfile
+install -d -m 0755 /opt/coder/node-textfile
 
 PROM_CFG_AFTER=$(prom_cfg_sig)
-GRAFANA_PROV_AFTER=$(sudo sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml | cut -d' ' -f1)
+GRAFANA_PROV_AFTER=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml | cut -d' ' -f1)
 
 echo "############################################################"
 echo "# [3/10] Docker-Stack starten"
@@ -970,7 +970,7 @@ cd /opt/coder
 # Platte endeten bisher in set -e-Tod mit Roh-Fehlermeldung. Daemon-Fail ist
 # hart (früh + klar statt spät in Schritt 3); Platte WARN ab 1 GB (grober
 # Hinweis, kein Ersatz für D-Monitoring).
-if ! sudo docker info > /dev/null 2>&1; then
+if ! docker info > /dev/null 2>&1; then
   echo "Fehler: Docker-Daemon antwortet nicht (docker info). Erst Daemon heilen, dann Setup erneut." >&2
   exit 1
 fi
@@ -988,8 +988,8 @@ fi
 # IP-Gleichheit.
 PORT_CHECK="80/tcp 443/tcp 443/udp 9090/tcp 9100/tcp 3001/tcp"
 OWN_PORT_KEYS=""
-for _cid in $(sudo docker compose ps -q 2>/dev/null || true); do
-  _cname="$(sudo docker inspect --format '{{.Name}}' "${_cid}" 2>/dev/null || true)"
+for _cid in $(docker compose ps -q 2>/dev/null || true); do
+  _cname="$(docker inspect --format '{{.Name}}' "${_cid}" 2>/dev/null || true)"
   _cname="${_cname#/}"
   case "${_cname}" in
     coder-*) ;;
@@ -1000,7 +1000,7 @@ for _cid in $(sudo docker compose ps -q 2>/dev/null || true); do
   # Zeile "containerport|hostip|hostport" mit sauberen Werten; der alte Weg
   # zerlegte den von docker/Go gerenderten PortBindings-Rohstring per awk und
   # brauchte dafür eigene Regeln gegen die verschiedenen Renderings.
-  _pb="$(sudo docker inspect --format '{{range $p,$b := .HostConfig.PortBindings}}{{range $b}}{{printf "%s|%s|%s\n" $p .HostIp .HostPort}}{{end}}{{end}}' "${_cid}" 2>/dev/null || true)"
+  _pb="$(docker inspect --format '{{range $p,$b := .HostConfig.PortBindings}}{{range $b}}{{printf "%s|%s|%s\n" $p .HostIp .HostPort}}{{end}}{{end}}' "${_cid}" 2>/dev/null || true)"
   [ -n "${_pb}" ] || continue
   # Erstes Feld ist der CONTAINER-Port (trägt das Protokoll), drittes Feld der
   # HOST-Port – nur der zählt für den Abgleich mit ss. Leere Host-IP =
@@ -1019,9 +1019,9 @@ done
 
 for _pr in tcp udp; do
   if [ "${_pr}" = "tcp" ]; then
-    _ss_out="$(sudo ss -tlnp 2>/dev/null || true)"
+    _ss_out="$(ss -tlnp 2>/dev/null || true)"
   else
-    _ss_out="$(sudo ss -ulnp 2>/dev/null || true)"
+    _ss_out="$(ss -ulnp 2>/dev/null || true)"
   fi
   while IFS= read -r _line; do
     [ -n "${_line}" ] || continue
@@ -1065,14 +1065,14 @@ fi
 # Validiert YAML-Syntax und Variablen-Interpolation, bevor überhaupt etwas
 # gestartet wird - ein Fehler hier ist deutlich klarer als ein kryptischer
 # Fehler mitten in "docker compose up".
-sudo docker compose config --quiet
+docker compose config --quiet
 
 # A6: erst alle Images ziehen, dann starten. Vor B-013 gab es hier kein Pull –
 # bei fehlendem/falschem Tag (z.B. coder/coder:2.36.6 ohne "v") scheiterte erst
 # "up -d" mitten im Lauf. Ein eigener Manifest-Preflight ist überflüssig:
 # "docker compose pull" nennt den fehlenden Tag im Fehlerfall ohnehin und
 # bricht vor jedem Container-Start ab.
-retry3 sudo docker compose pull
+retry3 docker compose pull
 
 # Erstlauf-Validierung mit genau den Images, die anschließend gestartet werden.
 # Caddy lädt Zertifikate erst zur Laufzeit; validate prüft die Caddyfile, ohne
@@ -1081,18 +1081,18 @@ echo "Validiere Caddyfile, Prometheus-Konfiguration und Alarmregeln vor dem Star
 # caddy:2.10 hat KEINEN ENTRYPOINT (nur CMD ["caddy","run",...]) – ohne
 # --entrypoint würde "validate" selbst als Binary ausgeführt und scheitert
 # mit 'executable file not found in $PATH'.
-sudo docker run --rm --entrypoint caddy -v /opt/coder/caddy:/etc/caddy:ro "caddy:${CADDY_VERSION}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
-sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check config /etc/prometheus/prometheus.yml
-sudo docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check rules /etc/prometheus/rules/coder-alerts.yml
+docker run --rm --entrypoint caddy -v /opt/coder/caddy:/etc/caddy:ro "caddy:${CADDY_VERSION}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
+docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check config /etc/prometheus/prometheus.yml
+docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check rules /etc/prometheus/rules/coder-alerts.yml
 
-sudo docker compose up -d
+docker compose up -d
 
 # A7/A1: wirksam gewesene Versionen erst JETZT persistieren – genau ab dem
 # Moment, in dem die neuen Images laufen (ein Abbruch vor "up -d" darf keine
 # nie gelaufene Version als wirksam eintragen, ein Abbruch DANACH darf keine
 # bereits migrierte DB ungeschützt lassen). "install -d" sichert den Pfad,
 # falls dieser Block je früher stünde (A1: tee legt keine Verzeichnisse an).
-sudo install -d -m 0755 /opt/coder
+install -d -m 0755 /opt/coder
 write_managed "${VERSIONS_FILE}" 644 - <<VERSIONSEOF
 # Von setup-coder.sh erzeugt – wirksam gewesene Versionen des letzten Laufs.
 # Kein Geheimnis, daher 644 (unten ohne sudo lesbar).
@@ -1115,11 +1115,11 @@ VERSIONSEOF
 # lässt sich VORHER per "caddy validate" erkennen – im Fehlerfall behält
 # Caddy bewusst die alte, laufende Konfiguration (kein Ausfall durch einen
 # kaputten Schreibfehler). "restart" ist damit bewusst KEIN Fallback mehr.
-CADDY_AFTER=$(sudo sha256sum /opt/coder/caddy/Caddyfile | cut -d' ' -f1)
+CADDY_AFTER=$(sha256sum /opt/coder/caddy/Caddyfile | cut -d' ' -f1)
 if [ "${CADDY_WAS_RUNNING}" = "true" ] && [ "${CADDY_BEFORE}" != "${CADDY_AFTER}" ]; then
   echo "Caddyfile geändert – prüfe und lade die Konfiguration neu (reload statt restart) ..."
-  if sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
-    if sudo docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
+  if docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
+    if docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
       ok "Caddy hat die neue Konfiguration per reload übernommen (ohne Verbindungsabbruch) (C4)"
     else
       warn "caddy reload fehlgeschlagen – Caddy läuft weiter mit der ALTEN Konfiguration. Manuell prüfen: sudo docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
@@ -1141,11 +1141,11 @@ restart_on_cfg_change() { # $1=hash_vorher $2=hash_nachher $3=lief_vorher $4=con
     echo "$5 unverändert – kein Neustart."
   elif [ "$3" != "true" ]; then
     echo "$5 neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
-  elif [ "$4" = "coder-prometheus" ] && sudo docker kill -s HUP "$4" > /dev/null 2>&1; then
+  elif [ "$4" = "coder-prometheus" ] && docker kill -s HUP "$4" > /dev/null 2>&1; then
     ok "$5 geändert – Prometheus hat Konfiguration und Alarmregeln per SIGHUP neu geladen"
   elif [ "$4" = "coder-prometheus" ]; then
     warn "Prometheus konnte SIGHUP nicht laden – Konfiguration manuell prüfen: sudo docker logs $4"
-  elif sudo docker restart "$4" > /dev/null 2>&1; then
+  elif docker restart "$4" > /dev/null 2>&1; then
     ok "$5 geändert – Container $4 neu gestartet, damit Grafana-Provisioning greift (C3)"
   else
     warn "Neustart von $4 fehlgeschlagen – Konfiguration manuell nachziehen: sudo docker restart $4 (C3)"
@@ -1154,7 +1154,7 @@ restart_on_cfg_change() { # $1=hash_vorher $2=hash_nachher $3=lief_vorher $4=con
 restart_on_cfg_change "${PROM_CFG_BEFORE}" "${PROM_CFG_AFTER}" "${PROM_CFG_WAS_RUNNING}" coder-prometheus "Prometheus-Regeln"
 restart_on_cfg_change "${GRAFANA_PROV_BEFORE}" "${GRAFANA_PROV_AFTER}" "${GRAFANA_WAS_RUNNING}" coder-grafana "Grafana-Datasource"
 
-sudo docker compose ps
+docker compose ps
 
 echo "############################################################"
 echo "# [4/10] Firewall (ufw) + SSH-Schutz einrichten"
@@ -1165,7 +1165,7 @@ apt_install ufw fail2ban
 # anderen Port, würde "ufw enable" den eigenen Zugang abschneiden – deshalb
 # VOR der ersten Firewall-Änderung prüfen und hart abbrechen, statt sich
 # auszusperren (Zugriff dann nur noch über Konsolenzugang des Hosts).
-if ! SSHD_EFFECTIVE_CONFIG="$(sudo sshd -T 2>/dev/null)"; then
+if ! SSHD_EFFECTIVE_CONFIG="$(sshd -T 2>/dev/null)"; then
   fail "sshd-Konfiguration konnte nicht gelesen werden – Abbruch vor jeder Firewall-Änderung."
   exit 1
 fi
@@ -1190,11 +1190,11 @@ fi
 # nicht ersetzt: dieses Skript löscht keine SSH-Regel, die es nicht selbst
 # angelegt hat. Einzige erlaubte Änderung an einer bestehenden 22-Regel ist
 # die Umwandlung einer weltweiten "allow"-Regel in "limit" (weiter unten).
-if ! UFW_OUT="$(sudo ufw status numbered 2>/dev/null)"; then
+if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then
   fail "ufw-Status nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
 fi
-if ! UFW_ADDED_OUT="$(sudo ufw show added 2>/dev/null)"; then
+if ! UFW_ADDED_OUT="$(ufw show added 2>/dev/null)"; then
   fail "gespeicherte ufw-Regeln nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
 fi
@@ -1247,8 +1247,8 @@ fi
 # B-007: explizite Default-Policy (idempotent – gleicher Wert zweimal ist No-Op).
 # Erst nach SSH-Port- und Bestandsregel-Preflight ändern, damit ein Abbruch bei
 # inaktiver UFW oder unerwartetem Regelbestand die bestehende Policy unberührt lässt.
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
+ufw default deny incoming
+ufw default allow outgoing
 
 # Regelanwendung. Grundregel: dieses Skript löscht keine SSH-Regel, die es
 # nicht selbst angelegt hat. Genau ein Fall ändert etwas an einem Bestand:
@@ -1268,17 +1268,17 @@ if [ -n "${UFW_RESTRICTED}" ]; then
   :
 elif [ -n "${UFW_WORLDWIDE_ALLOW}" ]; then
   if grep -q 'OpenSSH' <<< "${UFW_WORLDWIDE_ALLOW}"; then
-    sudo ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
+    ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
   fi
   if grep -Eq '(^|[[:space:]])22(/tcp)?([[:space:]]|\(v6\)|$)' <<< "${UFW_WORLDWIDE_ALLOW}"; then
-    sudo ufw --force delete allow 22/tcp > /dev/null 2>&1 || true
-    sudo ufw --force delete allow 22 > /dev/null 2>&1 || true
+    ufw --force delete allow 22/tcp > /dev/null 2>&1 || true
+    ufw --force delete allow 22 > /dev/null 2>&1 || true
   fi
   # Verifikation statt Hoffnung: bleibt eine weltweite ALLOW-Zeile stehen
   # (andere Regel-Schreibweise, Nebenregel), hart abbrechen, damit der Zustand
   # nicht stillschweigend offen bleibt. `ufw limit` meldet vorhandene Regeln
   # als "Skipping adding existing rule" und ist damit idempotent.
-  UFW_LEFTOVER="$(sudo ufw status numbered 2>/dev/null || true)"
+  UFW_LEFTOVER="$(ufw status numbered 2>/dev/null || true)"
   UFW_LEFTOVER="$(printf '%s\n' "${UFW_LEFTOVER}" \
     | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)' \
     | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' \
@@ -1287,7 +1287,7 @@ elif [ -n "${UFW_WORLDWIDE_ALLOW}" ]; then
     fail "weltweite 'allow'-SSH-Regel steht nach der Umwandlung noch (${UFW_LEFTOVER}) – manuell prüfen: sudo ufw status numbered"
     exit 1
   fi
-  sudo ufw limit 22/tcp
+  ufw limit 22/tcp
   ok "weltweite 'allow'-SSH-Regel entfernt und durch 'limit 22/tcp' ersetzt"
 elif [ -z "${UFW_WORLDWIDE_LIMIT}" ]; then
   # Normaler Pfad (keine vorgefundene Beschränkung, keine passende Regel):
@@ -1297,7 +1297,7 @@ elif [ -z "${UFW_WORLDWIDE_LIMIT}" ]; then
   # (eingebautes Rate-Limiting). fail2ban ist die zweite, schärfere
   # Verteidigungslinie: es sperrt IPs nach mehreren fehlgeschlagenen
   # Login-Versuchen komplett.
-  sudo ufw limit 22/tcp
+  ufw limit 22/tcp
 fi
 
 # backend=systemd explizit setzen: Debians fail2ban-Paket hat python3-systemd
@@ -1320,13 +1320,13 @@ fi
 # P-025: Hash VOR dem Schreiben merken (Vergleich weiter unten entscheidet
 # zwischen reload/restart/start – blinder restart verwirft aktive Bans).
 JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"
-JAIL_BEFORE=$(sudo sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
+JAIL_BEFORE=$(sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
 JAIL_CHANGED=0
 if [ -f /etc/fail2ban/jail.local ]; then
-  _jl_cur=$(sudo sha256sum /etc/fail2ban/jail.local 2>/dev/null | cut -d' ' -f1 || true)
-  _jl_exp=$(sudo awk -v f="/etc/fail2ban/jail.local" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
+  _jl_cur=$(sha256sum /etc/fail2ban/jail.local 2>/dev/null | cut -d' ' -f1 || true)
+  _jl_exp=$(awk -v f="/etc/fail2ban/jail.local" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
   if [ -n "${_jl_exp}" ] && [ "${_jl_cur}" = "${_jl_exp}" ]; then
-    sudo rm -f /etc/fail2ban/jail.local
+    rm -f /etc/fail2ban/jail.local
     forget_hash "/etc/fail2ban/jail.local"
     JAIL_CHANGED=1
     echo "Alte setup-eigene /etc/fail2ban/jail.local entfernt (Hash identisch), Einstellungen liegen jetzt in ${JAIL_DROPIN}."
@@ -1334,7 +1334,7 @@ if [ -f /etc/fail2ban/jail.local ]; then
     warn "Vorgefunden: /etc/fail2ban/jail.local weicht von der letzten Setup-Generation ab – enthält also Hand-Änderungen. Sie bleibt erhalten UND hat Vorrang vor ${JAIL_DROPIN} (Lese-Reihenfolge). Eigene Jails dort prüfen, sonst greifen maxretry/bantime evtl. nicht wie dokumentiert."
   fi
 fi
-sudo mkdir -p /etc/fail2ban/jail.d
+mkdir -p /etc/fail2ban/jail.d
 write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<'EOF'
 [sshd]
 enabled  = true
@@ -1350,14 +1350,14 @@ EOF
 # (start ist No-Op, wenn aktiv – kein Ban-Verlust). JAIL_CHANGED=1, weil das
 # Entfernen der alten jail.local die wirksame Konfiguration ändert, ohne dass
 # sich der Drop-In-Hash dabei verändert.
-sudo systemctl enable fail2ban
-JAIL_AFTER=$(sudo sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
+systemctl enable fail2ban
+JAIL_AFTER=$(sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
 if systemctl is-active --quiet fail2ban && [ "${JAIL_BEFORE}" = "${JAIL_AFTER}" ] && [ "${JAIL_CHANGED}" -eq 0 ]; then
   echo "fail2ban läuft bereits mit unveränderter ${JAIL_DROPIN} – kein Reload (Bans bleiben erhalten, P-025)."
 elif systemctl is-active --quiet fail2ban; then
-  sudo systemctl reload fail2ban || sudo systemctl restart fail2ban
+  systemctl reload fail2ban || systemctl restart fail2ban
 else
-  sudo systemctl start fail2ban
+  systemctl start fail2ban
 fi
 
 # Hinweis: Docker trägt für per "ports:" veröffentlichte Container-Ports
@@ -1378,18 +1378,18 @@ fi
 # B-007/IPv6: ufw wendet dieselbe Policy auf v4+v6 an, solange IPV6=yes in
 # /etc/default/ufw (Debian-Default). Pfad deklariert: Dual-Stack mit gleicher
 # Policy; bei "IPV6=no" gilt nur v4 (dann WARN unten). Kein stilles Umschalten.
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw allow 443/udp
-sudo ufw --force enable
-sudo ufw status verbose
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw allow 443/udp
+ufw --force enable
+ufw status verbose
 if grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
   ok "ufw-IPv6-Pfad deklariert: IPV6=yes (gleiche Policy für v4+v6)"
 else
   warn "ufw-IPv6-Pfad unklar (kein IPV6=yes in /etc/default/ufw) – Dual-Stack-Annahme gilt nicht, prüfen mit: grep IPV6 /etc/default/ufw"
 fi
 
-UFW_STATUS="$(sudo ufw status)"
+UFW_STATUS="$(ufw status)"
 if grep -q "Status: active" <<< "${UFW_STATUS}"; then
   ok "ufw ist aktiv"
 else
@@ -1423,13 +1423,13 @@ fi
 # als Fehler gemeldet wird.
 F2B_READY=false
 for _ in $(seq 1 15); do
-  if sudo fail2ban-client ping > /dev/null 2>&1; then
+  if fail2ban-client ping > /dev/null 2>&1; then
     F2B_READY=true
     break
   fi
   sleep 1
 done
-if [ "${F2B_READY}" = "true" ] && sudo fail2ban-client status sshd > /dev/null 2>&1; then
+if [ "${F2B_READY}" = "true" ] && fail2ban-client status sshd > /dev/null 2>&1; then
   ok "fail2ban-Jail 'sshd' ist aktiv"
 else
   fail "fail2ban-Client oder Jail 'sshd' antwortet nach 15 s nicht – prüfen mit: sudo fail2ban-client status"
@@ -1441,7 +1441,7 @@ fi
 # Filter auch die Session-Prozesse sieht, ist ausgeliefert und 2026-09-29
 # gemessen: journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd +
 # _COMM=sshd-session, 63/63 Fehlversuche hatten _COMM=sshd-session.
-F2B_STATUS="$(sudo fail2ban-client status sshd 2>/dev/null || true)"
+F2B_STATUS="$(fail2ban-client status sshd 2>/dev/null || true)"
 F2B_FAILED="$(printf '%s\n' "${F2B_STATUS}" | awk -F: '/Total failed/ {gsub(/[ \t]/,"",$2); print $2; exit}')"
 if [ -n "${F2B_FAILED}" ] && [ "${F2B_FAILED}" -eq "${F2B_FAILED}" ] 2>/dev/null; then
   ok "fail2ban zählt SSH-Fehlversuche (Total failed: ${F2B_FAILED})"
@@ -1475,13 +1475,13 @@ fi
 echo "############################################################"
 echo "# [5/10] Automatische Sicherheitsupdates einrichten"
 echo "############################################################"
-retry3 sudo apt-get update
+retry3 apt-get update
 apt_install unattended-upgrades
 
 # Nicht-interaktive Aktivierung statt "dpkg-reconfigure -plow" (Dialog).
 # Schreibt /etc/apt/apt.conf.d/20auto-upgrades.
-echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | sudo debconf-set-selections
-sudo dpkg-reconfigure -f noninteractive unattended-upgrades
+echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections
+dpkg-reconfigure -f noninteractive unattended-upgrades
 
 # Eigene Datei statt Änderung an der von dpkg verwalteten 50unattended-upgrades
 # (die würde beim nächsten Paket-Update sonst zu einem Konflikt-Dialog führen).
@@ -1502,10 +1502,10 @@ EOF
 # unangetastet und werden zur manuellen Pruefung gemeldet.
 LEGACY_DOCKER_UU="/etc/apt/apt.conf.d/52-coder-docker-upgrades"
 if [ -f "${LEGACY_DOCKER_UU}" ]; then
-  LEGACY_STORED_HASH="$(sudo awk -v f="${LEGACY_DOCKER_UU}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null | tail -n1 || true)"
-  LEGACY_FILE_HASH="$(sudo sha256sum "${LEGACY_DOCKER_UU}" 2>/dev/null | awk '{print $1}' || true)"
+  LEGACY_STORED_HASH="$(awk -v f="${LEGACY_DOCKER_UU}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null | tail -n1 || true)"
+  LEGACY_FILE_HASH="$(sha256sum "${LEGACY_DOCKER_UU}" 2>/dev/null | awk '{print $1}' || true)"
   if [ -n "${LEGACY_STORED_HASH}" ] && [ "${LEGACY_STORED_HASH}" = "${LEGACY_FILE_HASH}" ]; then
-    sudo rm -- "${LEGACY_DOCKER_UU}"
+    rm -- "${LEGACY_DOCKER_UU}"
     forget_hash "${LEGACY_DOCKER_UU}"
     ok "Verwaltete Docker-Origin fuer unattended-upgrades entfernt; Docker wird manuell aktualisiert"
   else
@@ -1632,7 +1632,7 @@ EOF
 write_managed "/etc/cron.d/coder-bootcheck" 644 "coder-bootcheck-Cron" <<'EOF'
 @reboot root /opt/coder/boot-check.sh
 EOF
-if [ -x /opt/coder/boot-check.sh ] && sudo bash -n /opt/coder/boot-check.sh \
+if [ -x /opt/coder/boot-check.sh ] && bash -n /opt/coder/boot-check.sh \
   && grep -qxF '@reboot root /opt/coder/boot-check.sh' /etc/cron.d/coder-bootcheck; then
   ok "Lesendes Boot-Gate installiert (/opt/coder/boot-check.sh, @reboot)"
 else
@@ -1685,7 +1685,7 @@ EOF
 write_managed "/etc/cron.d/coder-tlscheck" 644 "coder-tlscheck-Cron" <<'EOF'
 30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1
 EOF
-if [ -x /opt/coder/check-tls.sh ] && sudo bash -n /opt/coder/check-tls.sh \
+if [ -x /opt/coder/check-tls.sh ] && bash -n /opt/coder/check-tls.sh \
   && grep -qxF '30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1' /etc/cron.d/coder-tlscheck; then
   ok "TLS-Erkennung installiert (/opt/coder/check-tls.sh, wöchentlich Mo 06:30)"
 else
@@ -1694,7 +1694,7 @@ fi
 # TlsCheckStale würde sonst ab dem ersten Scrape feuern: die Metrik
 # coder_tls_check_last_success_timestamp_seconds existiert erst nach dem
 # ersten Cron-Lauf (Mo 06:30), und absent() meldet den Check als veraltet.
-if sudo /opt/coder/check-tls.sh; then
+if /opt/coder/check-tls.sh; then
   ok "TLS-Check einmalig ausgeführt (Erfolgs-Timestamp gesetzt, kein TlsCheckStale bis Montag 06:30)"
 else
   warn "einmaliger TLS-Check fehlgeschlagen – TlsCheckStale kann bis zum ersten Montag-Lauf feuern (/var/log/coder-tls.log)"
@@ -1876,12 +1876,12 @@ EOF
 # Root-Crontab existiert (dieses Skript nutzte anfangs "crontab -e"): erst
 # entfernen, sonst würde das Backup doppelt laufen (einmal von dort, einmal
 # von der neuen /etc/cron.d/-Datei unten).
-ROOT_CRONTAB="$(sudo crontab -l 2>/dev/null || true)"
+ROOT_CRONTAB="$(crontab -l 2>/dev/null || true)"
 if grep -qF "/opt/coder/backup.sh" <<< "${ROOT_CRONTAB}"; then
   # "|| true": grep -v liefert Exit 1, wenn nach dem Filtern keine Zeile
   # übrig ist (F-001: einzige Alt-Zeile). Ohne das bricht das Setup unter
   # "set -euo pipefail" hier lautlos ab.
-  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/backup.sh" || true) | sudo crontab -
+  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/backup.sh" || true) | crontab -
 fi
 
 # F-009(a): ohne Cron-Daemon läuft nie ein Backup, das Setup meldete trotzdem
@@ -1889,7 +1889,7 @@ fi
 # geordneten Eintraege aktiviert.
 # "enable --now": enable ist idempotent, start ist No-Op wenn aktiv (kein
 # Ban-Verlust wie bei fail2ban-restart, P-025 betrifft nur fail2ban).
-sudo systemctl enable --now cron
+systemctl enable --now cron
 
 # /etc/cron.d/ statt "crontab -l | ... | crontab -": eine einzelne,
 # nachvollziehbare Datei statt fragilem Parsen/Überschreiben der gesamten
@@ -1941,7 +1941,7 @@ if systemctl is-active --quiet cron; then
 else
   fail "Cron-Daemon läuft NICHT – Backups würden still nie laufen"
 fi
-if sudo logrotate -d /etc/logrotate.conf >/dev/null 2>&1; then
+if logrotate -d /etc/logrotate.conf >/dev/null 2>&1; then
   ok "Logrotate-Konfiguration ist syntaktisch gültig"
 else
   fail "Logrotate-Konfiguration ist ungültig – prüfen mit: sudo logrotate -d /etc/logrotate.conf"
@@ -1955,10 +1955,10 @@ echo "Teste Backup einmal direkt..."
 # diese Schleife hier zusätzlich bis zu 60 Sekunden, statt einen falschen
 # Alarm zu melden.
 for _ in $(seq 1 30); do
-  [ "$(sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
+  [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
   sleep 2
 done
-if sudo env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
+if env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
   LATEST_BACKUP=$(ls -t /opt/coder/backups/coder_*.sql.gz 2>/dev/null | head -n1 || true)
   if [ -n "${LATEST_BACKUP:-}" ]; then
     ok "Testlauf erfolgreich, Backup-Datei angelegt: ${LATEST_BACKUP}"
@@ -1975,8 +1975,8 @@ fi
 # SCRIPT_SRC_DIR wurde oben vor dem cd nach /opt/coder berechnet, hier nicht
 # neu berechnen – relativ zu /opt/coder fände sie RESTORE.md nie.
 if [ -f "${SCRIPT_SRC_DIR}/RESTORE.md" ]; then
-  sudo cp -a "${SCRIPT_SRC_DIR}/RESTORE.md" /opt/coder/RESTORE.md
-  sudo chmod 644 /opt/coder/RESTORE.md
+  cp -a "${SCRIPT_SRC_DIR}/RESTORE.md" /opt/coder/RESTORE.md
+  chmod 644 /opt/coder/RESTORE.md
   ok "Runbook nach /opt/coder/RESTORE.md abgelegt"
 else
   warn "RESTORE.md liegt nicht neben setup-coder.sh – kein Runbook auf Server abgelegt"
@@ -1985,8 +1985,8 @@ fi
 # ssh-harden.sh – ohne diesen Kopierschritt war der Verweis im Repo aufgelöst,
 # auf dem Server aber tot (Dangling).
 if [ -f "${SCRIPT_SRC_DIR}/ssh-harden.sh" ]; then
-  sudo cp -a "${SCRIPT_SRC_DIR}/ssh-harden.sh" /opt/coder/ssh-harden.sh
-  sudo chmod 755 /opt/coder/ssh-harden.sh
+  cp -a "${SCRIPT_SRC_DIR}/ssh-harden.sh" /opt/coder/ssh-harden.sh
+  chmod 755 /opt/coder/ssh-harden.sh
   ok "ssh-harden.sh nach /opt/coder/ssh-harden.sh abgelegt"
 else
   warn "ssh-harden.sh liegt nicht neben setup-coder.sh – Verweis im Abschlusscheck zeigt ins Leere"
@@ -2002,9 +2002,8 @@ write_managed "/opt/coder/update.sh" 755 "update.sh" <<'EOF'
 # /healthz-200 via Caddy-TLS-Smoke, Timeout 60 s wegen On-Demand-Erstverzögerung
 # 5-30 s) + ehrlicher Rollback-Kommentar (Garantie nur für exakt Gepinnte).
 # Keine app/db-Aufspaltung (D-Update-Split, siehe Report).
-# sudo-Konvention: dieses Skript läuft als root (sudo-Aufruf/Cron) und nutzt
-# bewusst direkt "docker"; setup-coder.sh nutzt "sudo docker", weil es als
-# Nicht-root läuft. Kein funktionaler Unterschied, nur Aufrufkontext.
+# Aufrufkontext: dieses Skript und setup-coder.sh laufen beide als root
+# (sudo-Aufruf bzw. Cron) und nutzen deshalb direkt "docker".
 set -euo pipefail
 cd /opt/coder
 
@@ -2115,24 +2114,24 @@ EOF
 
 # Falls ein früherer Lauf einen automatischen Update-Cronjob angelegt hat:
 # entfernen, weil Updates jetzt bewusst manuell laufen sollen.
-ROOT_CRONTAB="$(sudo crontab -l 2>/dev/null || true)"
+ROOT_CRONTAB="$(crontab -l 2>/dev/null || true)"
 if grep -qF "/opt/coder/update.sh" <<< "${ROOT_CRONTAB}"; then
   # Siehe F-001 oben: "|| true" verhindert stillen Abbruch, wenn die
   # Update-Zeile die einzige Crontab-Zeile war.
-  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/update.sh" || true) | sudo crontab -
+  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/update.sh" || true) | crontab -
   warn "Vorhandenen automatischen Update-Cronjob entfernt – Updates laufen jetzt nur noch manuell"
 else
   ok "Kein automatischer Update-Cronjob vorhanden (wie gewünscht)"
 fi
 
-if [ -x /opt/coder/update.sh ] && sudo bash -n /opt/coder/update.sh; then
+if [ -x /opt/coder/update.sh ] && bash -n /opt/coder/update.sh; then
   ok "update.sh ist vorhanden und ausführbar – manuell starten mit: sudo /opt/coder/update.sh"
 else
   fail "update.sh fehlt oder ist nicht ausführbar"
 fi
 
 echo "Aktuelle Crontab:"
-sudo crontab -l 2>/dev/null || echo "(keine Einträge - Backup läuft über /etc/cron.d/coder-backup, nicht über die Crontab)"
+crontab -l 2>/dev/null || echo "(keine Einträge - Backup läuft über /etc/cron.d/coder-backup, nicht über die Crontab)"
 
 echo "############################################################"
 echo "# [8/10] Passwort-Reset-Skript bereitstellen"
@@ -2333,7 +2332,7 @@ echo "      (Env-Hash) – Fenster dafür einplanen, kurzfristige DB-Unterbrechu
 echo "------------------------------------------------------------"
 EOF
 
-if [ -x /opt/coder/reset-passwords.sh ] && sudo bash -n /opt/coder/reset-passwords.sh; then
+if [ -x /opt/coder/reset-passwords.sh ] && bash -n /opt/coder/reset-passwords.sh; then
   ok "reset-passwords.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-passwords.sh"
 else
   fail "reset-passwords.sh fehlt oder ist nicht ausführbar"
@@ -2541,7 +2540,7 @@ echo "  docker ps -a  # von Hand aufräumen, sonst Namens-/Port-Konflikte"
 echo "------------------------------------------------------------"
 EOF
 
-if [ -x /opt/coder/reset-coder.sh ] && sudo bash -n /opt/coder/reset-coder.sh; then
+if [ -x /opt/coder/reset-coder.sh ] && bash -n /opt/coder/reset-coder.sh; then
   ok "reset-coder.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-coder.sh"
 else
   fail "reset-coder.sh fehlt oder ist nicht ausführbar"
@@ -2571,7 +2570,7 @@ check_container_running "coder-grafana" "Grafana-Container"
 # Probe (kein Tool im Coder-Image vorausgesetzt): GroupAdd des Containers muss
 # die aktuelle docker-GID enthalten, sonst "Permission denied" auf
 # /var/run/docker.sock und keine Workspace-Provisionierung.
-if CODER_GROUPS=$(sudo docker inspect --format '{{json .HostConfig.GroupAdd}}' coder 2>/dev/null); then
+if CODER_GROUPS=$(docker inspect --format '{{json .HostConfig.GroupAdd}}' coder 2>/dev/null); then
   if [ -n "${DOCKER_GID:-}" ] && grep -q "${DOCKER_GID}" <<< "${CODER_GROUPS}"; then
     ok "Coder-Container hat docker-GID ${DOCKER_GID} (Socket-Zugriff konfiguriert)"
   else
@@ -2655,7 +2654,7 @@ fi
 # würde bei Re-Runs auf einem schon benutzten Server nichts ändern (können).
 # Geprüft wird nur, ob ein menschliches Konto existiert; "prebuilds" und
 # künftige Systemkonten sind per COALESCE-Ausschluss keine Treffer.
-HUMAN_USERS="$(sudo docker exec coder-postgres psql -U coder -d coder -tAc \
+HUMAN_USERS="$(docker exec coder-postgres psql -U coder -d coder -tAc \
   "SELECT count(*) FROM users AS u WHERE NOT COALESCE((to_jsonb(u)->>'is_system')::boolean,false) AND NOT COALESCE((to_jsonb(u)->>'is_service_account')::boolean,false) AND NOT COALESCE((to_jsonb(u)->>'deleted')::boolean,false)" 2>/dev/null || true)"
 # B1: optional die Erstanlage DURCH DAS SETUP, solange kein Konto existiert –
 # sonst würde der erste zufällige Aufrufer der Anmeldeseite Owner. Nur aktiv,
@@ -2667,7 +2666,7 @@ if [ "${HUMAN_USERS}" = "0" ] \
   && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
   && [ -n "${CODER_FIRST_USER_PASSWORD:-}" ]; then
   if FIRST_OUT=$(printf '%s\n' "${CODER_FIRST_USER_PASSWORD}" | \
-      sudo docker exec -i \
+      docker exec -i \
         -e CODER_CONFIG_DIR=/tmp/coder-firstuser \
         -e CODER_FIRST_USER_EMAIL="${CODER_FIRST_USER_EMAIL}" \
         -e CODER_FIRST_USER_USERNAME="${CODER_FIRST_USER_USERNAME}" \
@@ -2682,7 +2681,7 @@ if [ "${HUMAN_USERS}" = "0" ] \
   # Das CLI-Session-Token liegt in diesem isolierten Config-Verzeichnis.
   # Nach Erfolg wie Fehler entfernen; der bestehende Coder-Config-Ordner bleibt
   # unberuehrt.
-  sudo docker exec coder rm -rf -- /tmp/coder-firstuser >/dev/null 2>&1 || \
+  docker exec coder rm -rf -- /tmp/coder-firstuser >/dev/null 2>&1 || \
     warn "Temporäres Coder-Login-Verzeichnis konnte nicht entfernt werden; manuell löschen: docker exec coder rm -rf /tmp/coder-firstuser"
 fi
 case "${HUMAN_USERS}" in
@@ -2724,10 +2723,10 @@ echo "Grafana weiterhin nur per SSH-Tunnel: 127.0.0.1:3001"
 PW_LOGIN_SINCE_FILE="/opt/coder/.ssh-password-login-since"
 if ! (grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"); then
   if [ ! -f "${PW_LOGIN_SINCE_FILE}" ]; then
-    date -Is | sudo tee "${PW_LOGIN_SINCE_FILE}" > /dev/null
-    sudo chmod 644 "${PW_LOGIN_SINCE_FILE}"
+    date -Is | tee "${PW_LOGIN_SINCE_FILE}" > /dev/null
+    chmod 644 "${PW_LOGIN_SINCE_FILE}"
   fi
-  PW_LOGIN_SINCE="$(sudo cat "${PW_LOGIN_SINCE_FILE}" 2>/dev/null || echo unbekannt)"
+  PW_LOGIN_SINCE="$(cat "${PW_LOGIN_SINCE_FILE}" 2>/dev/null || echo unbekannt)"
   echo ""
   echo "!! SSH-Passwort-Login ist aktiv. Auf dem Schulserver muss die Netzgrenze"
   echo "!! SSH/22 ausschließlich auf das Schulnetz beschränken; dieses Skript"

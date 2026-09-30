@@ -63,14 +63,14 @@ while IFS= read -r P; do
 done <<< "${EXPECTED}"
 
 HELPER_NOTE=$(nl_idx 'note_drift "${file}" "${label}"')
-HELPER_MV=$(nl_idx 'sudo mv -f -- "${MANAGED_TMP}" "${file}"')
+HELPER_MV=$(nl_idx 'mv -f -- "${MANAGED_TMP}" "${file}"')
 HELPER_HASH=$(nl_idx 'remember_hash "${file}"')
 if [ -n "${HELPER_NOTE}" ] && [ -n "${HELPER_MV}" ] && [ -n "${HELPER_HASH}" ] && [ "${HELPER_NOTE}" -lt "${HELPER_MV}" ] && [ "${HELPER_MV}" -lt "${HELPER_HASH}" ]; then
   pass "Drift-Prüfung vor atomarem Austausch, Hash danach"
 else
   fail "write_managed-Reihenfolge für Drift, Austausch und Hash ist falsch"
 fi
-grep -qF 'sudo mktemp "${dir}/.${base}.tmp.XXXXXX"' "${SETUP}" && pass "Temp-Datei wird im Zielverzeichnis angelegt" || fail "Temp-Datei liegt nicht im Zielverzeichnis"
+grep -qF 'mktemp "${dir}/.${base}.tmp.XXXXXX"' "${SETUP}" && pass "Temp-Datei wird im Zielverzeichnis angelegt" || fail "Temp-Datei liegt nicht im Zielverzeichnis"
 
 # Hash-Commits sollen zentral im Schreibhelfer bleiben.
 if grep -q '^remember_hash "' "${SETUP}"; then
@@ -174,7 +174,7 @@ N_ENTRIES=$(grep -c . "${HASHSTORE}")
 [ "${N_ENTRIES}" -eq 1 ] && pass "Hashstore genau 1 Eintrag" || fail "Hashstore-Eintraege=${N_ENTRIES}"
 
 # --- 4. B7: Drop-In statt jail.local, hash-guarded Entfernung ---------------
-if grep -qF 'sudo tee /etc/fail2ban/jail.local ' "${SETUP}"; then
+if grep -qF 'tee /etc/fail2ban/jail.local ' "${SETUP}"; then
   fail "B7: eigene jail.local wird noch beschrieben (Ueberschreibt Operator-Jails)"
 else
   pass "B7: jail.local wird nicht mehr beschrieben"

@@ -31,7 +31,7 @@ n="$(grep -cF 'chown root:root /opt/coder/.maintenance.lock' "${SETUP}" || true)
 
 line() { grep -nF "$1" "${SETUP}" | head -n1 | cut -d: -f1; }
 LG="$(line "${GUARD}")"
-for after in 'exec 8>>/opt/coder/.maintenance.lock' 'sudo mkdir -p /opt/coder' 'apt_install ca-certificates curl'; do
+for after in 'exec 8>>/opt/coder/.maintenance.lock' 'mkdir -p /opt/coder' 'apt_install ca-certificates curl'; do
   LA="$(line "${after}")"
   [ -n "${LG}" ] && [ -n "${LA}" ] && [ "${LG}" -lt "${LA}" ] \
     && pass "Guard steht vor der ersten Aenderung (Z.${LG} < Z.${LA}: ${after})" \

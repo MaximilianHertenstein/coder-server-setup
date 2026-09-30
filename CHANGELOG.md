@@ -9,8 +9,42 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `d5d398e` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `c752cef` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Root-Lauf, Teil 2: sudo-Präfixe aus dem Setup-Code entfernt
+
+- **Befund:** Nach dem Root-Guard (Teil 1) lief das Setup als root und
+  lieferte dennoch jeder Aktion ein `sudo` voran – 160 ausführbare Zeilen
+  plus die beiden `sudo tee`-Aufrufe vor ihren Heredocs. Neben dem
+  Rauschen war das auch sachlich falsch: `sudo` brauchte das Skript nur,
+  weil es als Nicht-root lief.
+- **Änderung:** alle ausführbaren `sudo`-Präfixe entfernt, inklusive der
+  Sonderfälle `sudo -n rm` (jetzt `rm -f`) und `sudo env A=B …`
+  (jetzt `env A=B …`). Bewusst **nicht** entfernt: `sudo` in
+  kommentierenden Meldungen, die dem Betreiber sagen, was er in seiner
+  Shell auszuführen hat (`Prüfen mit: sudo ufw status …`, `Aufruf: sudo
+  /opt/coder/reset-passwords.sh` …), `sudo` in Kommentaren und in den
+  erzeugten Wartungsskripten. Drei Kommentare, die das alte Verhalten
+  begründeten, sind auf den neuen Stand gebracht: der `env`-Kommentar bei
+  `apt_install`, der P-010-Kommentar zur `install -m 600`-Sicherung und
+  die sudo-Konvention im erzeugten `update.sh`.
+- **Tests angepasst:** die String-Anker in `t-b2-004` (Gate, Check-Start,
+  drei Delete-Zeilen, tee-Zählung), `t-b2-007` (mv/mktemp-Helfer, die
+  Verbotene-jail.local-Zeile), `t-b2-008` (`ss -tlnp`/`-ulnp`) und
+  `t-root-guard` (Guard-Reihenfolge) zeigen jetzt auf den Code ohne
+  `sudo`; die Test-`sudo`-Shims bleiben als Netz drin, `t-b2-009` ist
+  unberührt (prüft RESTORE.md, das `sudo` nach wie vor enthält).
+- **Geänderte Dateien:** `setup-coder.sh`, `tests/t-b2-004-ufw-ssh-rules.sh`,
+  `tests/t-b2-007-drift-hash.sh`, `tests/t-b2-008-port-preflight.sh`,
+  `tests/t-root-guard.sh`.
+- **Teststand (tatsächlich ausgeführt):** alle 11 Dateien in `tests/` grün
+  (318 PASS, 0 FAIL); `bash -n setup-coder.sh` und
+  `shellcheck -S warning setup-coder.sh` ohne Befund. Nicht geprüft:
+  der Lauf als root auf dem Testhost (offener Punkt).
+- **Offene Punkte:** Testhost-Lauf als root unter Teil 1+2.
 
 ---
 

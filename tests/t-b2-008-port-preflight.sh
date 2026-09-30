@@ -239,8 +239,8 @@ N="$(grep -c '^WARN' "${WARNFILE}" || true)"
 # --- (7) Struktur -----------------------------------------------------------
 grep -qF 'PORT_CHECK="80/tcp 443/tcp 443/udp 9090/tcp 9100/tcp 3001/tcp"' "${SETUP}" \
   && pass "PORT_CHECK vollstaendig (alle 6 Paare)" || fail "PORT_CHECK unvollstaendig"
-grep -qF 'sudo ss -tlnp' "${SETUP}" && pass "TCP-Vorpruefung per ss -tlnp" || fail "ss -tlnp fehlt"
-grep -qF 'sudo ss -ulnp' "${SETUP}" && pass "UDP-Vorpruefung per ss -ulnp" || fail "ss -ulnp fehlt"
+grep -qF 'ss -tlnp' "${SETUP}" && pass "TCP-Vorpruefung per ss -tlnp" || fail "ss -tlnp fehlt"
+grep -qF 'ss -ulnp' "${SETUP}" && pass "UDP-Vorpruefung per ss -ulnp" || fail "ss -ulnp fehlt"
 grep -qF 'range $p,$b := .HostConfig.PortBindings' "${SETUP}" \
   && pass "eigene Bindings aus dem docker-eigenen Range-Template (D2)" || fail "PortBindings-Inspect fehlt"
 if grep -qF 'invalid IP' "${SETUP}"; then

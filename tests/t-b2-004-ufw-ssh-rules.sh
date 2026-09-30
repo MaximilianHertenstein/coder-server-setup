@@ -39,11 +39,11 @@ RE_INACTIVE="$(sed -n "s/.*grep -qi '\(Status[^']*\)'.*/\1/p" "${SETUP}" | head 
 # Beide Anker muessen EINDEUTIG sein: "ufw status numbered" steht auch im
 # SSH-Port-Preflight, und ein "bis zur ersten fi" wuerde schon am
 # Status-Block enden – daher feste Bereiche bis zum naechsten Kommentaranker.
-GATE_ANCHOR='if ! UFW_OUT="$(sudo ufw status numbered 2>/dev/null)"; then'
+GATE_ANCHOR='if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then'
 GATE_END='# B-007: explizite Default-Policy'
 APPLY_START='# Regelanwendung. Grundregel'
 APPLY_END='# backend=systemd explizit setzen'
-CHECK_START='UFW_STATUS="$(sudo ufw status)"'
+CHECK_START='UFW_STATUS="$(ufw status)"'
 CHECK_END='# A4: Beim ersten Start kann systemd'
 
 extract() {  # $1=Startanker $2=Endeanker $3=Ausgabedatei
@@ -331,12 +331,12 @@ grep -qF 'Re-Run weitet SSH auf weltweit+limit aus' "${SETUP}" \
 
 # Delete-Zeilen existieren nur in der allow->limit-Umwandlung (Extrakt):
 # drei Schreibweisen derselben Regel (OpenSSH-Profil, 22/tcp, 22), sonst nirgends.
-DEL_ALL="$(grep -cF 'sudo ufw --force delete' "${SETUP}" || true)"
-DEL_APPLY="$(grep -cF 'sudo ufw --force delete' "${WORK}/apply.sh" || true)"
+DEL_ALL="$(grep -cF 'ufw --force delete' "${SETUP}" || true)"
+DEL_APPLY="$(grep -cF 'ufw --force delete' "${WORK}/apply.sh" || true)"
 [ "${DEL_ALL}" -eq 3 ] && [ "${DEL_APPLY}" -eq 3 ] \
   && pass "genau die drei Delete-Zeilen der Umwandlung, keine ausserhalb (Anzahl=${DEL_ALL})" \
   || fail "Delete-Zeilen ausserhalb der Umwandlung: gesamt=${DEL_ALL} im Block=${DEL_APPLY}"
-grep -qF 'sudo ufw --force delete limit' "${SETUP}" \
+grep -qF 'ufw --force delete limit' "${SETUP}" \
   && fail "limit-Regel wird noch geloescht" || pass "limit-Regel wird nicht geloescht"
 grep -qF 'quellbeschränkte SSH-Regel bleibt unangetastet' "${WORK}/gate.sh" \
   && pass "Gate meldet unangetastete Beschraenkung" \
@@ -347,14 +347,14 @@ grep -qF 'if [ -n "${UFW_RESTRICTED}" ]; then' "${SETUP}" \
 grep -qF "grep -E '(22/tcp|OpenSSH)[[:space:]]+(LIMIT|ALLOW)'" "${SETUP}" \
   && pass "Abschlusscheck filtert SSH-Zeilen (22/tcp|OpenSSH)" \
   || fail "SSH-Zeilenfilter im Abschlusscheck fehlt"
-LC="$(grep -nF 'UFW_OUT="$(sudo ufw status numbered' "${SETUP}" | cut -d: -f1 || true)"
+LC="$(grep -nF 'UFW_OUT="$(ufw status numbered' "${SETUP}" | cut -d: -f1 || true)"
 LI="$(grep -nF "grep -qi 'Status:" "${SETUP}" | cut -d: -f1 || true)"
 LB="$(grep -nF 'elif [ -n "${UFW_RESTRICTED}" ]' "${SETUP}" | cut -d: -f1 || true)"
 [ -n "${LC}" ] && [ -n "${LI}" ] && [ -n "${LB}" ] && [ "${LC}" -lt "${LI}" ] && [ "${LI}" -lt "${LB}" ] \
   && pass "Pfad C wird VOR Pfad B geprueft (Z.${LC} < Z.${LI} < Z.${LB})" \
   || fail "Pfad-Reihenfolge falsch (${LC}/${LI}/${LB})"
-NT="$(grep -cF '| sudo tee "${UFW_' "${SETUP}" || true)"
-[ "${NT}" -eq 0 ] && pass "keine Before/After-Protokolle per sudo tee" || fail "sudo tee-Anzahl=${NT} (erwartet 0)"
+NT="$(grep -cF '| tee "${UFW_' "${SETUP}" || true)"
+[ "${NT}" -eq 0 ] && pass "keine Before/After-Protokolle per tee" || fail "tee-Anzahl=${NT} (erwartet 0)"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-004: ALLE PRUEFUNGEN BESTANDEN"
