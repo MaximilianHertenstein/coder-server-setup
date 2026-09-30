@@ -315,7 +315,7 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   Gesundheit meldet sich nur, wer sie abfragt (Boot-Gate, TLS-Check,
   manuelle Checks in [OPERATIONS.md](OPERATIONS.md)).
 - Image-Pinning: Coder/Prometheus/Grafana/node-exporter exakt, Caddy minor
-  (`2.10`) und `postgres:15-alpine` mit beweglichen Tags. Ein
+  (`2.10`) und `postgres:18-alpine` mit beweglichen Tags. Ein
   bit-genauer Pin bräuchte Digests (`sha256:…`) – nicht umgesetzt.
   Alte Images bleiben nach Updates als Rollback-Basis erhalten (kein
   Auto-Prune).
@@ -403,7 +403,7 @@ ss -tlnp; ss -ulnp | grep 443
 | 10 | Workspace-Selbsttest (T-063) und fachliche Freigabe noch offen | unbekannte Templates könnten Socket/Privilegien nutzen | Erstinventar (Schritt 1) am 2026-09-30 für 6 Templates ohne Befund, Schritt 2 vom Betreiber bestätigt; Schritt 4 nicht protokolliert, siehe [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | entschieden 2026-09-30 (B5): Client-IPs bleiben **nicht** im Audit, Empfehlung vom 2026-09-29 übernommen (Datenschutz/Schule). Falls doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |
-| 13 | PostgreSQL 15 hat ein bekanntes Support-Ende | Sicherheitsupdates für diese Major-Version enden am 11. November 2027; ein später Major-Wechsel braucht eine Datenmigration | Migration mit Coder-Kompatibilität, Restore-Probe und Wartungsfenster vorab planen; [Upstream-Lifecycle](https://www.postgresql.org/support/versioning/) |
+| 13 | PostgreSQL-Major-Version braucht Wartung | Wechsel 15 → 18 am 2026-09-30 vor Inbetriebnahme per Dump/Restore (Coder braucht 13+); Support für 18 endet im November 2030, Major-Wechsel sind nie ein reiner `pull` | bei weiterem Major-Wechsel: Wartungsfenster, Dump/Restore wie RESTORE.md, Datenprobe danach; [Upstream-Lifecycle](https://www.postgresql.org/support/versioning/) |
 
 ## 9. Offene Entscheidungen (Entscheidungsliste)
 

@@ -321,17 +321,19 @@ Bei rotem Gate: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
   Aufräumen nur manuell (`sudo docker image prune`) und bewusst.
 - Exakt gepinnte Images (Coder, Prometheus, Grafana, node-exporter) kann man
   durch Setzen des Pins in `setup-coder.sh` + erneuten Setup-Lauf ändern oder
-  zurückrollen. `CADDY_VERSION` (Minor) und `postgres:15-alpine` holen beim
+  zurückrollen. `CADDY_VERSION` (Minor) und `postgres:18-alpine` holen beim
   `pull` ggf. ein neueres Bild hinter demselben Tag.
 - `update.sh` zieht die aktuellen Image-Inhalte der generierten Compose-Tags.
   Neue Releases kommen dabei nur für die beweglichen Tags `caddy:2.10` und
-  `postgres:15-alpine` automatisch an. Für die exakt gepinnten Images muss
+  `postgres:18-alpine` automatisch an. Für die exakt gepinnten Images muss
   der Pin in `setup-coder.sh` geändert und Setup erneut ausgeführt werden.
-- PostgreSQL bleibt bei `postgres:15-alpine`, bis eine geplante Major-
-  Migration umgesetzt wird. Upstream-Support für PostgreSQL 15 endet am
-  11. November 2027. Vorher Coder-Kompatibilität, Dump/Restore-Verfahren und
-  ein isolierter Restore-Test mit Datenprobe prüfen; ein Major-Tag-Wechsel
-  allein migriert kein Volume. [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/)
+- PostgreSQL läuft auf `postgres:18-alpine` (Major-Tag, holt 18.x-Patches
+  über `pull`; aktuell 18.6, Stand 2026-09-30). Der Wechsel von 15 geschah
+  vor der Inbetriebnahme per Dump/Restore mit Datenprobe (siehe
+  [RESTORE.md](RESTORE.md)). Ein weiterer Major-Wechsel ist bewusst kein
+  `pull`: Volume bleibt, Dump/Restore in einem Wartungsfenster, danach
+  Datenprobe. Upstream-Support für 18 endet im November 2030.
+  [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/)
 - Docker Engine und Compose-Plugin werden weder durch `unattended-upgrades`
   noch durch `update.sh` aktualisiert. Dafür in einem abgestimmten
   Wartungsfenster manuell ausführen:

@@ -93,7 +93,7 @@ deterministisch neu – Hand-Anpassungen gehen dabei verloren, Details in
 |---|---|---|---|
 | Caddy | `caddy:2.10` (Minor-Pin) | 80/tcp, 443/tcp, 443/udp | öffentlich |
 | Coder | `ghcr.io/coder/coder:v2.36.6` (exakt) | intern 3000 | nur über Caddy |
-| PostgreSQL | `postgres:15-alpine` | keiner | nur im Compose-Netz |
+| PostgreSQL | `postgres:18-alpine` | keiner | nur im Compose-Netz |
 | Prometheus | `prom/prometheus:v3.14.0` (exakt) | 127.0.0.1:9090 | lokal |
 | node-exporter | `prom/node-exporter:v1.12.1` (exakt) | 127.0.0.1:9100 | lokal |
 | Grafana | `grafana/grafana:12.4.5` (exakt) | 127.0.0.1:3001 | lokal, per SSH-Tunnel |
@@ -192,17 +192,19 @@ Umgebungsvariable überschreibbar:
 
 `update.sh` sichert die Datenbank, zieht die in Compose eingetragenen Tags und
 prüft danach den Stack. Neue Images kommen dabei nur automatisch hinter den
-beweglichen Tags `caddy:2.10` und `postgres:15-alpine` an. Coder, Prometheus,
+beweglichen Tags `caddy:2.10` und `postgres:18-alpine` an. Coder, Prometheus,
 Grafana und node-exporter sind exakt gepinnt: für deren Versionswechsel den
 Pin in `setup-coder.sh` ändern und Setup erneut ausführen. Docker-Engine- und
 Compose-Paketupdates sind davon getrennt und manuell; ein Engine-Update kann
 alle Workspaces unterbrechen. Die vollständige Dateiliste, Cron-Zeiten und
 Wartungsverfahren stehen in [OPERATIONS.md](OPERATIONS.md).
 
-PostgreSQL ist derzeit auf Major-Version 15 festgelegt. Deren Upstream-Support
-endet am 11. November 2027; die Major-Migration braucht ein eigenes,
-geprobtes Verfahren und wird nicht durch einen Tag-Wechsel im Setup erledigt.
-Siehe [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/).
+PostgreSQL läuft seit dem Wechsel am 2026-09-30 auf Major-Version 18
+(`postgres:18-alpine`, aktuell 18.6 – der Major-Tag holt 18.x-Patches
+automatisch). Gewechselt wurde bewusst vor der Inbetriebnahme, solange nur
+Testdaten im Volume lagen, per Dump/Restore (Verfahren: [RESTORE.md](RESTORE.md));
+ein reiner Tag-Wechsel migriert kein Volume. Upstream-Support für 18 endet im
+November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/).
 
 ## Sicherheit und Hardening (Kurzfassung)
 

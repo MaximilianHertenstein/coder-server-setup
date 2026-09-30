@@ -63,7 +63,9 @@
 # exakte Versionen (ändern sich nie von selbst). CADDY_VERSION ist bewusst nur
 # auf die Minor-Version gepinnt (z.B. "2.10"), nicht exakt - Caddy terminiert
 # TLS, Patch-Updates (Sicherheitsfixes) sollen dort über "docker compose pull"
-# automatisch ankommen. postgres:15-alpine folgt demselben Prinzip. Für einen
+# automatisch ankommen. postgres:18-alpine folgt demselben Prinzip (Major-Tag,
+# holt 18.x-Patches; Wechsel von 15 am 2026-09-30 vor Inbetriebnahme, per
+# Dump/Restore, siehe RESTORE.md). Für einen
 # wirklich bit-genauen, reproduzierbaren Pin müsste man ein Image-Digest
 # (sha256:...) statt eines Tags verwenden. Ab und zu manuell auf neue Major-
 # Versionen prüfen.
@@ -570,7 +572,7 @@ x-logging: &coder-logging
 
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:18-alpine
     container_name: coder-postgres
     restart: unless-stopped
     # B-011: längere Shutdown-Gnade nur für Postgres (längere Checkpoint-/
@@ -2130,7 +2132,7 @@ echo "Update-Gate grün: alle Container laufen, Postgres healthy, /healthz via C
 
 # Kein Auto-Prune nach Update (B-003): "docker image prune --filter until=24h"
 # filtert nach Image-Erstellungsdatum, nicht nach Dangling-Zeitpunkt. Bewegliche
-# Tags (caddy:2.10, postgres:15-alpine) wären nach "pull" sofort dangling, aber
+# Tags (caddy:2.10, postgres:18-alpine) wären nach "pull" sofort dangling, aber
 # Wochen alt – und damit trotz "behält gestern" sofort gelöscht. Alte Images
 # sind der billigste Offline-Rollback; manuell und bewusst aufräumen
 # ("docker image prune"), nie automatisch nach Update.
@@ -2138,7 +2140,7 @@ echo "Update-Gate grün: alle Container laufen, Postgres healthy, /healthz via C
 # Rollback-Hinweis (F-012/B-003, korrigiert): schnelles Zurück ("alte Version in
 # setup-coder.sh setzen + Setup erneut") funktioniert OHNE erneuten Pull nur
 # für exakt gepinnte Images (Coder/Prometheus/Grafana – deren Tags ändern sich
-# nie von selbst). Für Caddy (Minor-Pin 2.10) und Postgres (15-alpine) holt
+# nie von selbst). Für Caddy (Minor-Pin 2.10) und Postgres (18-alpine) holt
 # "pull" ggf. ein neueres Image. Alte Images bleiben seit B-003 bis zu manuellem
 # "docker image prune" erhalten (kein Auto-Prune nach Update) – bei Platten-
 # engpass bewusst aufräumen. Bei Coder-Major-Updates mit Schema-Migrationen
