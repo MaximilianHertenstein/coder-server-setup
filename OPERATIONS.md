@@ -506,6 +506,11 @@ Bis DNS und Web-Portweiterleitung stehen, startet der
 Stack trotzdem – Caddy holt das Zertifikat dann nach (Skript ist idempotent,
 einfach erneut ausführen).
 
+> **Vorab klären (offen, Stand 2026-09-30):** Laut Betreiber läuft der
+> Schulserver künftig mit **IServ** auf dem zentralen Netzwerkserver.
+> Solange unklar ist, wer DNS, Wildcard und 80/443 übernimmt, bleiben die
+> Inbetriebnahme und die TLS-Frage (On-Demand vs. DNS-01) aufgeschoben.
+
 ### Netzwerkadmin
 
 | # | Was | Warum |
@@ -517,11 +522,17 @@ einfach erneut ausführen).
 | 5 | SSH/22 bleibt ausschließlich aus dem Schulnetz erreichbar; keine öffentliche Weiterleitung | Passwortzugang ist für die erste Inbetriebnahme vorgesehen; ufw + fail2ban begrenzen Fehlversuche zusätzlich |
 
 **Alternative, falls 80/443 nicht 1:1 erreichbar sind (DNS-01, B4b):**
-Ein Zertifikat ohne eingehende 80/443 geht nur über den DNS-01-Challenge
-(`/opt/coder/caddy/Caddyfile` müsste den `_acme-challenge.`-CNAME tragen und der
-`caddy`-Image bräuchte ein DNS-Plugin, das das Standardimage **nicht**
-enthält). Das braucht Zonen-Zugang beim DNS-Provider – erst anfragen, wenn
-Zeile 3 hakt; bis dahin ist http-01/tls-alpn-01 der eingeschlagene Weg.
+Ein Zertifikat ohne eingehende 80/443 geht nur über den DNS-01-Challenge.
+Zone `ghse-unterricht.de` liegt bei **All-Inkl**; dafür existiert das
+Caddy-Modul `caddy-dns/all-inkl` (`dns.providers.allinkl`, KAS-Username/
+-Passwort). Das Standard-`caddy`-Image enthält es **nicht** – nötig wären
+ein eigenes Image (xcaddy-Build) und die KAS-Zugangsdaten in einer
+`600`-Datei auf dem Server, nie im Repository. **Die Umstellung ist am
+2026-09-30 aufgeschoben**, solange unklar ist, ob die Zone bei All-Inkl
+bleibt und wer DNS/Ports künftig übernimmt (IServ, siehe unten); bis
+dahin ist http-01/tls-alpn-01 der eingeschlagene Weg. Beachten: DNS-01
+löst nur die ACME-Frage – der Nutzerverkehr braucht weiterhin 80/443 bis
+zum Server.
 
 ### Betreiber (Auftraggeber)
 

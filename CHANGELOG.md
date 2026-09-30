@@ -9,8 +9,49 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `74aa880` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `d9b4ce7` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – DNS-01 recherchiert und aufgeschoben (Zone/IServ unklar)
+
+- **Recherche (Quellen: `github.com/caddy-dns/all-inkl`, `pypi.org/project/kasserver`):**
+  Zone `ghse-unterricht.de` liegt bei All-Inkl; deren DNS-Verwaltung läuft
+  über die KAS-API (Benutzername/Passwort, kein granularer Token). Für
+  Caddy existiert das Modul `caddy-dns/all-inkl` (`dns.providers.allinkl`)
+  mit `kas_username`/`kas_password` – aber jung (Repository seit 11/2025,
+  9 Sterne, 14 Commits) und **nicht** im Standard-Image `caddy:2.10`:
+  nötig wäre ein eigener xcaddy-Build plus Zugangsdaten in einer `600`-Datei
+  auf dem Server, nie im Repository.
+- **Entscheidung (Fortsetzung D-TLS): Umstellung auf DNS-01 aufgeschoben.**
+  Grund: laut Betreiber läuft der Schulserver künftig mit **IServ** auf dem
+  zentralen Netzwerkserver und es ist weder geklärt, ob die Zone bei
+  All-Inkl bleibt, noch wer DNS, Wildcard und 80/443 künftig übernimmt.
+  Aufwand jetzt wäre möglicherweise weggeworfen. On-Demand-`ask` und die
+  Budget-Beobachtung (`check-tls.sh`, `TlsIssuanceBudgetHigh`,
+  `TlsLogTruncated`) bleiben unverändert in Betrieb.
+- **Festgehalten:** DNS-01 löst nur die ACME-Frage; der Nutzerverkehr
+  braucht weiterhin 80/443 bis zum Server. Auch ein DNS-01-Zertifikat
+  nützt nichts, wenn die Weiterleitung fehlt.
+- **Was später von dir gebraucht wird:** KAS-Zugangsdaten von All-Inkl
+  (als `600`-Datei auf dem Server ablegen, nicht hierhereinsenden) und ein
+  OK fürs Wartungsfenster; dann bild-, Caddyfile- und Test-Runde zuerst auf
+  dem Test-Host (der wäre mit DNS-01 sogar von seinem 80/443-Problem der
+  externen nginx befreit).
+- **Doku:** SECURITY.md (§3 Recherche-/Aufschub-Absatz, §8 Zeile 3, §9
+  Intro/D-TLS-Zeile/Fußnote), README.md (Zielbetrieb-Absatz mit IServ,
+  Entscheidungs-Zeile), OPERATIONS.md (§11 DNS-01-Absatz aktualisiert,
+  neue Vorab-Klär-Notiz über der Netzwerkadmin-Tabelle).
+- **Geänderte Dateien:** `SECURITY.md`, `README.md`, `OPERATIONS.md`.
+- **Teststand (tatsächlich ausgeführt):** nach den Änderungen alle 12
+  Dateien in `tests/` grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh
+  ssh-harden.sh` und `shellcheck -S warning setup-coder.sh ssh-harden.sh`
+  ohne Befund.
+- **Offene Punkte:** Klärung Zone/Hosting/IServ (Betreiber +
+  Netzwerkadmin), danach DNS-01-Umstellung; Schritt 4 der Template-Abnahme,
+  volles Restore-Prozedere auf frischer VM (RTO), Testmatrix,
+  Inbetriebnahme-Termin (DNS/80-443), PostgreSQL-15-Migration vor 11/2027.
 
 ---
 

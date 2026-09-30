@@ -177,10 +177,14 @@ Coder-Subdomänen-Muster entspricht, sonst `404`:
   kein Zertifikat → TLS-Fehler im Unterricht.
 - Erster Handshake einer neuen Subdomain dauert 5–30 s länger (Zertifikat
   wird beim ersten Aufruf beantragt).
-- Echter Fix bleibt DNS-01-Wildcard ohne On-Demand (eigener API-Token des
-  DNS-Anbieters; dieser Teil von D-TLS bleibt mit Frist offen, die
-  Entscheidung ist 2026-09-30 nur teilentschieden). Bis dahin gilt:
-  Budget über `check-tls.sh` beobachten.
+- Echter Fix bleibt DNS-01-Wildcard ohne On-Demand. Der Anbieter ist
+  bekannt: Zone `ghse-unterricht.de` liegt bei **All-Inkl** (KAS-API), und
+  dafür existiert das Caddy-Modul `caddy-dns/all-inkl`
+  (`dns.providers.allinkl`, KAS-Username/-Passwort; Modul seit 11/2025,
+  jung, 9 Sterne). Die Umstellung ist am 2026-09-30 **aufgeschoben**:
+  unklar ist, ob die Zone bei All-Inkl bleibt und ob der Schulserver
+  künftig mit IServ auf dem zentralen Netzwerkserver läuft (Lage laut
+  Betreiber offen). Bis dahin gilt: Budget über `check-tls.sh` beobachten.
 
 **Erkennung**: `check-tls.sh` zählt `obtaining certificate` im Caddy-Log
 der letzten 7 Tage, schreibt nach `/var/log/coder-tls.log` und ins
@@ -388,7 +392,7 @@ ss -tlnp; ss -ulnp | grep 443
 |---|---|---|---|
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | entschieden 2026-09-30 (D-Socket): keine zweite VM, Restrisiko akzeptiert, Allowlist gilt dauerhaft |
 | 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | entschieden 2026-09-30 (D-SSH): Passwort-Login bleibt Standard, Restrisiko getragen; `ssh-harden.sh` nur auf gesonderten Wunsch |
-| 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1); D-TLS 2026-09-30 teilentschieden (Beobachtung über `TlsLogTruncated`), Budget-Schutz bleibt, DNS-01 offen |
+| 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1); D-TLS 2026-09-30 teilentschieden (Beobachtung über `TlsLogTruncated`), Budget-Schutz bleibt, DNS-01 aufgeschoben (Anbieter All-Inkl bekannt, Zone/IServ unklar) |
 | 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh`, `TlsCheckStale` und `TlsLogTruncated` (Metriken `coder_tls_log_window_seconds`, `coder_tls_log_truncated`); Zählung bleibt Untergrenze, der Verlust ist jetzt gemeldet |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | entschieden 2026-09-30 (D-Offsite): kein zweiter Standort, Risiko akzeptiert |
 | 6 | Restore nur teilweise geprobt, volle RTO unbekannt | der Wiederherstellungsweg mit Stack-Start und Login ist ungeprüft | Dump-Import in Probencontainer mit Datenprobe = 1 am 2026-09-30; Pfad A/B auf frischer VM bleibt offen (Probe nur auf Test-VM) |
@@ -404,14 +408,15 @@ ss -tlnp; ss -ulnp | grep 443
 
 **Stand 2026-09-30:** sechs Entscheidungen sind getroffen (D-Socket,
 D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring), D-TLS ist
-teilentschieden – offen bleibt nur noch ihr DNS-01-Teil. Eigentümer jedes
+teilentschieden – ihr DNS-01-Teil ist aufgeschoben, bis Zone, Hosting und
+IServ geklärt sind. Eigentümer jedes
 Punktes ist der Betreiber ([OPERATIONS.md](OPERATIONS.md) Abschnitt 11),
 für DNS-01 zusätzlich der DNS-/Netzwerk-Verantwortliche. Die Abschnitte 1–7
 begründen die Lage, diese Tabelle ist der Sammelpunkt.
 
 | ID | Entscheidung | Optionen | Empfehlung | Voraussetzung | Status 2026-09-30 |
 |---|---|---|---|---|---|
-| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | DNS-/Zonen-Zugang des Anbieters, Frist vom Betreiber | teilentschieden: Beobachtung übernommen (`TlsLogTruncated`), DNS-01 bleibt offen |
+| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | KAS-Zugang von All-Inkl, erst nach Klärung von Zone/IServ | teilentschieden: Beobachtung übernommen (`TlsLogTruncated`); DNS-01 aufgeschoben bis Zone, Hosting und IServ geklärt sind (Modul `caddy-dns/all-inkl` bekannt) |
 | D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo + Allowlist bleiben dauerhaft; Erstinventar und T-063 bleiben Pflicht | – | entschieden: Empfehlung übernommen – keine zweite VM |
 | D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, `ssh-harden.sh` ist nicht Standard |
 | D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
@@ -419,8 +424,9 @@ begründen die Lage, diese Tabelle ist der Sammelpunkt.
 | D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | Grafana/Prometheus bleiben die Anlaufstelle, kein Kanal | – | entschieden: kein Kanal, Grafana reicht |
 | D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | kein zweiter Standort; lokal bleiben Dumps 700/600 und die Restore-Probe der Schutz | – | entschieden: kein zweiter Standort, Restrisiko akzeptiert |
 
-Nur noch ein Zugang offen: **DNS-01/Zonen-Zugang** (D-TLS-Teil, deckt sich
-mit **B4b**). **B5** (Client-IPs im Audit) ist am 2026-09-30 entschieden:
+Nur noch offen: **DNS-01** (D-TLS-Teil, deckt sich mit **B4b**) –
+aufgeschoben bis Zone, Hosting und IServ geklärt sind; dann wäre der
+KAS-Zugang von All-Inkl das Einzige, was noch fehlt. **B5** (Client-IPs im Audit) ist am 2026-09-30 entschieden:
 so lassen, Abschnitt 8 Zeile 11. Nicht Teil dieser Liste, weil sie Schritte
 und keine Entscheidungen sind: Schritt 4 der Template-Abnahme, volle
 Restore-Probe auf frischer VM, Testmatrix, Inbetriebnahme mit DNS/Port-

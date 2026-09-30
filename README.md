@@ -34,14 +34,18 @@ nicht im Repository.
 | Restore-Test | **teilweise geprobt** 2026-09-30: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Stack-Restore auf frischer VM und volle RTO weiter offen ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | **Entschieden (D-SSH, 2026-09-30):** Passwort-Login bleibt Standard, `ssh-harden.sh` ist nicht Standard und bleibt unaufgerufen; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `limit 22/tcp` und fail2ban zusätzlich ([SECURITY.md](SECURITY.md) §1) |
-| Offene Entscheidungen | **offen:** nur noch DNS-01-Teil von D-TLS. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); fällig: PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
+| Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting/IServ). Von den D-Entscheidungen sonst nichts mehr offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); fällig: PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
 **Zielbetrieb:** ein Schulserver, per SSH nur aus dem Schulnetz
 erreichbar; die Weiterleitung der Weboberfläche (80/443) muss noch durch einen
 Netzwerkadmin umgesetzt werden – bis dahin kann das Setup dort keine
-Zertifikate ausstellen. Der aktuelle Test-Host `2.29.11.30` ist eine
+Zertifikate ausstellen. Laut Betreiber (2026-09-30) soll der Schulserver
+künftig mit **IServ** auf dem zentralen Netzwerkserver laufen; bis
+feststeht, wer DNS, Wildcard und 80/443 übernimmt, bleiben die TLS-
+Umstellung auf DNS-01 (D-TLS) und der Inbetriebnahme-Termin aufgeschoben.
+Der aktuelle Test-Host `2.29.11.30` ist eine
 Hetzner-VM, die irgendwann abgeschaltet wird. **Wer was macht** (DNS +
 Wildcard, Portweiterleitung, Abnahme): [OPERATIONS.md](OPERATIONS.md)
 Abschnitt 11.
