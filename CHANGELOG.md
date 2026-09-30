@@ -9,8 +9,21 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `446c5da` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `cfed8ca` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Beobachtung: ein Testlauf mit 1 FAIL, nicht reproduzierbar
+
+- Im Commit-Lauf zu `cfed8ca` meldete die Sammelschleife einmal **345 PASS,
+  1 FAIL**; der Name des fehlgeschlagenen Tests wurde damals nicht mitgeloggt
+  (mein Fehler). Danach **7 volle Läufe** nacheinander: jeweils 346 PASS,
+  0 FAIL, auch Einzellauf aller 12 Dateien ohne FAIL.
+- Verdacht: Flake über den gebundenen Loopback-Port in `t-090` (der Lauf
+  hing zuvor schon einmal an fremden Listern). Kein belegter Defekt.
+- Konsequenz: Fail-Namen künftig immer mitschreiben, bei FAIL nicht
+  committen.
 
 ---
 
