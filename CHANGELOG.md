@@ -9,8 +9,49 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `4dbd102` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `35d3a57` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Restore-Probe: Dump-Import in isoliertem Probencontainer
+
+(Die zugehörigen Dokuänderungen liegen im Commit `35d3a57`; dieser Eintrag
+kommt als eigener Commit nach.)
+
+- **Durchgeführt** auf dem Test-Host `2.29.11.30` (kein Eingriff in den
+  laufenden Stack): Restore-Sonde `RTO-PROBE-2026-09-30` gemäß RESTORE.md
+  gesetzt, `backup.sh` angestoßen, neuer Dump (`coder_2026-09-30_104829`,
+  74 KB) per `gzip -t` verifiziert und auf Vorhandensein der Sonde
+  geprüft; danach `zcat | psql -v ON_ERROR_STOP=1` in einen eigenen
+  `postgres:15-alpine`-Probencontainer (Bildversion wie der Stack,
+  kein veröffentlichten Port).
+- **Ergebnis:** Import exit 0 in 3,0 s; Datenprobe = 1; 119 von 119
+  Tabellen vorhanden; Summe aller Zeilenzahlen über alle 119 Tabellen
+  Quelle 937 = Ziel 937; keine Fehler im Importlog. Probencontainer
+  inklusive anonymem Volume entfernt, Volume-Anzahl vor/nach unverändert
+  (7), kein Restcontainer.
+- **Zwei Anläufe, beide protokolliert:** der erste scheiterte mit
+  `relation … does not exist` bzw. `database system is shutting down`,
+  weil `pg_isready` auch schon während des Temp-Servers der Initialisierung
+  antwortet – erst wiederholtes `SELECT 1` mit den echten Zugangsdaten
+  gilt als bereit. Diese Lektion steht jetzt in RESTORE.md, sonst wäre
+  der nächste Probenlauf gleich wieder rot gewesen. Der zweite Anlauf
+  (stabiles Bereit-Signal) war der grüne.
+- **Was weiterhin offen bleibt:** Pfad A/B auf einer frischen VM mit
+  Stack-Start, `/healthz` und Dashboard-Login – und damit die volle RTO;
+  gemessen ist nur der Importteil (3,0 s bei 3 Min. Dump-Alter).
+- **Doku:** RESTORE.md (Statuskopf, Protokolltabelle mit erster Zeile,
+  Durchführungsnotiz mit der `pg_isready`-Fallen), README.md (Zeile
+  Restore-Test), SECURITY.md (Grenzen-Tabelle Zeile 6).
+- **Geänderte Dateien:** `RESTORE.md`, `README.md`, `SECURITY.md`
+  (Commit `35d3a57`).
+- **Teststand (tatsächlich ausgeführt):** vor und nach den Dokuänderungen
+  alle 12 Dateien in `tests/` grün (346 PASS, 0 FAIL); `bash -n
+  setup-coder.sh` und `shellcheck -S warning setup-coder.sh` ohne Befund.
+- **Offene Punkte:** volles Restore-Prozedere auf frischer VM (RTO),
+  D-TLS, Template-Erstinventar, Testmatrix, übrige D-Entscheidungen,
+  Offsite-Backup, SSH-Härtung nach getestetem Key-Zugang.
 
 ---
 
