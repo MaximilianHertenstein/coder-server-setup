@@ -59,7 +59,8 @@ Abschnitt 11.
 
 ## Was das Setup-Skript macht
 
-Aufruf als Benutzer mit sudo-Rechten: `./setup-coder.sh`
+Aufruf als root: `sudo ./setup-coder.sh` (das Skript bricht ohne root ab);
+Umgebungsvariablen gehören hinter das sudo, siehe unten.
 
 | # | Schritt | Ergebnis |
 |---|---|---|
@@ -106,7 +107,7 @@ Fassung zeigen.
 
 ## Voraussetzungen
 
-- [ ] Debian 13 (trixie), sudo-Rechte, Netzzugang zu `download.docker.com`,
+- [ ] Debian 13 (trixie), root-Zugang (`sudo`), Netzzugang zu `download.docker.com`,
       `ghcr.io` und den Debian-Servern. Das Setup prüft `ID` und
       `VERSION_CODENAME` aus `/etc/os-release` und bricht vor Änderungen ab,
       wenn es nicht Debian „trixie“ ist.
@@ -139,13 +140,13 @@ git clone https://github.com/MaximilianHertenstein/coder-server-setup.git
 cd coder-server-setup
 git log -1 --oneline          # Stand notieren
 chmod +x setup-coder.sh
-./setup-coder.sh              # sudo wird intern benötigt
+sudo ./setup-coder.sh          # nur als root, sonst Abbruch vor Änderungen
 ```
 
 Optional vor dem Lauf (Überschreiben der Defaults, ohne Datei zu ändern):
 
 ```bash
-DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh
+sudo env DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh
 ```
 
 **Erfolgsdefinition**

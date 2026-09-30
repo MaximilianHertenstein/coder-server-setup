@@ -68,9 +68,11 @@
 # (sha256:...) statt eines Tags verwenden. Ab und zu manuell auf neue Major-
 # Versionen prüfen.
 #
-# Ausführen als Benutzer mit sudo-Rechten:
+# Ausführen als root (ohne root bricht das Skript vor Änderungen ab):
 #   chmod +x setup-coder.sh
-#   ./setup-coder.sh
+#   sudo ./setup-coder.sh
+# Umgebungsvariablen gehören hinter das sudo (siehe OPERATIONS.md):
+#   sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh
 #
 # Manuelle Wartungsskripte unter /opt/coder (mit sudo aufzurufen):
 #   backup.sh           Postgres-Backup (täglich per Cron, 01:00 Uhr)
@@ -82,6 +84,19 @@
 # ============================================================================
 
 set -euo pipefail
+
+# Root ist Pflicht – zuerst, vor jeder Prüfung und jeder Änderung: Lock,
+# Rechte und Dateien unter /opt/coder gehören root, und die Wartungsskripte
+# sperren dieselbe Datei. Ohne root würde das Setup scheitern, nachdem es
+# bereits Pakete installiert hätte.
+# sudo leitet fremde Umgebungsvariablen nicht durch; Werte gehören hinter
+# das sudo: sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Fehler: dieses Setup muss als root laufen – Aufruf: sudo ./setup-coder.sh" >&2
+  echo "Umgebungsvariablen gehören nach das sudo, sonst greifen die Defaults:" >&2
+  echo "  sudo env DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh" >&2
+  exit 1
+fi
 
 # Zielplattform vor jeder Serveränderung prüfen. Die Docker-APT-Quelle unten
 # übernimmt VERSION_CODENAME aus /etc/os-release; ohne Guard könnte ein Lauf
@@ -101,48 +116,25 @@ fi
 # Das Setup schreibt Compose- und Wartungsskripte und startet den Stack.
 # Ein paralleler Wartungslauf könnte Dateien während ihrer Ausführung
 # überschreiben. Vor diesen Konfigurations- und Stack-Änderungen nimmt das
-# Setup denselben flock wie die Wartungsskripte. Ein privilegierter Wächter
-# hält ihn, während dieses Skript im ursprünglichen Benutzerkontext und mit
-# dessen expliziten Umgebungswerten läuft.
-SETUP_LOCKER_PID=""
-SETUP_LOCK_READ_FD=""
-SETUP_LOCK_WRITE_FD=""
-SETUP_LOCK_STATUS=""
+# Setup denselben flock wie die Wartungsskripte: er hängt am Deskriptor 8
+# dieses Prozesses und bleibt gesperrt, bis alle Prozesse ihn geerbt haben,
+# beendet sind. Alle Aufrufe hier sind kurzlebig, kein Dauerläufer erbt ihn.
 ENV_TMP=""
 ENV_TMP_GID=""
 MANAGED_TMP=""
-release_setup_lock() {
-  if [ -n "${SETUP_LOCK_WRITE_FD}" ]; then
-    { printf 'RELEASE\n' >&"${SETUP_LOCK_WRITE_FD}"; } 2>/dev/null || true
-  fi
-}
 setup_cleanup() {
   local rc=$?
   for _tmp in "${ENV_TMP}" "${ENV_TMP_GID}" "${MANAGED_TMP}"; do
     [ -n "${_tmp}" ] && sudo -n rm -f -- "${_tmp}" 2>/dev/null || true
   done
-  if [ -n "${SETUP_LOCKER_PID}" ]; then
-    release_setup_lock
-    wait "${SETUP_LOCKER_PID}" 2>/dev/null || true
-  fi
   return "${rc}"
 }
 
-sudo -v
 sudo mkdir -p /opt/coder
 sudo sh -c 'umask 077; : >> /opt/coder/.maintenance.lock; chown root:root /opt/coder/.maintenance.lock; chmod 600 /opt/coder/.maintenance.lock'
-coproc SETUP_LOCKER {
-  sudo flock -w 300 /opt/coder/.maintenance.lock \
-    bash -c 'printf "LOCKED\\n"; IFS= read -r _release || true' _
-}
-SETUP_LOCK_READ_FD="${SETUP_LOCKER[0]:-}"
-SETUP_LOCK_WRITE_FD="${SETUP_LOCKER[1]:-}"
-if [ -z "${SETUP_LOCK_READ_FD}" ] \
-  || ! IFS= read -r -t 305 SETUP_LOCK_STATUS <&"${SETUP_LOCK_READ_FD}" \
-  || [ "${SETUP_LOCK_STATUS}" != "LOCKED" ]; then
+exec 8>>/opt/coder/.maintenance.lock
+if ! flock -w 300 8; then
   echo "Fehler: gemeinsamer Wartungs-Lock nach 300 s nicht erhalten; Setup abgebrochen (Exit 75)." >&2
-  release_setup_lock
-  wait "${SETUP_LOCKER_PID}" 2>/dev/null || true
   exit 75
 fi
 export CODER_MAINTENANCE_LOCK_HELD=1

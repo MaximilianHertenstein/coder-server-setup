@@ -9,8 +9,40 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `2f8ba81` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `d5d398e` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Root-Lauf, Teil 1: Root-Guard und Lock am Deskriptor
+
+- **Befund:** Das Setup ließ sich ohne root starten und fiel erst mitten
+  im Lauf auf (Lock, Rechte unter /opt/coder). Das Setup nahm den
+  Wartungs-Lock über einen eigenen `sudo flock`-Wächterprozess
+  (coproc) und las die Freigabe per Pipe; die Wartungsskripte sperren
+  dieselbe Datei aber selbst über ihren eigenen Deskriptor. Außerdem
+  setzte `sudo -v` eine Passworteingabe voraus, die ein reiner root-Lauf
+  nicht kennt.
+- **Änderung:** Root-Guard als allererste Anweisung nach `set -euo
+  pipefail`: ohne root Exit 1 mit dem Aufruf `sudo ./setup-coder.sh` und
+  dem Hinweis, dass Umgebungsvariablen hinter das sudo gehören
+  (`sudo env DOMAIN_CODER=… ./setup-coder.sh`) – danach bricht ab, was
+  das Setup ohne root nicht erledigen kann. Der coproc-Wächter ist
+  ersetzt: `exec 8>>/opt/coder/.maintenance.lock` + `flock -w 300 8` in
+  diesem Prozess, Exit 75 bei Zeitüberschreitung; `CODER_MAINTENANCE_LOCK_HELD=1`
+  und `trap setup_cleanup EXIT` bleiben. `sudo -v` entfernt. Header-Kommentar,
+  README.md (Aufruf, Voraussetzungen, Beispiele) und OPERATIONS.md
+  (Abschnitt 3, Übergabe an den Auftraggeber) auf `sudo ./setup-coder.sh`
+  und `sudo env …` umgestellt.
+- **Geänderte Dateien:** `setup-coder.sh`, `README.md`, `OPERATIONS.md`,
+  neu `tests/t-root-guard.sh`.
+- **Teststand (tatsächlich ausgeführt):** alle 11 Dateien in `tests/` grün
+  (318 PASS, 0 FAIL), der neue Test prüft die Zeilenreihenfolge
+  (Guard vor der ersten Systemänderung), den Wegfall des coproc-Wächters
+  und den echten Abbruch ohne root vor Schritt 1; `bash -n
+  setup-coder.sh` und `shellcheck -S warning setup-coder.sh` ohne Befund.
+- **Offene Punkte:** sudo-Präfixe aus dem Code streichen (Teil 2),
+  Testhost-Lauf als root.
 
 ---
 

@@ -69,7 +69,9 @@ Nicht im Repository, nur auf dem Server: alle Backups, `.env`-Sicherungen
 
 ## 3. Konfigurationsvariablen
 
-Überschreibbar per Umgebungsvariable beim Aufruf, ohne Datei zu ändern:
+Überschreibbar per Umgebungsvariable beim Aufruf, ohne Datei zu ändern
+(Werte gehören hinter das sudo – `sudo` leitet fremde Variablen nicht
+durch: `sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh`):
 `DOMAIN_CODER`, `ACME_EMAIL`, `CODER_VERSION`, `CADDY_VERSION`,
 `PROMETHEUS_VERSION`, `GRAFANA_VERSION`, `NODE_EXPORTER_VERSION`, dazu
 `CODER_ALLOW_DOWNGRADE` (nur `yes`, erlaubt ein bewusstes Zurücksetzen einer
@@ -517,10 +519,10 @@ Zeile 3 hakt; bis dahin ist http-01/tls-alpn-01 der eingeschlagene Weg.
 
 ### Betreiber (Auftraggeber)
 
-1. **Vorab:** `./setup-coder.sh` am Zielserver ausführen (erster Lauf legt
+1. **Vorab:** `sudo ./setup-coder.sh` am Zielserver ausführen (erster Lauf legt
    Stack, Firewall, Backups an; Warnung zu TLS ist bis zu Punkt 3 normal).
 2. **DNS/Weiterleitung abwarten** (Schritt 1–4 oben).
-3. **Zweiter Lauf:** `./setup-coder.sh` erneut ausführen – idempotent,
+3. **Zweiter Lauf:** `sudo ./setup-coder.sh` erneut ausführen – idempotent,
    erzeugt dann das Zertifikat bzw. meldet weiterhin WARN, falls es fehlt.
 4. **Erstkonto anlegen – SOFORT, bevor die URL irgendjemand weitergegeben
    wird:** Wer sich als Erster anmeldet, wird automatisch Owner. Entweder
