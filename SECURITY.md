@@ -303,9 +303,12 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   Caddy-Logfenster kürzer als 7 Tage) sind in
   Prometheus/Grafana sichtbar, aber
   **kein Kanal**, der jemanden weckt – kein Alertmanager, keine
-  Benachrichtigung. Ein Contact Point bräuchte SMTP-Zugang (D-Monitoring). Gesundheit meldet
-  sich nur, wer sie abfragt (Boot-Gate, TLS-Check, manuelle Checks in
-  [OPERATIONS.md](OPERATIONS.md)).
+  Benachrichtigung. **Entschieden (D-Monitoring, 2026-09-30): es bleibt
+  ohne Kanal** – Grafana/Prometheus sind die Anlaufstelle, das Risiko
+  (Ausfälle sieht nur, wer hinsieht) wird getragen; ein Contact Point
+  bräuchte weiterhin SMTP-Zugang und wäre nur auf neuen Wunsch zu bauen.
+  Gesundheit meldet sich nur, wer sie abfragt (Boot-Gate, TLS-Check,
+  manuelle Checks in [OPERATIONS.md](OPERATIONS.md)).
 - Image-Pinning: Coder/Prometheus/Grafana/node-exporter exakt, Caddy minor
   (`2.10`) und `postgres:15-alpine` mit beweglichen Tags. Ein
   bit-genauer Pin bräuchte Digests (`sha256:…`) – nicht umgesetzt.
@@ -345,9 +348,11 @@ vorbehalten.
   Host-Root-Mounts und gemeinsame Netze mit `postgres`.
 - Das Erstinventar (Schritt 1 der Abnahme: Prüfung gegen die Verbotsliste)
   ist am 2026-09-30 für die sechs Templates aus dem separaten Repository
-  `coder_templates` durchgeführt und in der Allowlist-Tabelle eingetragen;
-  der Workspace-Selbsttest (T-063, Schritt 2) ist **noch nicht**
-  durchgeführt, ebenso die fachliche Freigabe.
+  `coder_templates` durchgeführt und in der Allowlist-Tabelle eingetragen.
+  Der Workspace-Selbsttest (T-063, Schritt 2) ist vom Betreiber am
+  2026-09-30 als gelaufen bestätigt (nicht von mir reproduziert);
+  Schritt 4 (Spielraum der Limits im laufenden Workspace) ist nicht
+  separat protokolliert.
 
 Weiteres: `node-exporter` läuft mit `pid: host` und bringt `/proc`, `/sys`
 und `/` nur lesend eingebunden. Weil es **kein** `network_mode: host` nutzt,
@@ -389,20 +394,19 @@ ss -tlnp; ss -ulnp | grep 443
 | 6 | Restore nur teilweise geprobt, volle RTO unbekannt | der Wiederherstellungsweg mit Stack-Start und Login ist ungeprüft | Dump-Import in Probencontainer mit Datenprobe = 1 am 2026-09-30; Pfad A/B auf frischer VM bleibt offen (Probe nur auf Test-VM) |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | entschieden 2026-09-30 (D-Reboot-Fenster): 03:00 bleibt, Unterrichtsbeginn 07:45 |
-| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (6 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
-| 10 | Workspace-Selbsttest (T-063) und fachliche Freigabe noch offen | unbekannte Templates könnten Socket/Privilegien nutzen | Erstinventar (Schritt 1) am 2026-09-30 für 6 Templates ohne Befund; T-063 offen, siehe [templates/allowlist.md](templates/allowlist.md) |
-| 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | Entscheidung offen (B5): erst festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz/Schule). Empfehlung 2026-09-29: **so lassen**. Wenn doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
+| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (6 Stück), Logs rotiert; entschieden 2026-09-30 (D-Monitoring): kein Kanal, Grafana reicht – Ausfälle sieht nur, wer hinsieht |
+| 10 | Workspace-Selbsttest (T-063) und fachliche Freigabe noch offen | unbekannte Templates könnten Socket/Privilegien nutzen | Erstinventar (Schritt 1) am 2026-09-30 für 6 Templates ohne Befund, Schritt 2 vom Betreiber bestätigt; Schritt 4 nicht protokolliert, siehe [templates/allowlist.md](templates/allowlist.md) |
+| 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | entschieden 2026-09-30 (B5): Client-IPs bleiben **nicht** im Audit, Empfehlung vom 2026-09-29 übernommen (Datenschutz/Schule). Falls doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |
 | 13 | PostgreSQL 15 hat ein bekanntes Support-Ende | Sicherheitsupdates für diese Major-Version enden am 11. November 2027; ein später Major-Wechsel braucht eine Datenmigration | Migration mit Coder-Kompatibilität, Restore-Probe und Wartungsfenster vorab planen; [Upstream-Lifecycle](https://www.postgresql.org/support/versioning/) |
 
 ## 9. Offene Entscheidungen (Entscheidungsliste)
 
-**Stand 2026-09-30:** fünf Entscheidungen sind getroffen (D-Socket,
-D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH), D-TLS ist teilentschieden,
-eine bleibt offen (D-Monitoring). Eigentümer jedes Punktes ist der
-Betreiber ([OPERATIONS.md](OPERATIONS.md) Abschnitt 11), bei D-TLS
-zusätzlich der DNS-/Netzwerk-Verantwortliche; **die einzige Frist, die noch
-offen ist, betrifft D-Monitoring bzw. den DNS-01-Teil**. Die Abschnitte 1–7
+**Stand 2026-09-30:** sechs Entscheidungen sind getroffen (D-Socket,
+D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring), D-TLS ist
+teilentschieden – offen bleibt nur noch ihr DNS-01-Teil. Eigentümer jedes
+Punktes ist der Betreiber ([OPERATIONS.md](OPERATIONS.md) Abschnitt 11),
+für DNS-01 zusätzlich der DNS-/Netzwerk-Verantwortliche. Die Abschnitte 1–7
 begründen die Lage, diese Tabelle ist der Sammelpunkt.
 
 | ID | Entscheidung | Optionen | Empfehlung | Voraussetzung | Status 2026-09-30 |
@@ -412,16 +416,15 @@ begründen die Lage, diese Tabelle ist der Sammelpunkt.
 | D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, `ssh-harden.sh` ist nicht Standard |
 | D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
 | D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | 03:00 bleibt, abgestimmt gegen Unterrichtsbeginn 07:45 | – | entschieden: Empfehlung übernommen – 03:00 bleibt |
-| D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | mindestens `BackupStale`, `RootPartitionFillingUp` und `CoderTargetDown` an einen Kanal, bevor Produktion läuft | SMTP- oder Webhook-Zugang vom Betreiber | offen – braucht SMTP- oder Webhook-Zugang |
+| D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | Grafana/Prometheus bleiben die Anlaufstelle, kein Kanal | – | entschieden: kein Kanal, Grafana reicht |
 | D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | kein zweiter Standort; lokal bleiben Dumps 700/600 und die Restore-Probe der Schutz | – | entschieden: kein zweiter Standort, Restrisiko akzeptiert |
 
-Nicht mitentschieden, weil es Zugänge braucht: D-Monitoring (Kanal),
-DNS-01/Zonen-Zugang (D-TLS-Teil).
-Ähnlich offen, aber ohne D-Kürzel: **B5** (Client-IPs im Audit – Empfehlung
-2026-09-29: so lassen, Abschnitt 8 Zeile 11) und **B4b** (DNS-01-Zonen-Zugang,
-deckt sich mit D-TLS). Nicht Teil dieser Liste, weil sie Schritte und keine
-Entscheidungen sind: Template-Erstinventar (T-063), volle Restore-Probe auf
-frischer VM, Testmatrix.
+Nur noch ein Zugang offen: **DNS-01/Zonen-Zugang** (D-TLS-Teil, deckt sich
+mit **B4b**). **B5** (Client-IPs im Audit) ist am 2026-09-30 entschieden:
+so lassen, Abschnitt 8 Zeile 11. Nicht Teil dieser Liste, weil sie Schritte
+und keine Entscheidungen sind: Schritt 4 der Template-Abnahme, volle
+Restore-Probe auf frischer VM, Testmatrix, Inbetriebnahme mit DNS/Port-
+Weiterleitung.
 
 **Regel für Reparaturen:** Kein Fehlerbild wird durch Abschalten von
 Prüfungen, Zurücklassen von Firewall-Regeln im ungünstigen Zustand oder

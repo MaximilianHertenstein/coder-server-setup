@@ -9,8 +9,43 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `6afd75e` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `74aa880` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – D-Monitoring und B5 entschieden, T-063 vom Betreiber bestätigt
+
+- **D-Monitoring entschieden:** kein Benachrichtigungskanal – Grafana und
+  Prometheus bleiben die Anlaufstelle, das Risiko (Ausfälle sieht nur, wer
+  hinsieht) wird getragen. Alertmanager/Contact Point werden nicht
+  gebaut, erst auf neuen Wunsch. Umsetzung nur in der Doku, keine
+  Konfigurationsänderung.
+- **B5 entschieden:** Client-IPs bleiben **nicht** im Audit – die
+  Empfehlung vom 2026-09-29 („so lassen") ist übernommen; die
+  technische Fall-Option (`CODER_PROXY_TRUSTED_ORIGINS` nur auf eine feste
+  Caddy-IP) bleibt in SECURITY §8 als Weg für den Fall vermerkt, dass es
+  doch gebraucht wird.
+- **Template-Abnahme, Schritt 2:** der Betreiber hat den
+  Workspace-Selbsttest am 2026-09-30 als gelaufen bestätigt („läuft").
+  Eingetragen als Aussage des Betreibers, **nicht** von mir reproduziert;
+  Schritt 4 (Spielraum der Limits im laufenden Workspace) ist weiter nicht
+  separat protokolliert und bleibt als Lücke markiert.
+- **Damit offen von den D-Entscheidungen nur noch:** der DNS-01-Teil von
+  D-TLS (braucht Zonen-Zugang; Antwort darauf steht aus).
+- **Doku:** SECURITY.md (§5 Monitoring-Absatz, §6 Inventar-/T-063-Stand,
+  §8 Zeilen 9, 10 und 11, §9 Intro, D-Monitoring-Zeile, Fußnote),
+  README.md (Entscheidungs-Zeile), templates/allowlist.md (Status,
+  Prüfstext, sechs Abnahmen-Zeilen).
+- **Geänderte Dateien:** `SECURITY.md`, `README.md`, `templates/allowlist.md`.
+- **Teststand (tatsächlich ausgeführt):** nach den Änderungen alle 12
+  Dateien in `tests/` grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh
+  ssh-harden.sh` und `shellcheck -S warning setup-coder.sh ssh-harden.sh`
+  ohne Befund.
+- **Offene Punkte:** DNS-01/Zonen-Zugang (D-TLS-Teil), Schritt 4 der
+  Template-Abnahme, volles Restore-Prozedere auf frischer VM (RTO),
+  Testmatrix, Inbetriebnahme (DNS + 80/443-Weiterleitung, Termin unbekannt),
+  PostgreSQL-15-Migration vor 11/2027.
 
 ---
 
