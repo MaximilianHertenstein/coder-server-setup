@@ -31,7 +31,7 @@ nicht im Repository.
 | Quellstand | Branch `main`, letzter Commit `252ebc8` (Review-Runde 1, Phasen 1–7); die Änderungen der **Review-Runde 2** (zweite Fundliste) sind im Arbeitsstand **nicht committet** (siehe [CHANGELOG.md](CHANGELOG.md)) |
 | Lokale Tests | Für den aktuellen Arbeitsstand mit atomarer Dateierzeugung, Setup-Lock und Laufzeit-Preflights nicht ausgeführt; siehe neuesten CHANGELOG-Eintrag |
 | Vollständiger Setup-Lauf auf echtem System | Letzter Lauf auf dem Test-Host `2.29.11.30` am 2026-09-29, **vor** den Änderungen dieser Review-Runde. Er belegt nicht deren Laufzeitverhalten. TLS war dort wegen eines externen nginx auf 80/443 offen (Details [CHANGELOG.md](CHANGELOG.md)) |
-| Restore-Test | **nicht geprobt**, RTO unbekannt ([RESTORE.md](RESTORE.md)) |
+| Restore-Test | **teilweise geprobt** 2026-09-30: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Stack-Restore auf frischer VM und volle RTO weiter offen ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **nicht eingerichtet** – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | Schulserver: Passwort-Login ist für die erste Inbetriebnahme bewusst aktiv, SSH ist laut Netzvorgabe nur aus dem Schulnetz erreichbar; ufw `limit 22/tcp` und fail2ban laufen zusätzlich. `ssh-harden.sh` bleibt unaufgerufen ([SECURITY.md](SECURITY.md) §1) |
 | Offene Befunde | u. a. B5 (Client-IPs im Audit bewusst nicht gesetzt), kein Alert-Empfänger, kein Offsite-Backup und geplante PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |

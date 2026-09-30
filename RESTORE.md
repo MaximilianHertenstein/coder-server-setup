@@ -1,7 +1,14 @@
 # RESTORE.md – Wiederherstellungs-Runbook (F-003)
 
-Stand: 2026-09-29. Status: Verfahrenstiefe 1 (manuell, aber festgelegt).
-Noch NICHT geprobt (keine Test-VM verfügbar) – RTO unbekannt, siehe BLOCKER.
+Stand: 2026-09-30. Status: Verfahrenstiefe 1 (manuell, aber festgelegt).
+**Geprobt am 2026-09-30** auf dem Test-Host `2.29.11.30` in isolierter Form:
+frischer Dump (Sonde `RTO-PROBE-2026-09-30` vor dem Lauf gesetzt) in einen
+eigenen `postgres:15-alpine`-Probencontainer eingespielt – Import exit 0 in
+3,0 s, Datenprobe `1`, 119/119 Tabellen, 937/937 Zeilen, `gzip -t` grün.
+Der laufende Stack wurde **nicht** angefasst (kein `dropdb`, kein `up -d`).
+**Nicht geprobt:** Pfad A/B auf einer frischen VM inklusive Stack-Start,
+`/healthz` und Dashboard-Login – die volle RTO (VM + Stack + Prüfung) bleibt
+deshalb unbekannt, nur der Importteil ist mit 3,0 s belegt.
 Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 
 ## Was gesichert wird – und was nicht (P-024, ehrlich)
@@ -144,7 +151,15 @@ RTO-Zahl hier eintragen:
 
 | Datum | Coder-Version | Dump-Alter | RTO | Datenprobe = 1 | Login ok |
 |---|---|---|---|---|---|
-| _offen_ | – | – | – | – | – |
+| 2026-09-30 | v2.36.6 (Test-Host) | 3 Min | 3,0 s (nur Dump-Import) | ja (1, im Probencontainer) | – (kein Stack-Neustart) |
+| _offen_ (volles Pfad-A-/Pfad-B-Prozedere auf frischer VM) | – | – | – | – | – |
+
+Probe 2026-09-30, Durchführung: Sonde wie oben setzen, `backup.sh` laufen
+lassen, Dump per `zcat | psql -v ON_ERROR_STOP=1` in einen temporären
+Container derselben Image-Version. Achtung beim Warten auf den frischen
+Container: `pg_isready` meldet auch schon während des Temp-Servers des
+Initialisierens – erst wiederholt `SELECT 1` mit den echten Zugangsdaten
+gilt als bereit (sonst bricht der Import mitten in der Initialisierung ab).
 
 ## Verwandte Dokumentation
 

@@ -375,7 +375,7 @@ ss -tlnp; ss -ulnp | grep 443
 | 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1), Budget-Schutz bleibt bis D-TLS mit Frist |
 | 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh`, `TlsCheckStale` und `TlsLogTruncated` (Metriken `coder_tls_log_window_seconds`, `coder_tls_log_truncated`); Zählung bleibt Untergrenze, der Verlust ist jetzt gemeldet |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | offen (D-Offsite) |
-| 6 | Restore nie geprobt, RTO unbekannt | im Ernstfall ist der Wiederherstellungsweg ungeprüft | offen, Probe nur auf Test-VM |
+| 6 | Restore nur teilweise geprobt, volle RTO unbekannt | der Wiederherstellungsweg mit Stack-Start und Login ist ungeprüft | Dump-Import in Probencontainer mit Datenprobe = 1 am 2026-09-30; Pfad A/B auf frischer VM bleibt offen (Probe nur auf Test-VM) |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | offen (D-Reboot-Fenster) |
 | 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (6 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
