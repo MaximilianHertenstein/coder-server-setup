@@ -1,4 +1,4 @@
-# SECURITY.md – Härtung, Grenzen, offene Entscheidungen
+# SECURITY.md – Härtung, Grenzen, Entscheidungen
 
 Stand: 2026-09-29. Diese Datei beschreibt den **tatsächlichen** Stand aus
 `setup-coder.sh` und `ssh-harden.sh` – inklusive dessen, was bewusst noch
@@ -175,7 +175,8 @@ Coder-Subdomänen-Muster entspricht, sonst `404`:
 - Erster Handshake einer neuen Subdomain dauert 5–30 s länger (Zertifikat
   wird beim ersten Aufruf beantragt).
 - Echter Fix bleibt DNS-01-Wildcard ohne On-Demand (eigener API-Token des
-  DNS-Anbieters, offene Entscheidung D-TLS mit Frist). Bis dahin gilt:
+  DNS-Anbieters; dieser Teil von D-TLS bleibt mit Frist offen, die
+  Entscheidung ist 2026-09-30 nur teilentschieden). Bis dahin gilt:
   Budget über `check-tls.sh` beobachten.
 
 **Erkennung**: `check-tls.sh` zählt `obtaining certificate` im Caddy-Log
@@ -190,9 +191,10 @@ deshalb die vorhandene Loghistorie: als `coder_tls_log_window_seconds`
 ist, obwohl der Container älter als 7 Tage ist, zusätzlich als
 `WARNUNG … die Zahl ist eine Untergrenze`, als `coder_tls_log_truncated 1`
 und damit als Regel `TlsLogTruncated`. Die Zählung selbst bleibt eine
-Untergrenze, kein Vollzählwerk; ein Zählwerk unabhängig von der
-Logaufbewahrung (Delta-Stand oder eigenes Caddy-Log-Volume) ist weiterhin
-die offene Entscheidung D-TLS.
+Untergrenze, kein Vollzählwerk; die Beobachtung darüber ist seit
+2026-09-30 der übernommene Teil von D-TLS (`TlsLogTruncated`). Ein
+Zählwerk unabhängig von der Logaufbewahrung (Delta-Stand oder eigenes
+Caddy-Log-Volume) bleibt der noch offene Teil dieser Entscheidung.
 
 ```bash
 grep -E '^IPV6=' /etc/default/ufw; sudo docker logs coder-caddy --since 168h 2>&1 | grep -c "obtaining certificate"
@@ -241,8 +243,9 @@ das akzeptabel, weil dort ohnehin der öffentliche Coder-Zugang laufen
 soll; der Schutz der übrigen Dienste kommt deshalb **nicht** aus ufw,
 sondern aus der 127.0.0.1-Bindung (Abschnitt 6). Für SSH (Host-Dienst,
 kein Container) greifen ufw und fail2ban tatsächlich. Ein
-`DOCKER-USER`-Einbau ist eine offene Entscheidung (D-Firewall) und wurde
-bewusst nicht eingebaut.
+`DOCKER-USER`-Einbau wurde am 2026-09-30 als Entscheidung D-Firewall
+geprüft und **nicht** eingebaut: solange öffentliche Ports ausschließlich
+über Caddy laufen, bleibt die 127.0.0.1-Bindung der Schutz.
 
 **Reihenfolge ist die Sicherheitsfunktion (A1)**: Gelöscht wird ausschließlich
 in der allow→limit-Umwandlung und nur die vorgefundene weltweite 22-Regel;
@@ -272,8 +275,8 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
 
 - `unattended-upgrades` aktiviert (nicht-interaktiv, `20auto-upgrades`),
   automatischer Reboot um 03:00 Uhr (`52-coder-reboot`). Das Fenster ist
-  **nicht** mit dem Schulbetrieb abgestimmt (D-Reboot-Fenster) – vor
-  Produktionsfreigabe abstimmen.
+  am 2026-09-30 mit dem Schulbetrieb abgestimmt (D-Reboot-Fenster):
+  Unterrichtsbeginn 07:45, Reboot um 03:00 bleibt.
 - Docker-apt-Repo mit Fingerprint-Prüfung: entspricht der Wert nicht
   `9DC858229FC7DD38854AE2D88D81803C0EBFCD88`, bricht das Setup ab
   (Rotation dort abgleichen, nicht blind übernehmen).
@@ -331,8 +334,9 @@ vorbehalten.
 - Die docker-GID wird bei jedem Lauf gegen den Host abgeglichen; der
   Abschlusscheck prüft, dass `GroupAdd` die aktuelle GID enthält
   (`[OK]`/`[FEHLER]` „Socket-Zugriff").
-- Echte Trennung (Proxy/ separater Host) ist eine offene Entscheidung
-  (D-Socket). Bis dahin greift die Template-Allowlist:
+- Echte Trennung (Proxy/ separater Host) ist am 2026-09-30 als D-Socket
+  entschieden: keine zweite VM, also bleibt es beim schreibbaren Socket.
+  Damit ist die Template-Allowlist **Dauerregel**, kein Provisorium:
   [templates/allowlist.md](templates/allowlist.md) – verboten sind dort
   u. a. Socket-Mounts, `privileged`, `pid/host`/`network_mode: host`,
   Host-Root-Mounts und gemeinsame Netze mit `postgres`.
@@ -360,7 +364,9 @@ ss -tlnp; ss -ulnp | grep 443
 - `/opt/coder/backups` ist `700`, Dateien `600`, Inhalt: nur
   verifizierte Postgres-Dumps (14 Stück).
 - Es gibt **keine Offsite-Kopie**. Platten- oder Hostverlust bedeutet
-  Datenbank und alle Backups gleichzeitig (offene Entscheidung D-Offsite).
+  Datenbank und alle Backups gleichzeitig. Diese Entscheidung D-Offsite
+  ist am 2026-09-30 bewusst getroffen: kein zweiter Standort, das
+  Verlustrisiko wird akzeptiert (Inhalte sind nicht extrem kritisch).
 - Workspace-Dateien und `.env` sind nicht Teil des Backups – siehe
   Verlusttabelle in [RESTORE.md](RESTORE.md).
 - Ein grüner Backup-Lauf ist kein Restore-Nachweis; die Probe gehört auf
@@ -370,14 +376,14 @@ ss -tlnp; ss -ulnp | grep 443
 
 | # | Grenze | Risiko in einem Satz | Status |
 |---|---|---|---|
-| 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | Trennung offen (D-Socket), Allowlist greift bis dahin |
+| 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | entschieden 2026-09-30 (D-Socket): keine zweite VM, Restrisiko akzeptiert, Allowlist gilt dauerhaft |
 | 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | bewusst aktiv für die erste Inbetriebnahme; `ssh-harden.sh` bleibt ein späterer, manueller Schritt nach getestetem Schlüsselzugang |
-| 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1), Budget-Schutz bleibt bis D-TLS mit Frist |
+| 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1); D-TLS 2026-09-30 teilentschieden (Beobachtung über `TlsLogTruncated`), Budget-Schutz bleibt, DNS-01 offen |
 | 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh`, `TlsCheckStale` und `TlsLogTruncated` (Metriken `coder_tls_log_window_seconds`, `coder_tls_log_truncated`); Zählung bleibt Untergrenze, der Verlust ist jetzt gemeldet |
-| 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | offen (D-Offsite) |
+| 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | entschieden 2026-09-30 (D-Offsite): kein zweiter Standort, Risiko akzeptiert |
 | 6 | Restore nur teilweise geprobt, volle RTO unbekannt | der Wiederherstellungsweg mit Stack-Start und Login ist ungeprüft | Dump-Import in Probencontainer mit Datenprobe = 1 am 2026-09-30; Pfad A/B auf frischer VM bleibt offen (Probe nur auf Test-VM) |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
-| 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | offen (D-Reboot-Fenster) |
+| 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | entschieden 2026-09-30 (D-Reboot-Fenster): 03:00 bleibt, Unterrichtsbeginn 07:45 |
 | 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (6 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
 | 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | Entscheidung offen (B5): erst festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz/Schule). Empfehlung 2026-09-29: **so lassen**. Wenn doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
@@ -386,22 +392,26 @@ ss -tlnp; ss -ulnp | grep 443
 
 ## 9. Offene Entscheidungen (Entscheidungsliste)
 
-Alle sieben Entscheidungen sind **offen**: keine ist im Repo entschieden,
-kein Termin steht fest. Eigentümer jedes Punktes ist der Betreiber
-([OPERATIONS.md](OPERATIONS.md) Abschnitt 11), bei D-TLS zusätzlich der
-DNS-/Netzwerk-Verantwortliche; die **Frist ist jeweils noch zu setzen**.
-Die Abschnitte 1–7 begründen die Lage, diese Tabelle ist der Sammelpunkt.
+**Stand 2026-09-30:** vier Entscheidungen sind getroffen (D-Socket,
+D-Firewall, D-Reboot-Fenster, D-Offsite), D-TLS ist teilentschieden, zwei
+bleiben offen (D-SSH, D-Monitoring). Eigentümer jedes Punktes ist der
+Betreiber ([OPERATIONS.md](OPERATIONS.md) Abschnitt 11), bei D-TLS
+zusätzlich der DNS-/Netzwerk-Verantwortliche; **Fristen sind nur noch für
+die offenen Punkte zu setzen**. Die Abschnitte 1–7 begründen die Lage,
+diese Tabelle ist der Sammelpunkt.
 
-| ID | Entscheidung | Optionen | Empfehlung | Voraussetzung |
-|---|---|---|---|---|
-| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | DNS-/Zonen-Zugang des Anbieters, Frist vom Betreiber |
-| D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo bis Erstinventar und T-063 abgeschlossen; Ziel für den nächsten Ausbauschritt: separater Host | zweite VM und Provisioner-Konzept (Ressourcenentscheidung) |
-| D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Härtung, sobald Key-Login und Zweit-Zugang aus einem zweiten Fenster getestet sind | Schlüssel auf allen Admin-Geräten, getesteter Zweit-Zugang, Termin + Eigentümer |
-| D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | nur nötig, falls ein Container-Port ohne Caddy öffentlich werden soll |
-| D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | vor Produktionsfreigabe abstimmen; Abschalten hieße Sicherheitsupdates ohne Neustart | Abstimmung mit Schulbetrieb/IT |
-| D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | mindestens `BackupStale`, `RootPartitionFillingUp` und `CoderTargetDown` an einen Kanal, bevor Produktion läuft | SMTP- oder Webhook-Zugang vom Betreiber |
-| D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | zweiter Standort, weil die Dumps Passwörter und Personendaten enthalten; Ziel verschlüsselt, danach einmal Restore durchspielen | Zielhost/Zugang, Verschlüsselung am Ziel, erweiterter Restore-Test |
+| ID | Entscheidung | Optionen | Empfehlung | Voraussetzung | Status 2026-09-30 |
+|---|---|---|---|---|---|
+| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | DNS-/Zonen-Zugang des Anbieters, Frist vom Betreiber | teilentschieden: Beobachtung übernommen (`TlsLogTruncated`), DNS-01 bleibt offen |
+| D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo + Allowlist bleiben dauerhaft; Erstinventar und T-063 bleiben Pflicht | – | entschieden: Empfehlung übernommen – keine zweite VM |
+| D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Härtung, sobald Key-Login und Zweit-Zugang aus einem zweiten Fenster getestet sind | Schlüssel auf allen Admin-Geräten, getesteter Zweit-Zugang, Termin + Eigentümer | offen – braucht getesteten Key- und Zweit-Zugang |
+| D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
+| D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | 03:00 bleibt, abgestimmt gegen Unterrichtsbeginn 07:45 | – | entschieden: Empfehlung übernommen – 03:00 bleibt |
+| D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | mindestens `BackupStale`, `RootPartitionFillingUp` und `CoderTargetDown` an einen Kanal, bevor Produktion läuft | SMTP- oder Webhook-Zugang vom Betreiber | offen – braucht SMTP- oder Webhook-Zugang |
+| D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | kein zweiter Standort; lokal bleiben Dumps 700/600 und die Restore-Probe der Schutz | – | entschieden: kein zweiter Standort, Restrisiko akzeptiert |
 
+Nicht mitentschieden, weil es Zugänge braucht: D-SSH (Schlüssel),
+D-Monitoring (Kanal), DNS-01/Zonen-Zugang (D-TLS-Teil).
 Ähnlich offen, aber ohne D-Kürzel: **B5** (Client-IPs im Audit – Empfehlung
 2026-09-29: so lassen, Abschnitt 8 Zeile 11) und **B4b** (DNS-01-Zonen-Zugang,
 deckt sich mit D-TLS). Nicht Teil dieser Liste, weil sie Schritte und keine

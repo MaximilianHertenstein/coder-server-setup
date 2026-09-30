@@ -9,8 +9,41 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `eeed209` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `5d6d965` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Vier D-Entscheidungen getroffen, eine teilentschieden
+
+- **Vom Betreiber entschieden:** D-Reboot-Fenster (Reboot 03:00 bleibt,
+  Unterrichtsbeginn 07:45), D-Socket (keine zweite VM, also Status quo +
+  Template-Allowlist als Dauerregel), D-Firewall (kein `DOCKER-USER`,
+  127.0.0.1-Bindung bleibt der Schutz), D-Offsite (kein zweiter Standort,
+  Verlustrisiko bewusst akzeptiert, Daten nicht extrem kritisch).
+  D-TLS ist **teilentschieden**: Beobachtung über `TlsLogTruncated` ist
+  übernommen, DNS-01/Zonen-Zugang bleibt offen.
+- **Offen bleiben:** D-SSH (braucht getesteten Key- und Zweit-Zugang),
+  D-Monitoring (braucht SMTP- oder Webhook-Zugang) – bewusst nicht
+  umgesetzt, dafür fehlt der Zugang.
+- **Umsetzung:** reine Dokumentation. Konfiguration bleibt unangetastet
+  (Reboot steht schon auf 03:00, kein `DOCKER-USER` eingebaut, kein
+  Alertmanager ergänzt, `ssh-harden.sh` weiter nicht aufgerufen).
+- **Doku:** SECURITY.md (Titel, §3 D-TLS-Formulierungen, §4 D-Firewall,
+  §5 Reboot-Fenster, §6 D-Socket, §7 D-Offsite, §8 Status-Spalte der
+  Zeilen 1/3/5/8, §9 mit neuer Spalte „Status 2026-09-30" und neuem Intro;
+  Empfehlungen der entschiedenen Zeilen auf den Entscheidungsstand
+  umgeschrieben), README.md (Status-Zeile auf 2026-09-30, Quellstand-,
+  Test- und Setup-Lauf-Zeile auf den tatsächlichen Stand, Offsite-Zeile,
+  Entscheidungs-Zeile).
+- **Geänderte Dateien:** `SECURITY.md`, `README.md`.
+- **Teststand (tatsächlich ausgeführt):** nach den Änderungen alle 12
+  Dateien in `tests/` grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh`
+  und `shellcheck -S warning setup-coder.sh` ohne Befund. Kein Test hängt
+  an den geänderten Formulierungen (vorab geprüft).
+- **Offene Punkte:** D-SSH, D-Monitoring, DNS-01/Zonen-Zugang (D-TLS-Teil),
+  volles Restore-Prozedere auf frischer VM (RTO), Template-Erstinventar +
+  T-063, Testmatrix, SSH-Härtung nach getestetem Key-Zugang.
 
 ---
 

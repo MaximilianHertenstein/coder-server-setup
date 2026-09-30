@@ -24,17 +24,17 @@ nicht im Repository.
 | Welches Workspace-Template darf was? | [templates/allowlist.md](templates/allowlist.md) |
 | Befunde, Pläne, Prüfprotokolle (Referenz) | `ai-review/` – keine Lese-Pflicht für den Betrieb; neueste Setup-Prüfung: [ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
-## Status (Stand 2026-09-29)
+## Status (Stand 2026-09-30)
 
 | Punkt | Stand |
 |---|---|
-| Quellstand | Branch `main`, letzter Commit `252ebc8` (Review-Runde 1, Phasen 1–7); die Änderungen der **Review-Runde 2** (zweite Fundliste) sind im Arbeitsstand **nicht committet** (siehe [CHANGELOG.md](CHANGELOG.md)) |
-| Lokale Tests | Für den aktuellen Arbeitsstand mit atomarer Dateierzeugung, Setup-Lock und Laufzeit-Preflights nicht ausgeführt; siehe neuesten CHANGELOG-Eintrag |
-| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf auf dem Test-Host `2.29.11.30` am 2026-09-29, **vor** den Änderungen dieser Review-Runde. Er belegt nicht deren Laufzeitverhalten. TLS war dort wegen eines externen nginx auf 80/443 offen (Details [CHANGELOG.md](CHANGELOG.md)) |
+| Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
+| Lokale Tests | Stand 2026-09-30: alle 12 Dateien in `tests/` grün (346 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
+| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf auf dem Test-Host `2.29.11.30` am 2026-09-30 (nach B2-005 und Restore-Probe), Exit 0, 0 Fehler, Firewall unverändert (Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **teilweise geprobt** 2026-09-30: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Stack-Restore auf frischer VM und volle RTO weiter offen ([RESTORE.md](RESTORE.md)) |
-| Offsite-Backup | **nicht eingerichtet** – Platten-/Hostverlust = Datenbank + Backups weg |
+| Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | Schulserver: Passwort-Login ist für die erste Inbetriebnahme bewusst aktiv, SSH ist laut Netzvorgabe nur aus dem Schulnetz erreichbar; ufw `limit 22/tcp` und fail2ban laufen zusätzlich. `ssh-harden.sh` bleibt unaufgerufen ([SECURITY.md](SECURITY.md) §1) |
-| Offene Entscheidungen | D-TLS, D-Socket, D-SSH, D-Firewall, D-Reboot-Fenster, D-Monitoring, D-Offsite – alle mit Optionen und Empfehlung in [SECURITY.md](SECURITY.md) §9; außerdem B5 (Client-IPs im Audit bewusst nicht gesetzt) und PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
+| Offene Entscheidungen | **offen:** D-SSH, D-Monitoring, DNS-01-Teil von D-TLS. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; außerdem B5 (Client-IPs im Audit bewusst nicht gesetzt) und PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
