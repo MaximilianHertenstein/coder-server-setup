@@ -9,8 +9,27 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `5d6d965` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `300972b` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Offene Punkte, aktualisierte Liste
+
+Ersetzt die Liste „Offene Punkte (Stand 2026-09-29)" weiter unten; die
+ältere bleibt aus Append-only-Grund stehen.
+
+| Punkt | Status 2026-09-30 |
+|---|---|
+| TLS/ACME auf dem Test-Host | **weiterhin blockiert extern**: `healthz` meldet in beiden Läufen am 2026-09-30 weiterhin 000; Weiterleitung 80/443 liegt beim Netzwerkadmin |
+| C2 Log-Limit wirksam | erledigt 2026-09-29 (unverändert) |
+| B2-005 (TLS-Zählung blind gegenüber Log-Rotation) | erledigt 2026-09-30, Commit `ccc6181` |
+| Restore-Probe + RTO-Zahl | **teilweise** erledigt 2026-09-30, Commit `35d3a57`: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Pfad A/B auf frischer VM mit Stack-Start und volle RTO bleiben offen |
+| Offsite-Backup | entschieden 2026-09-30: kein zweiter Standort, Risiko akzeptiert – bleibt bewusst nicht eingerichtet |
+| SSH-Härtung (`ssh-harden.sh`) | offen: braucht gesetzten und aus zweitem Fenster getesteten Key plus Zweit-Zugang; bis dahin Minimalvariante (ufw `limit` + fail2ban) |
+| Template-Erstinventar + Workspace-Selbsttest (T-063) | offen; Befund 2026-09-30: der Test-Host hat **0 Templates** in der DB, das echte Inventar liegt auf dem Zielserver |
+| VM-/Integrationstests der Testmatrix | nicht ausgeführt |
+| Entscheidungen D-* | vier entschieden (D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite), D-TLS teilentschieden, offen: D-SSH und D-Monitoring |
 
 ---
 
