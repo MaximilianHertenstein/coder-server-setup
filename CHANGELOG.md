@@ -9,8 +9,31 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `590f091` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `a8b0600` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Testhost-Lauf unter den neuen ufw-Regeln
+
+- **Durchgeführt:** zweimal `bash setup-coder.sh` auf dem Testhost
+  `2.29.11.30` (Re-Run, Skript per `scp` nach `/tmp`), `ufw status numbered`
+  vor dem ersten und nach dem zweiten Lauf protokolliert und verglichen.
+- **Ergebnis:** beide Läufe Exit 0, 0 `[FEHLER]`, 4 unterschiedliche
+  `[WARNUNG]` (Healthz-Hintergrundpfad, fehlende `RESTORE.md`/
+  `ssh-harden.sh` neben dem Skript in `/tmp`, SSH-Passwort-Login) – keine
+  ufw-Warnung. Firewall unverändert: `diff` vor/nach byte-identisch, Regel 1
+  weiter `22/tcp LIMIT IN Anywhere`, also tatsächlich kein Delete und kein
+  `limit 22/tcp`-Neuaufruf (No-Op-Zweig). Abschlusscheck: „SSH ist offen,
+  aber per ufw rate-limitiert (22/tcp LIMIT)".
+- **Nicht geprüft:** Pfad B (quellbeschränkte SSH-Regel) nur gegen Fakes im
+  Test (`t-b2-004-ufw-ssh-rules.sh`), nicht live – eine Umgewandlung der
+  Firewall-Regel auf dem Testhost würde den SSH-Zugang riskieren.
+- **Geänderte Dateien:** keine (nur Dokumentation dieses Laufs).
+- **Teststand (tatsächlich ausgeführt):** alle 10 Dateien in `tests/` grün
+  (306 PASS, 0 FAIL) vor dem Lauf; `bash -n` und `shellcheck -S warning`
+  ohne Befund.
+- **Offene Punkte:** Ticket-Kürzel, Root-Lauf.
 
 ---
 
