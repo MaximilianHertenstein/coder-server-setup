@@ -9,8 +9,58 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `cfed8ca` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `38df96a` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Testmatrix am Test-Host abgearbeitet (Punkte 2, 3, 5, 6, 7, 11)
+
+Test-Host `2.29.11.30` gilt laut Betreiber ausdrücklich als reines
+Wegwerf-Gerät – die Läufe hier sind deshalb ohne weitere Rückfrage
+durchgeführt worden.
+
+- **Punkt 2 (Re-Run/Idempotenz):** `setup-coder.sh` aus dem aktuellen
+  Repo-Stand (per `git archive` übertragen) erneut ausgeführt – RC 0 in
+  48 s. Mein manueller Compose-Patch vom Migrationsschritt wurde als
+  **Drift erkannt und deterministisch regeneriert** (WARN, wie
+  vorgesehen), Stack nicht neu erstellt, Container liefen weiter.
+- **Punkt 6 (ufw/fail2ban):** nach dem Re-Run unverändert genau eine
+  `22/tcp LIMIT`-Regel (v4 + v6), keine zweite Weltregel daneben;
+  `fail2ban` aktiv.
+- **Punkt 3 (Backup):** Cron-Läufe um 01:00 nachweisbar
+  (`coder_2026-09-29_010001.sql.gz`, `coder_2026-09-30_010001.sql.gz`,
+  `gzip -t` grün), 14 Dumps in der Rotation, `/etc/logrotate.d/coder-backup`
+  aktiv. Volle Platte nicht geprobt.
+- **Punkt 5 (Reboot + Boot-Gate):** Reboot 19:07, SSH nach ~35 s wieder
+  da, alle 6 Container + Postgres healthy nach 51 s, Coder-API grün,
+  DB 18.6 mit unveränderten Daten. Die `/healthz`-Zeile des Boot-Gates
+  bleibt auf dem Test-Host rot, weil die Domain auf eine fremde IP zeigt
+  (kein Zertifikat) – externer Blocker, kein Gate-Defekt; 03:00-Fenster
+  nicht beobachtet.
+- **Punkt 7 (Reset):** `printf 'RESET\n' | reset-coder.sh --force` –
+  Backup lief zuerst, dann Löschung von DB-/Grafana-/Prometheus-Volumes
+  und `.env`; Caddy-Zertifikate und alle 14 Dumps blieben erhalten
+  (wie dokumentiert). Inventar-Vorabmeldung lief, es gab keine fremden
+  Container (Pfad „fremder Workspace-Container" damit weiter ungeprüft).
+- **Punkt 11 (Erstanlage):** danach Neuaufbau mit
+  `CODER_FIRST_USER_*` (Passwort nur im Host-Schatten erzeugt, nie
+  geloggt) – RC 0, `[OK] Erstkonto (Owner) angelegt: owner`. Zweiter
+  Lauf mit denselben Variablen bei existierendem Konto: RC 0 ohne
+  Abbruch (Block läuft korrekt nur bei `HUMAN_USERS=0`).
+- **Neuer Zustand Test-Host:** frische DB (118 Tabellen, ohne
+  `restore_probe`-Sonde – vor dem nächsten Probe-Backup Sonde setzen),
+  `owner` + `prebuilds` als Nutzer, `.env` neu generiert, 18.6 healthy.
+- **Doku:** README, neuer Abschnitt „Prüfstand der Liste" mit Status je
+  Matrix-Punkt; Status-Tabelle: PostgreSQL-Punkt auf erledigt.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/`
+  grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** Matrix-Punkt 4 (volle VM-RTO, Pfad A/B),
+  Punkt 9 Rest (Wildcard-DNS/Workspace-Subdomain, braucht DNS auf den
+  Server), Punkt 3 Rest (volle Platte), Punkt 7 Rest (fremde
+  Workspace-Container), Schritt 4 der Template-Abnahme,
+  Inbetriebnahme-Termin (Netzwerkadmin-Zeilen 1–4, IServ unklar).
 
 ---
 

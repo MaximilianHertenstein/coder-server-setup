@@ -34,7 +34,7 @@ nicht im Repository.
 | Restore-Test | **teilweise geprobt** 2026-09-30: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Stack-Restore auf frischer VM und volle RTO weiter offen ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | **Entschieden (D-SSH, 2026-09-30):** Passwort-Login bleibt Standard, `ssh-harden.sh` ist nicht Standard und bleibt unaufgerufen; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `limit 22/tcp` und fail2ban zusätzlich ([SECURITY.md](SECURITY.md) §1) |
-| Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting/IServ). Von den D-Entscheidungen sonst nichts mehr offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); fällig: PostgreSQL-15-Migration vor Supportende 2027 – Details [CHANGELOG.md](CHANGELOG.md) |
+| Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting/IServ). Von den D-Entscheidungen sonst nichts mehr offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
@@ -347,6 +347,22 @@ Produktivsystem geprüft werden:
     (B1): muss das Konto entstehen, ohne dass jemand die Anmeldeseite
     erreicht – und der Re-Run (Konto existiert) darf scheitern, ohne
     abzubrechen.
+
+### Prüfstand der Liste (Test-Host `2.29.11.30`, Stand 2026-09-30)
+
+| # | Status |
+|---|---|
+| 1 | erledigt: Original-Lauf auf frischer Debian-13-VM 2026-09-28/29; zusätzlich Neuaufbau nach `reset-coder.sh` heute (RC 0) |
+| 2 | erledigt 2026-09-30 19:05: Re-Run RC 0 in 48 s; Hand-Patch an der Compose-Datei wurde als Drift erkannt und deterministisch regeneriert, Stack nicht neu erstellt |
+| 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher nicht geprobt |
+| 4 | teilweise: Dump-Import isoliert 3,0 s, Live-Restore beim Major-Wechsel 15 → 18 (2,3 s, Zahlen identisch); volle VM-RTO weiter offen |
+| 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); 03:00-Fenster nicht beobachtet |
+| 6 | erledigt: Re-Run ließ genau eine `22/tcp LIMIT`-Regel (v4/v6) stehen, keine zweite Weltregel; fail2ban aktiv |
+| 7 | erledigt: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und 14 Dumps erhalten, Inventar-Meldung lief (keine fremden Container vorhanden), danach Neuaufbau grün |
+| 8 | entfällt (D-SSH, 2026-09-30) |
+| 9 | teilweise: von außen 22/80/443 offen, 9090/9100/3001/3000/8080 geschlossen; Wildcard-DNS und Workspace-Subdomain nicht prüfbar, solange die Domain nicht auf den Server zeigt |
+| 10 | entfällt (D-Offsite) |
+| 11 | erledigt: Erstanlage über `CODER_FIRST_USER_*` (RC 0, `[OK] Erstkonto (Owner) angelegt: owner`); Re-Run mit existierendem Konto RC 0 ohne Abbruch (Block läuft nur bei `HUMAN_USERS=0`) |
 
 ## Detaildokumentation
 
