@@ -9,8 +9,29 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `a8b0600` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `2f8ba81` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Ticket-Kürzel aus den Laufzeitmeldungen entfernt
+
+- **Befund:** 27 Meldungen des Setups trugen interne Kürzel
+  (`(B6)`, `(A1)`, `(B-007)`, `(B2-004 Pfad C, kein Abbruch)`,
+  `HINWEIS (B2):` …). Für Leser ohne Ticket-Zugang ist das Rauschen, die
+  Aussage steht hinter dem Kürzel ohnehin.
+- **Änderung:** Kürzel aus allen `warn`/`ok`/`fail`/`echo`/`printf`-Meldungen
+  entfernt; wo eine Klammer die Begründung trug, blieb der Klartext
+  (`(neu würfeln würde die Datenbank-Anmeldung zerstören)`). Ein reiner
+  Historien-Kommentar (doppelter Container-Check vor der trap-Zeile)
+  gestrichen. Kürzel in Kommentaren, die ein Verhalten begründen, bleiben
+  bewusst; Überschriften in TROUBLESHOOTING.md bleiben.
+- **Geänderte Dateien:** `setup-coder.sh`.
+- **Teststand (tatsächlich ausgeführt):** alle 10 Dateien in `tests/` grün
+  (306 PASS, 0 FAIL); `bash -n setup-coder.sh` und
+  `shellcheck -S warning setup-coder.sh` ohne Befund. Kein Test hing an den
+  Meldungstexten, keine Doc-Stelle zitiert sie.
+- **Offene Punkte:** Root-Lauf.
 
 ---
 

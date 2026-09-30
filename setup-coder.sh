@@ -236,7 +236,7 @@ note_drift() {
   cur=$(sudo sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
   exp=$(sudo awk -v f="${file}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
   if [ -n "${cur}" ] && [ -n "${exp}" ] && [ "${cur}" != "${exp}" ]; then
-    warn "Drift in ${label} (${file}): weicht von letzter Setup-Generation ab – wird deterministisch regeneriert, Hand-Anpassung geht verloren (B-012)"
+    warn "Drift in ${label} (${file}): weicht von letzter Setup-Generation ab – wird deterministisch regeneriert, Hand-Anpassung geht verloren"
   fi
 }
 remember_hash() {
@@ -470,7 +470,7 @@ if [ ! -f /opt/coder/.env ]; then
   if grep -qx 'coder_postgres_data' <<< "${DOCKER_VOLUMES}"; then
     echo "Fehler: /opt/coder/.env fehlt, aber das Volume coder_postgres_data existiert." >&2
     echo "Abbruch ohne Änderung – neu gewürfelte Passwörter würden die bestehende" >&2
-    echo "Datenbank-Anmeldung zerstören (A5/P-011)." >&2
+    echo "Datenbank-Anmeldung zerstören." >&2
     echo "Reparatur: Ein SQL-Backup enthält die .env und ihre Passwörter NICHT." >&2
     echo "Eine separat gesicherte .env wiederherstellen oder nach RESTORE.md mit" >&2
     echo "neuen Zugangsdaten neu aufsetzen; Volume NICHT löschen." >&2
@@ -526,7 +526,7 @@ elif sudo grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   fi
 else
   echo "Fehler: /opt/coder/.env existiert, ist aber unvollständig (mindestens ein Schlüssel fehlt/leer)." >&2
-  echo "Abbruch ohne Änderung – Passwörter werden NICHT neu gewürfelt (P-011: neu würfeln würde die Datenbank-Anmeldung zerstören)." >&2
+  echo "Abbruch ohne Änderung – Passwörter werden NICHT neu gewürfelt (neu würfeln würde die Datenbank-Anmeldung zerstören)." >&2
   echo "Reparatur: fehlende Schlüssel in /opt/coder/.env ergänzen (vorhandene Werte behalten) oder bei Totalverlust Restore nach Runbook; danach Setup erneut laufen lassen." >&2
   exit 1
 fi
@@ -1060,13 +1060,13 @@ for _pr in tcp udp; do
     fi
     _proc="$(printf '%s\n' "${_line}" | awk '{$1="";$2="";$3="";$4="";sub(/^ +/,"");print}')"
     [ -n "${_proc}" ] || _proc="${_local} (Prozessname nicht lesbar)"
-    warn "Port ${_port}/${_pr} von fremdem Listener belegt (B2-008): ${_proc} – vor 'up -d' aufräumen"
+    warn "Port ${_port}/${_pr} von fremdem Listener belegt: ${_proc} – vor 'up -d' aufräumen"
   done <<< "${_ss_out}"
 done
 
 if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' '); then
   if [ "${_avail}" -lt 1073741824 ]; then
-    warn "Wenig Platte unter /opt/coder (${_avail} < 1 GB, grober Hinweis) – Images/Backups brauchen Luft (B-013)"
+    warn "Wenig Platte unter /opt/coder (${_avail} < 1 GB, grober Hinweis) – Images/Backups brauchen Luft"
   fi
 fi
 
@@ -1136,7 +1136,7 @@ if [ "${CADDY_WAS_RUNNING}" = "true" ] && [ "${CADDY_BEFORE}" != "${CADDY_AFTER}
     fail "Neue Caddyfile ist ungültig (caddy validate rot) – Caddy behält die laufende Konfiguration, kein Ausfall. Fehler anzeigen mit: sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
   fi
 else
-  echo "Caddyfile unverändert (oder Erstlauf) – kein Caddy-Reload (P-025)."
+  echo "Caddyfile unverändert (oder Erstlauf) – kein Caddy-Reload."
 fi
 
 # C3: Alarmregeln (Prometheus) und Datasource-Provisioning (Grafana) liegen als
@@ -1146,11 +1146,11 @@ fi
 # sinnloser Zweistart; bei unveränderter Datei bleibt jeder Lauf startfrei.
 restart_on_cfg_change() { # $1=hash_vorher $2=hash_nachher $3=lief_vorher $4=container $5=was
   if [ "$1" = "$2" ]; then
-    echo "$5 unverändert – kein Neustart (P-025)."
+    echo "$5 unverändert – kein Neustart."
   elif [ "$3" != "true" ]; then
     echo "$5 neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
   elif [ "$4" = "coder-prometheus" ] && sudo docker kill -s HUP "$4" > /dev/null 2>&1; then
-    ok "$5 geändert – Prometheus hat Konfiguration und Alarmregeln per SIGHUP neu geladen (B10)"
+    ok "$5 geändert – Prometheus hat Konfiguration und Alarmregeln per SIGHUP neu geladen"
   elif [ "$4" = "coder-prometheus" ]; then
     warn "Prometheus konnte SIGHUP nicht laden – Konfiguration manuell prüfen: sudo docker logs $4"
   elif sudo docker restart "$4" > /dev/null 2>&1; then
@@ -1174,16 +1174,16 @@ apt_install ufw fail2ban
 # VOR der ersten Firewall-Änderung prüfen und hart abbrechen, statt sich
 # auszusperren (Zugriff dann nur noch über Konsolenzugang des Hosts).
 if ! SSHD_EFFECTIVE_CONFIG="$(sudo sshd -T 2>/dev/null)"; then
-  fail "sshd-Konfiguration konnte nicht gelesen werden – Abbruch vor jeder Firewall-Änderung (B6)."
+  fail "sshd-Konfiguration konnte nicht gelesen werden – Abbruch vor jeder Firewall-Änderung."
   exit 1
 fi
 SSHD_PORTS="$(printf '%s\n' "${SSHD_EFFECTIVE_CONFIG}" | awk '/^port /{print $2}' | sort -u | xargs echo 2>/dev/null || true)"
 if [ -z "${SSHD_PORTS}" ]; then
-  fail "sshd -T lieferte keinen Port – Abbruch vor jeder Firewall-Änderung (B6)."
+  fail "sshd -T lieferte keinen Port – Abbruch vor jeder Firewall-Änderung."
   exit 1
 fi
 if [ "${SSHD_PORTS}" != "22" ]; then
-  echo "Fehler: sshd lauscht auf Port '${SSHD_PORTS}', dieses Skript erlaubt aber nur 22/tcp (B6)." >&2
+  echo "Fehler: sshd lauscht auf Port '${SSHD_PORTS}', dieses Skript erlaubt aber nur 22/tcp." >&2
   echo "Abbruch vor jeder Firewall-Änderung – sonst würde 'ufw enable' den SSH-Zugang schneiden." >&2
   echo "Port in setup-coder.sh anpassen (Suchbegriff: 'ufw limit 22/tcp') und erneut ausführen." >&2
   exit 1
@@ -1239,7 +1239,7 @@ if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
   fi
   # Pfad C: UFW inaktiv ohne gespeicherte SSH-Quellbeschränkung – Regelpfad
   # unten fährt mit der bisherigen Rate-Limit-Regel fort.
-  warn "ufw ist inaktiv (Status: inactive) – SSH-Regel wird jetzt gesetzt (B2-004 Pfad C, kein Abbruch)"
+  warn "ufw ist inaktiv (Status: inactive) – SSH-Regel wird jetzt gesetzt"
 elif [ -n "${UFW_RESTRICTED}" ]; then
   # Pfad B: restriktive SSH-Regel (Quelle != Anywhere). Sie bleibt stehen –
   # weder Löschen noch Restore, deshalb auch kein weltweiter limit-Eintrag
@@ -1337,9 +1337,9 @@ if [ -f /etc/fail2ban/jail.local ]; then
     sudo rm -f /etc/fail2ban/jail.local
     forget_hash "/etc/fail2ban/jail.local"
     JAIL_CHANGED=1
-    echo "Alte setup-eigene /etc/fail2ban/jail.local entfernt (Hash identisch), Einstellungen liegen jetzt in ${JAIL_DROPIN} (B7)."
+    echo "Alte setup-eigene /etc/fail2ban/jail.local entfernt (Hash identisch), Einstellungen liegen jetzt in ${JAIL_DROPIN}."
   else
-    warn "Vorgefunden: /etc/fail2ban/jail.local weicht von der letzten Setup-Generation ab – enthält also Hand-Änderungen. Sie bleibt erhalten UND hat Vorrang vor ${JAIL_DROPIN} (Lese-Reihenfolge). Eigene Jails dort prüfen, sonst greifen maxretry/bantime evtl. nicht wie dokumentiert (B7)."
+    warn "Vorgefunden: /etc/fail2ban/jail.local weicht von der letzten Setup-Generation ab – enthält also Hand-Änderungen. Sie bleibt erhalten UND hat Vorrang vor ${JAIL_DROPIN} (Lese-Reihenfolge). Eigene Jails dort prüfen, sonst greifen maxretry/bantime evtl. nicht wie dokumentiert."
   fi
 fi
 sudo mkdir -p /etc/fail2ban/jail.d
@@ -1394,7 +1394,7 @@ sudo ufw status verbose
 if grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
   ok "ufw-IPv6-Pfad deklariert: IPV6=yes (gleiche Policy für v4+v6)"
 else
-  warn "ufw-IPv6-Pfad unklar (kein IPV6=yes in /etc/default/ufw) – Dual-Stack-Annahme gilt nicht, prüfen mit: grep IPV6 /etc/default/ufw (B-007)"
+  warn "ufw-IPv6-Pfad unklar (kein IPV6=yes in /etc/default/ufw) – Dual-Stack-Annahme gilt nicht, prüfen mit: grep IPV6 /etc/default/ufw"
 fi
 
 UFW_STATUS="$(sudo ufw status)"
@@ -1410,9 +1410,9 @@ fi
 UFW_SSH_LINES="$(grep -E '(22/tcp|OpenSSH)[[:space:]]+(LIMIT|ALLOW)' <<< "${UFW_STATUS}" || true)"
 if [ -n "${UFW_RESTRICTED}" ]; then
   if grep -q 'ALLOW' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
-    fail "weltweite 'allow'-SSH-Regel steht neben der Quell-Beschränkung – jede IP könnte ohne Beschränkung auf SSH zugreifen; prüfen mit: sudo ufw status (A1)"
+    fail "weltweite 'allow'-SSH-Regel steht neben der Quell-Beschränkung – jede IP könnte ohne Beschränkung auf SSH zugreifen; prüfen mit: sudo ufw status"
   elif grep -q 'LIMIT' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
-    fail "weltweite 'limit'-SSH-Regel steht neben der Quell-Beschränkung – die Beschränkung greift dann nicht; prüfen mit: sudo ufw status (A1)"
+    fail "weltweite 'limit'-SSH-Regel steht neben der Quell-Beschränkung – die Beschränkung greift dann nicht; prüfen mit: sudo ufw status"
   else
     ok "SSH quellbeschränkt: keine weltweite 22-Regel daneben, Beschränkung greift"
   fi
@@ -1454,7 +1454,7 @@ F2B_FAILED="$(printf '%s\n' "${F2B_STATUS}" | awk -F: '/Total failed/ {gsub(/[ \
 if [ -n "${F2B_FAILED}" ] && [ "${F2B_FAILED}" -eq "${F2B_FAILED}" ] 2>/dev/null; then
   ok "fail2ban zählt SSH-Fehlversuche (Total failed: ${F2B_FAILED})"
 else
-  fail "fail2ban-Jail 'sshd' zählt keine Fehlversuche – prüfen mit: sudo fail2ban-client status sshd (A6)"
+  fail "fail2ban-Jail 'sshd' zählt keine Fehlversuche – prüfen mit: sudo fail2ban-client status sshd"
 fi
 if grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && \
    grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
@@ -1985,9 +1985,9 @@ fi
 if [ -f "${SCRIPT_SRC_DIR}/RESTORE.md" ]; then
   sudo cp -a "${SCRIPT_SRC_DIR}/RESTORE.md" /opt/coder/RESTORE.md
   sudo chmod 644 /opt/coder/RESTORE.md
-  ok "Runbook nach /opt/coder/RESTORE.md abgelegt (B-008)"
+  ok "Runbook nach /opt/coder/RESTORE.md abgelegt"
 else
-  warn "RESTORE.md liegt nicht neben setup-coder.sh – kein Runbook auf Server abgelegt (B-008)"
+  warn "RESTORE.md liegt nicht neben setup-coder.sh – kein Runbook auf Server abgelegt"
 fi
 # A9: Härtungs-Skript mitliefern. Der Abschlusscheck verweist auf
 # ssh-harden.sh – ohne diesen Kopierschritt war der Verweis im Repo aufgelöst,
@@ -1995,9 +1995,9 @@ fi
 if [ -f "${SCRIPT_SRC_DIR}/ssh-harden.sh" ]; then
   sudo cp -a "${SCRIPT_SRC_DIR}/ssh-harden.sh" /opt/coder/ssh-harden.sh
   sudo chmod 755 /opt/coder/ssh-harden.sh
-  ok "ssh-harden.sh nach /opt/coder/ssh-harden.sh abgelegt (A9)"
+  ok "ssh-harden.sh nach /opt/coder/ssh-harden.sh abgelegt"
 else
-  warn "ssh-harden.sh liegt nicht neben setup-coder.sh – Verweis im Abschlusscheck zeigt ins Leere (A9)"
+  warn "ssh-harden.sh liegt nicht neben setup-coder.sh – Verweis im Abschlusscheck zeigt ins Leere"
 fi
 
 echo "############################################################"
@@ -2238,8 +2238,6 @@ reset_passwords_cleanup() {
 }
 trap reset_passwords_cleanup EXIT
 
-# C3: Der Container-Check lief vorher ein zweites Mal (identischer Block nach
-# der trap-Zeile) – die Prüfung passiert genau einmal oben, vor dem Backup.
 # hex statt base64: garantiert nur 0-9a-f, kann also nie ein "/", "+" oder "="
 # enthalten, das in der Postgres-Connection-URL Probleme machen würde.
 NEW_PG_PW=$(openssl rand -hex 24)
@@ -2656,7 +2654,7 @@ WILDCARD_PROBE="setup-probe-${RANDOM}.${DOMAIN_CODER}"
 if getent hosts "${WILDCARD_PROBE}" > /dev/null 2>&1; then
   ok "Wildcard-DNS löst auf (*.${DOMAIN_CODER} via ${WILDCARD_PROBE})"
 else
-  warn "Wildcard-DNS fehlt (*.${DOMAIN_CODER} löst nicht auf, Probe ${WILDCARD_PROBE}) – Workspace-Apps/Port-Forwarding scheitern, Apex-OK gilt NICHT für Apps. DNS-Wildcard-Eintrag setzen, dann Setup erneut (B-019)."
+  warn "Wildcard-DNS fehlt (*.${DOMAIN_CODER} löst nicht auf, Probe ${WILDCARD_PROBE}) – Workspace-Apps/Port-Forwarding scheitern, Apex-OK gilt NICHT für Apps. DNS-Wildcard-Eintrag setzen, dann Setup erneut."
 fi
 
 # B2: rein lesend, KEINE Nutzer-Erzwinge-Erstellung. Coder vergibt dem ersten
@@ -2685,9 +2683,9 @@ if [ "${HUMAN_USERS}" = "0" ] \
         coder sh -c 'IFS= read -r P
           export CODER_FIRST_USER_PASSWORD="$P"
           exec coder login http://127.0.0.1:3000 --first-user-trial=false ${CODER_FIRST_USER_FULL_NAME:+--first-user-full-name "$CODER_FIRST_USER_FULL_NAME"}' 2>&1); then
-    ok "Erstkonto (Owner) angelegt: ${CODER_FIRST_USER_USERNAME} (B1)"
+    ok "Erstkonto (Owner) angelegt: ${CODER_FIRST_USER_USERNAME}"
   else
-    warn "Erstkonto NICHT angelegt (B1): $(printf '%s' "${FIRST_OUT}" | tr '\n' ' ' | tail -c 300) – Konto manuell auf der Anmeldeseite anlegen, bevor die URL weitergegeben wird"
+    warn "Erstkonto NICHT angelegt: $(printf '%s' "${FIRST_OUT}" | tr '\n' ' ' | tail -c 300) – Konto manuell auf der Anmeldeseite anlegen, bevor die URL weitergegeben wird"
   fi
   # Das CLI-Session-Token liegt in diesem isolierten Config-Verzeichnis.
   # Nach Erfolg wie Fehler entfernen; der bestehende Coder-Config-Ordner bleibt
@@ -2700,14 +2698,14 @@ case "${HUMAN_USERS}" in
     warn "Nutzeranzahl nicht lesbar (coder-postgres/psql nicht erreichbar) – B2-Check übersprungen" ;;
   0)
     echo ""
-    echo "HINWEIS (B2): Noch kein Nutzerkonto vorhanden. Der erste Anmeldende"
+    echo "HINWEIS: Noch kein Nutzerkonto vorhanden. Der erste Anmeldende"
     echo "wird automatisch Owner (Administrator) dieses Coder-Servers – die"
     echo "Anmeldeseite daher nicht unkontrolliert weitergeben, bevor das erste"
     echo "Konto angelegt ist. Danach ein zweites Owner-Konto anlegen, damit die"
     echo "Administration nicht an einem Zugang hängt (siehe OPERATIONS.md)."
     echo "" ;;
   *)
-    ok "${HUMAN_USERS} Nutzerkonto/-konten vorhanden (B2)" ;;
+    ok "${HUMAN_USERS} Nutzerkonto/-konten vorhanden" ;;
 esac
 
 echo ""
