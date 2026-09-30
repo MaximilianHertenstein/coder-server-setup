@@ -9,8 +9,34 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `c752cef` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `cbf08eb` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Testhost-Lauf unter Root-Guard und ohne sudo-Präfixe
+
+- **Durchgeführt:** `setup-coder.sh` per `scp` nach `/tmp` auf dem Testhost
+  `2.29.11.30`; zuerst der Guard-Test als `nobody`, danach der volle Lauf
+  als root; `ufw status numbered` vor dem Lauf und danach verglichen.
+- **Guard ohne root:** Exit 1, Meldung „dieses Setup muss als root laufen –
+  Aufruf: sudo ./setup-coder.sh" plus `sudo env`-Hinweis, kein Schritt
+  1 erreicht.
+- **Lauf als root:** Exit 0, alle 10 Schritte, 0 `[FEHLER]`, 8
+  `[WARNUNG]`-Zeilen = 4 verschiedene (SSH-Passwort-Login, `RESTORE.md`
+  fehlt neben dem Skript, `ssh-harden.sh` fehlt daneben, healthz ohne
+  HTTP 200) – dieselben vier wie in der früheren Runde; die Zusammenfassung
+  in Schritt 10 zeigt jeden Eintrag ein zweites Mal. Firewall unverändert:
+  `diff` vor/nach byte-identisch, Regel weiter `22/tcp LIMIT IN Anywhere`.
+  Wartungs-Lock danach sofort frei (`flock -n`), `.maintenance.lock`
+  600 root:root, `.env` 600, `docker-compose.yml` 644 root:root, Testlauf
+  des Backups erfolgreich (Datei angelegt).
+- **Geänderte Dateien:** keine (nur Dokumentation dieses Laufs).
+- **Teststand (tatsächlich ausgeführt):** vor dem Lauf alle 11 Dateien in
+  `tests/` grün (318 PASS, 0 FAIL); nach dem Lauf wurden keine Dateien
+  mehr geändert.
+- **Offene Punkte:** Lauf gegen den Produktionsserver (bewusst nicht
+  durchgeführt).
 
 ---
 
