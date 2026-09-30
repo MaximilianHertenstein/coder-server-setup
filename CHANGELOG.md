@@ -9,8 +9,48 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `38df96a` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `756c893` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Matrix-Punkt 7 vollständig, Template-Test abgegeben
+
+- **Punkt 7 Rest (fremde Workspace-Container):** bewusst fremden Container
+  (`alpine`, nicht im Compose-Projekt) gestartet, dann
+  `printf 'RESET\n' | reset-coder.sh --force`: die Inventar-Vorabmeldung
+  hat ihn korrekt als `fremd: fremd-inventartest` ausgewiesen (Pfad B-020),
+  die Löschung traf ihn nicht, DB-/Grafana-/Prometheus-Volumes weg.
+  Danach `setup-coder.sh` mit `CODER_FIRST_USER_*` neu aufgebaut: RC 0,
+  `[OK] Erstkonto (Owner) angelegt: owner`, 6 Container healthy, 18.6,
+  fremden Container anschließend entfernt. **Punkt 7 damit erledigt.**
+- **Punkt 3 Rest (volle Platte) bleibt offen, absichtlich:** ein
+  Vollausfall lässt sich auf dem Test-Host nur gefahrlos testen, wenn eine
+  Rettungskonsole bereitsteht (sonst riskiert man einen wedge-Host ohne
+  Zugang). Ein „fast volles“ Laufwerk schiebt den winzigen Dump trotzdem
+  durch und wäre kein Test.
+- **Template-Abnahme Schritt 4 abgegeben:** der Betreiber testet die
+  Templates im separaten Repo `coder_templates`; der Anlauf hier endete
+  am fehlenden `code-server-settings.json` im Push (Datei liegt im Quell-
+  Ordner, der Test-Container-Kopie fehlte sie) und wird bewusst nicht
+  fortgesetzt.
+- **Nicht-interaktiver Zugang für künftige Testläufe dokumentiert:**
+  Passwort per `docker exec coder coder reset-password <user>` (Pipe
+  erlaubt), Session-Token über `POST /api/v2/users/login` (HTTP 201,
+  JSON `session_token`), Token nur im Container verwandt. Dabei ist
+  einmal ein Test-Token in die Konsole gelangt (Analysefehler); er ist
+  wertlos, weil das Passwort danach und beim Neuaufbau erneut rotiert
+  wurde – Passwort und Token stehen nicht im Repository.
+- **Geänderte Dateien:** `README.md` (Prüfstand-Zeilen 3 und 7).
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/`
+  grün (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte (unverändert):** Punkt 4 (volle VM-RTO, Pfad A/B –
+  braucht eine frische VM), Punkt 9 Rest (Wildcard-DNS/Workspace-Subdomain,
+  braucht DNS auf den Server), Punkt 3 Rest (volle Platte, braucht
+  Rettungskonsole), Inbetriebnahme-Termin (Netzwerkadmin-Zeilen 1–4,
+  IServ unklar), DNS-01-Aufschub. Schritt 4 der Template-Abnahme liegt
+  beim Betreiber (anderes Repo).
 
 ---
 

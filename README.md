@@ -354,11 +354,11 @@ Produktivsystem geprüft werden:
 |---|---|
 | 1 | erledigt: Original-Lauf auf frischer Debian-13-VM 2026-09-28/29; zusätzlich Neuaufbau nach `reset-coder.sh` heute (RC 0) |
 | 2 | erledigt 2026-09-30 19:05: Re-Run RC 0 in 48 s; Hand-Patch an der Compose-Datei wurde als Drift erkannt und deterministisch regeneriert, Stack nicht neu erstellt |
-| 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher nicht geprobt |
+| 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher bleibt offen – ein echter Plattenausfall ist nur mit Rettungskonsole sicher zurückspielbar |
 | 4 | teilweise: Dump-Import isoliert 3,0 s, Live-Restore beim Major-Wechsel 15 → 18 (2,3 s, Zahlen identisch); volle VM-RTO weiter offen |
 | 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); 03:00-Fenster nicht beobachtet |
 | 6 | erledigt: Re-Run ließ genau eine `22/tcp LIMIT`-Regel (v4/v6) stehen, keine zweite Weltregel; fail2ban aktiv |
-| 7 | erledigt: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und 14 Dumps erhalten, Inventar-Meldung lief (keine fremden Container vorhanden), danach Neuaufbau grün |
+| 7 | erledigt, inklusive Rest: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und Dumps erhalten; der Pfad „fremder Container“ wurde mit einem bewusst fremden Container geprüft (als `fremd: fremd-inventartest` gemeldet, danach selbst entfernt), Neuaufbau mit Owner-Konto grün |
 | 8 | entfällt (D-SSH, 2026-09-30) |
 | 9 | teilweise: von außen 22/80/443 offen, 9090/9100/3001/3000/8080 geschlossen; Wildcard-DNS und Workspace-Subdomain nicht prüfbar, solange die Domain nicht auf den Server zeigt |
 | 10 | entfällt (D-Offsite) |
