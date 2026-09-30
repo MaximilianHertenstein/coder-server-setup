@@ -97,8 +97,8 @@ Volumes: `postgres_data`, `caddy_data`, `caddy_config`, `prometheus_data`,
 `grafana_data`. Container-Logs: `json-file`, 10 MB × 3 Dateien je Container
 (daemon-weit in `daemon.json` festgelegt, nicht nur compose-seitig).
 Bind-Mounts aus `/opt/coder/`: `caddy/` (Caddyfile), `prometheus/`
-(Konfiguration + fünf Alarmregeln, darunter TLS-Ausstellungen >20 pro 7 Tage
-und ein veralteter TLS-Check), `grafana/provisioning/datasources/`
+(Konfiguration + sechs Alarmregeln, darunter TLS-Ausstellungen >20 pro 7 Tage,
+ein veralteter TLS-Check und ein gekürztes Caddy-Logfenster), `grafana/provisioning/datasources/`
 und `node-textfile/` (Backup- und TLS-Metrik für den textfile-collector von
 node-exporter). Caddy- und Prometheus-Konfiguration werden als **Verzeichnisse**
 gebunden statt als Einzeldatei: ein Datei-Mount hält am Inode fest und würde

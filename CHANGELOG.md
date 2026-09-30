@@ -9,8 +9,51 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `cbf08eb` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `4dbd102` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – B2-005: Logfenster messbar machen (Zählung als Untergrenze)
+
+- **Befund:** Offener Punkt aus der Kritikliste: `check-tls.sh` zählt
+  `obtaining certificate` in `docker logs --since 168h`, der Puffer ist
+  aber 10 MB × 3 pro Container – bei hohem Volumen ist Älteres rotiert und
+  weg. SECURITY.md hielt das als „nicht behoben" fest und die Grenzen-Tabelle
+  als „Meldung fehlt weiterhin": im Ernstfall (Budget-DoS erzeugt Traffic
+  und Ausstellungen gleichzeitig) meldete das Instrument Entwarnung, ohne
+  dass der Verlust sichtbar war.
+- **Änderung:** `check-tls.sh` bestimmt die vorhandene Loghistorie aus der
+  ältesten zeitgestempelten Zeile, deckelt sie auf 604800 s (7 Tage) und
+  unterscheidet zwei Fälle: frischer Container (Fenster kürzer als 7 Tage,
+  weil der Container jung ist) = `HINWEIS`, und Container älter als 7 Tage
+  bei kürzerem Fenster = `WARNUNG … die Zahl ist eine Untergrenze` plus
+  syslog-Eintrag mit `trunc=1`. Beides landet als Metrik in
+  `coder_tls.prom`: `coder_tls_log_window_seconds` (Fenster) und
+  `coder_tls_log_truncated` (0/1); die Ausgabezeile nennt das Fenster in
+  Stunden. Neue Prometheus-Regel `TlsLogTruncated`
+  (`coder_tls_log_truncated == 1`, `for: 30m`) – Regeln damit 5 → 6.
+  Die Zählung selbst bleibt bewusst eine Untergrenze: ein Zählwerk unabhängig
+  von der Logaufbewahrung (Delta-Stand oder eigenes Caddy-Log-Volume) ist
+  weiterhin die offene Entscheidung D-TLS.
+- **Doku:** SECURITY.md (Grenzen-Absatz der Erkennung, Grenzen-Tabelle
+  Zeile 4, Alerting-Absatz, Zeile 9 der Zusammenfassung), OPERATIONS.md
+  (Dateitabelle, Metrik-Abfragen, Regelzahl), README.md (Bind-Mounts),
+  TROUBLESHOOTING.md (B3-Diagnose um die Fenster-Abfrage).
+- **Geänderte Dateien:** `setup-coder.sh`, `SECURITY.md`, `OPERATIONS.md`,
+  `README.md`, `TROUBLESHOOTING.md`, neu `tests/t-b2-005-tls-window.sh`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh` und
+  `shellcheck -S warning setup-coder.sh` ohne Befund. Der neue Test
+  extrahiert das Produktions-Skript, ersetzt Pfad und PATH für /tmp, arbeitet
+  mit Fake-`docker`/`logger` und prüft drei Szenarien (Puffer voll →
+  Fenster 604800 und keine Meldung; Rotation bei 30 Tage altem Container →
+  `trunc=1`, WARNUNG, syslog `trunc=1`; frischer Container → nur HINWEIS)
+  plus die Metrikwerte und die Alert-Definition. Zusätzlich: die erzeugte
+  Regel-Datei per `promtool check rules` geprüft – SUCCESS, 6 rules, mit
+  dem Produktionspin `prom/prometheus:v3.14.0` (und v3.5.0).
+- **Offene Punkte:** D-TLS (Zählwerk unabhängig von der Logaufbewahrung),
+  Restore-Probe, Template-Erstinventar, Testmatrix, übrige D-Entscheidungen.
 
 ---
 

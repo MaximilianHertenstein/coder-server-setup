@@ -133,7 +133,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; `sudo /opt/coder/check-tls.sh`; `/var/log/coder-tls.log` |
+| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; `sudo /opt/coder/check-tls.sh`; `/var/log/coder-tls.log`; Fenster/Verlust: `curl -s http://127.0.0.1:9100/metrics \| grep '^coder_tls_log'` (Regel `TlsLogTruncated` = Zählung nur eine Untergrenze) |
 | **Erwartete Ursache** | On-Demand-TLS: Zertifikat wird erst bei Bedarf ausgestellt. Bei Erschöpfung des Wochenbudgets (50/Domain, geteilt) schlägt die Ausstellung fehl. |
 | **Sichere Behebung** | Abwarten und erneut prüfen; Ausstellungen bis zur Entscheidung D-TLS beobachten (`curl -s http://127.0.0.1:9100/metrics \| grep '^coder_tls_issuances'` bzw. `sudo /opt/coder/check-tls.sh`, Regel `TlsIssuanceBudgetHigh` ab >20/7 d). Budget-DoS-Muster: steigende Zählung + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
 

@@ -184,9 +184,15 @@ Journal; läuft montags 06:30. Exit-Code ist immer 0 (reine Diagnose).
 
 **Grenze dieser Erkennung**: Die Container-Logs sind auf 10 MB × 3 Dateien
 gedeckelt; das 7-Tage-Fenster passt bei hohem Logvolumen nicht hinein,
-Älteres ist rotiert und geht in der Zählung verloren. Der Befund dazu
-(B2-005) ist im Repository dokumentiert und **nicht** behoben – die Zahl
-ist also eine Untergrenze, kein Vollzählwerk.
+Älteres ist rotiert und geht in der Zählung verloren. `check-tls.sh` misst
+deshalb die vorhandene Loghistorie: als `coder_tls_log_window_seconds`
+(604800 = volle 7 Tage) in der Metrikdatei, und wenn das Fenster kürzer
+ist, obwohl der Container älter als 7 Tage ist, zusätzlich als
+`WARNUNG … die Zahl ist eine Untergrenze`, als `coder_tls_log_truncated 1`
+und damit als Regel `TlsLogTruncated`. Die Zählung selbst bleibt eine
+Untergrenze, kein Vollzählwerk; ein Zählwerk unabhängig von der
+Logaufbewahrung (Delta-Stand oder eigenes Caddy-Log-Volume) ist weiterhin
+die offene Entscheidung D-TLS.
 
 ```bash
 grep -E '^IPV6=' /etc/default/ufw; sudo docker logs coder-caddy --since 168h 2>&1 | grep -c "obtaining certificate"
@@ -285,9 +291,10 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   in einem geplanten Wartungsfenster manuell aktualisiert. Beim Upgrade von
   älteren Setup-Ständen entfernt das Setup die alte Docker-Origin-Datei nur,
   wenn sie noch dem gespeicherten Hash entspricht.
-- Es gibt **Alarmregeln, aber kein Alerting**: fünf Prometheus-Regeln
+- Es gibt **Alarmregeln, aber kein Alerting**: sechs Prometheus-Regeln
   (Coder-Target down, Root-Partition <10 % frei, letztes Backup >25 h,
-  TLS-Ausstellungen >20/7 d, TLS-Check fehlt/ist älter als 8 Tage) sind in
+  TLS-Ausstellungen >20/7 d, TLS-Check fehlt/ist älter als 8 Tage,
+  Caddy-Logfenster kürzer als 7 Tage) sind in
   Prometheus/Grafana sichtbar, aber
   **kein Kanal**, der jemanden weckt – kein Alertmanager, keine
   Benachrichtigung. Ein Contact Point bräuchte SMTP-Zugang (D-Monitoring). Gesundheit meldet
@@ -366,12 +373,12 @@ ss -tlnp; ss -ulnp | grep 443
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | Trennung offen (D-Socket), Allowlist greift bis dahin |
 | 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | bewusst aktiv für die erste Inbetriebnahme; `ssh-harden.sh` bleibt ein späterer, manueller Schritt nach getestetem Schlüsselzugang |
 | 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1), Budget-Schutz bleibt bis D-TLS mit Frist |
-| 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh` plus `TlsCheckStale`; Zählergrenze bleibt, Meldung fehlt weiterhin |
+| 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh`, `TlsCheckStale` und `TlsLogTruncated` (Metriken `coder_tls_log_window_seconds`, `coder_tls_log_truncated`); Zählung bleibt Untergrenze, der Verlust ist jetzt gemeldet |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | offen (D-Offsite) |
 | 6 | Restore nie geprobt, RTO unbekannt | im Ernstfall ist der Wiederherstellungsweg ungeprüft | offen, Probe nur auf Test-VM |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | offen (D-Reboot-Fenster) |
-| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (5 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
+| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (6 Stück), Logs rotiert, Kanal offen (D-Monitoring) |
 | 10 | Template-Erstinventar und Workspace-Selbsttest offen | unbekannte Templates könnten Socket/Privilegien nutzen | `_offen_` in [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | Entscheidung offen (B5): erst festlegen, ob Client-IPs im Audit geführt werden sollen (Datenschutz/Schule). Empfehlung 2026-09-29: **so lassen**. Wenn doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |

@@ -31,10 +31,10 @@ Setup-Version sie ersetzt (siehe Abschnitt 7).
 | `/opt/coder/docker-compose.yml` | Stack-Definition, Logs, Ports, Volumes | ja |
 | `/opt/coder/caddy/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard (Verzeichnis `caddy/` wird vollständig gemountet) | ja |
 | `/opt/coder/prometheus/prometheus.yml` | Scrape-Jobs `coder`, `node`, Einbindung `rule_files` (Verzeichnis `prometheus/` wird vollständig gemountet) | ja |
-| `/opt/coder/prometheus/rules/coder-alerts.yml` | fünf Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20, TLS-Check veraltet) | nein |
+| `/opt/coder/prometheus/rules/coder-alerts.yml` | sechs Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20, TLS-Check veraltet, TLS-Logfenster gekürzt) | nein |
 | `/opt/coder/grafana/provisioning/datasources/prometheus.yml` | Datasource `Prometheus` wird automatisch angelegt | nein |
 | `/opt/coder/node-textfile/coder_backup.prom` | Zeitstempel des letzten erfolgreichen Backups (vom Setup angelegt, vom Lauf beschrieben) | nein |
-| `/opt/coder/node-textfile/coder_tls.prom` | Untergrenze der TLS-Ausstellungen der letzten 7 Tage und Zeitstempel des letzten erfolgreichen Checks | nein |
+| `/opt/coder/node-textfile/coder_tls.prom` | Untergrenze der TLS-Ausstellungen der letzten 7 Tage, Zeitstempel des letzten erfolgreichen Checks, vorhandene Loghistorie (`coder_tls_log_window_seconds`) und Rotation-Verlust (`coder_tls_log_truncated`) | nein |
 | `/opt/coder/domain` | Apex-Domain, Quelle für TLS-Smoke und Update-Gate (644) – wird bei jedem Lauf aus `DOMAIN_CODER` überschrieben, daher bewusst ohne Hashstore | nein |
 | `/opt/coder/versions.env` | wirksam gewesene Versionen der fünf Images (644) | nein |
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
@@ -199,10 +199,14 @@ curl -s http://127.0.0.1:9100/metrics | grep '^coder_backup'
 # TLS-Ausstellungen (Untergrenze wegen Container-Logrotation)
 curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_issuances'
 
+# Logfenster in Sekunden (604800 = volle 7 Tage) und Rotation-Verlust
+# (1 = Log reicht nicht bis 7 Tage zurück, Zählung ist nur eine Untergrenze)
+curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_log'
+
 # Zeitpunkt des letzten erfolgreichen TLS-Checks; fehlt/älter als 8 Tage = Alarm
 curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_check_last_success_timestamp_seconds'
 
-# Alarmregeln geladen (5 Stück)?
+# Alarmregeln geladen (6 Stück)?
 curl -s http://127.0.0.1:9090/api/v1/rules | grep -o '"name":"[A-Za-z]*"' | sort -u
 
 # Prüfen, ob irgendwo eine Docker-Origin für unattended-upgrades konfiguriert ist
@@ -285,10 +289,12 @@ Generationen bleiben erhalten.
   abrufen: `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`.
 - Die Datasource `Prometheus` wird beim Setup automatisch provisioniert
   (`/opt/coder/grafana/provisioning/datasources/`) – kein Eintragen im UI.
-- **Fünf Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
+- **Sechs Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
   Coder-Target down, Root-Partition <10 % frei, letztes Backup älter als
-  25 Stunden, TLS-Ausstellungen >20/7 Tage und ein fehlender oder mehr als
-  8 Tage alter TLS-Check. Sie sind einsehbar unter
+  25 Stunden, TLS-Ausstellungen >20/7 Tage, ein fehlender oder mehr als
+  8 Tage alter TLS-Check sowie ein gekürztes Caddy-Logfenster
+  (`TlsLogTruncated`: die Zählung ist dann nur eine Untergrenze). Sie sind
+  einsehbar unter
   `http://127.0.0.1:9090/alerts` bzw. in Grafana.
 - Es gibt **keinen Benachrichtigungskanal** (kein Alertmanager, keine
   Mail/Telegram/Webhook): die Regeln klingeln nirgends, sie zeigen nur
