@@ -9,8 +9,47 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `c8816d1` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `446c5da` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Major-Migration 15 → 18 auf dem Test-Host (Praxisbeleg)
+
+- **Freigabe des Betreibers** für die Migration samt Löschen des alten
+  Volumes; Test-Host gilt ausdrücklich als reines Testgerät, das irgendwann
+  abgeschaltet wird (Betreiber-Aussage am 2026-09-30) – künftig keine
+  Rückfragen mehr für Reboot/Reset/Re-Run dort.
+- **Sicherungen vor dem Eingriff:** Sonde `RTO-PROBE-2026-09-30` gesetzt,
+  `backup.sh` → `coder_2026-09-30_182342.sql.gz` (`gzip -t` grün), plus
+  `postgres_volume_pg15_2026-09-30.tar.gz` (12 MB, komplettes altes Volume).
+  Altes Volume danach gelöscht (freigegeben), Daten existieren weiter in
+  Dump + tar-Archiv.
+- **Befund beim Hochfahren mit18:** das 18er-Image lehnt das alte Mount
+  `/var/lib/postgresql/data` absichtlich ab (Layout-Wechsel zu
+  `/var/lib/postgresql/<major>/`, docker-library/postgres #1259) und
+  crashloopt – **ein Major-Wechsel ist nie nur ein Tag**. Repo-Fix:
+  `setup-coder.sh` mountet `postgres_data` künftig unter
+  `/var/lib/postgresql`, Fehlerhinweis auf `pg_hba.conf` zeigt
+  `/var/lib/postgresql/18/…`; OPERATIONS §8 nennt die Pflicht, Compose und
+  Image zusammenzuändern.
+- **Ergebnis:** `postgres:18-alpine` = **18.6**, healthy. Alter Dump
+  eingespielt nach RESTORE.md-Pfad A: `dropdb`/`createdb`, dann
+  `zcat | psql -v ON_ERROR_STOP=1` → **Import exit 0 in 2,3 s**. Datenprobe:
+  Sonde **1/1**, **131/131** Tabellen, **937/937** Zeilen (exakt der
+  Vorzustand 15.19), `ANALYZE` vor der Zeilenzahl. Stack komplett wieder
+  hoch (6 Container, postgres healthy), Coder-API liefert `v2.36.6`, 1 User
+  wieder da. Die vier `InmemoryListener is already closed`-Meldungen sind
+  Shutdown-Rauschen des Stopp/Starts, kein DB-Fehler.
+- **Geänderte Dateien:** `setup-coder.sh` (Mount + Hinweis), `OPERATIONS.md`
+  (§8 Layout-Warnung), `RESTORE.md` (zweiter Praxisbeleg).
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** Rest der Testmatrix (Setup-Re-Run auf dem Host,
+  Reboot-Fenster, externe Ports-Prüfung steht als erledigt in der History),
+  Schritt 4 der Template-Abnahme, Restore-Pfad A/B auf frischer VM,
+  Inbetriebnahme-Termin, PostgreSQL-Punkt damit erledigt.
 
 ---
 

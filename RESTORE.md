@@ -6,6 +6,16 @@ frischer Dump (Sonde `RTO-PROBE-2026-09-30` vor dem Lauf gesetzt) in einen
 eigenen `postgres:15-alpine`-Probencontainer eingespielt – Import exit 0 in
 3,0 s, Datenprobe `1`, 119/119 Tabellen, 937/937 Zeilen, `gzip -t` grün.
 Der laufende Stack wurde **nicht** angefasst (kein `dropdb`, kein `up -d`).
+
+**Zweiter, härterer Beleg am selben Tag: Major-Wechsel 15 → 18 live.**
+Alter Dump vom 2026-09-30 18:23 (Sonde `RTO-PROBE-2026-09-30` drin, `gzip -t`
+grün) nach dem Wechsel des Test-Hosts auf `postgres:18-alpine` (18.6) per
+`dropdb`/`createdb`/`psql -v ON_ERROR_STOP=1` eingespielt: Import exit 0 in
+**2,3 s**, Datenprobe danach **1**, **131/131** Tabellen, **937/937** Zeilen
+(exakt der Vorzustand), `coder` wieder am Start, API erreichbar. Dabei
+bestätigt: ein Major-Wechsel ist Dump/Restore, kein Tag-Wechsel – das 18er-Image
+verweigert sogar das alte Volume-Mount `/var/lib/postgresql/data`
+(docker-library/postgres #1259), siehe `setup-coder.sh` und OPERATIONS §8.
 **Nicht geprobt:** Pfad A/B auf einer frischen VM inklusive Stack-Start,
 `/healthz` und Dashboard-Login – die volle RTO (VM + Stack + Prüfung) bleibt
 deshalb unbekannt, nur der Importteil ist mit 3,0 s belegt.

@@ -584,7 +584,12 @@ services:
       POSTGRES_USER: coder
       POSTGRES_PASSWORD: "\${POSTGRES_PASSWORD}"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PostgreSQL 18 Layout (docker-library/postgres #1259): ab Major 18
+      # liegen die Daten unter /var/lib/postgresql/<major>/; das alte Mount
+      # /var/lib/postgresql/data laesst das 18er-Image absichtlich nicht
+      # starten (Fehler "data in unused mount"). Weiterhin gleicher Volume-
+      # Name, also gleicher Rollback-/Reset-Pfad.
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U coder -d coder"]
       interval: 5s
@@ -2325,7 +2330,7 @@ if printf '%s\n' "negativkontrolle-darf-nicht-funktionieren" \
     > /dev/null 2>&1; then
   echo "Fehler: Postgres akzeptiert auf ${PGH} ein FALSCHES Passwort –" >&2
   echo "pg_hba.conf vergibt diesen Pfad offenbar mit 'trust', nicht 'scram-sha-256'." >&2
-  echo "Prüfen: docker exec coder-postgres cat /var/lib/postgresql/data/pg_hba.conf" >&2
+  echo "Prüfen: docker exec coder-postgres cat /var/lib/postgresql/18/pg_hba.conf" >&2
   exit 1
 fi
 docker exec -i coder-postgres sh <<INNER_EOF

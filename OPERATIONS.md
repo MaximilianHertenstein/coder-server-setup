@@ -328,7 +328,12 @@ Bei rotem Gate: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
   `postgres:18-alpine` automatisch an. Für die exakt gepinnten Images muss
   der Pin in `setup-coder.sh` geändert und Setup erneut ausgeführt werden.
 - PostgreSQL läuft auf `postgres:18-alpine` (Major-Tag, holt 18.x-Patches
-  über `pull`; aktuell 18.6, Stand 2026-09-30). Der Wechsel von 15 geschah
+  über `pull`; aktuell 18.6, Stand 2026-09-30). Achtung, geprüft am
+  Test-Host: ab Major 18 mountet das Image das Volume unter
+  `/var/lib/postgresql` (Daten in `<major>/` darin), nicht mehr unter
+  `/var/lib/postgresql/data` – das 18er-Image startet sonst absichtlich
+  nicht. Compose und Image wandern deshalb immer zusammen (beides erzeugt
+  `setup-coder.sh` neu). Der Wechsel von 15 geschah
   vor der Inbetriebnahme per Dump/Restore mit Datenprobe (siehe
   [RESTORE.md](RESTORE.md)). Ein weiterer Major-Wechsel ist bewusst kein
   `pull`: Volume bleibt, Dump/Restore in einem Wartungsfenster, danach
