@@ -35,8 +35,23 @@ RE_ACTION="$(sed -n "s/.*grep -Eio '\([^']*\)'.*/\1/p" "${SETUP}")"
 [ -n "${RE_INACTIVE}" ] && pass "Pfad-C-Muster aus Quelle gelesen" || fail "Pfad-C-Muster fehlt"
 [ -n "${RE_ACTION}" ] && pass "Aktions-Muster aus Quelle gelesen" || fail "Aktions-Muster fehlt"
 
-L_START="$(grep -nF 'UFW_OUT="$(sudo ufw status numbered' "${SETUP}" | cut -d: -f1 || true)"
-GATE="$(awk -v s="${L_START}" 'NR>=s{print} NR>s && $0=="fi"{exit}' "${SETUP}")"
+# Extraktion des kompletten Gate-Bereichs (Status-Lesen + Detektoren + die
+# if/elif-Kette). Beide Anker müssen EINDEUTIG sein: "ufw status numbered"
+# steht inzwischen auch im SSH-Port-Preflight, und ein "bis zur ersten fi"
+# würde schon am Status-Block enden – daher hier ein Bereich bis zur
+# Default-Policy, nicht ein "erstes fi".
+GATE_ANCHOR='if ! UFW_OUT="$(sudo ufw status numbered 2>/dev/null)"; then'
+GATE_END='# B-007: explizite Default-Policy'
+GATE_HITS="$(grep -cF "${GATE_ANCHOR}" "${SETUP}")"
+GATE_END_HITS="$(grep -cF "${GATE_END}" "${SETUP}")"
+if [ "${GATE_HITS}" -eq 1 ] && [ "${GATE_END_HITS}" -eq 1 ]; then
+  pass "Gate-Anker eindeutig (Start/Ende: 1/1)"
+else
+  fail "Gate-Anker nicht eindeutig: Start=${GATE_HITS} Ende=${GATE_END_HITS}"
+fi
+L_START="$(grep -nF "${GATE_ANCHOR}" "${SETUP}" | cut -d: -f1 || true)"
+L_END="$(grep -nF "${GATE_END}" "${SETUP}" | cut -d: -f1 || true)"
+GATE="$(awk -v s="${L_START}" -v e="${L_END}" 'NR>=s && NR<e {print}' "${SETUP}")"
 # head -n 1: seit A1 gibt es diese Bedingung zweimal (Restore-Block vorne,
 # pfad-abhaengiger Abschlusscheck hinten) – extrahiert wird der Restore-Block.
 L_RES="$(grep -nF 'if [ -n "${UFW_RESTORE_SRC}" ]; then' "${SETUP}" | cut -d: -f1 | head -n 1 || true)"
@@ -193,10 +208,13 @@ assert_rc 0 "Pfad C (inactive) laeuft weiter"
 assert_out "WARN:" "Pfad C: Hinweis ausgegeben"
 assert_out "GATE_CONTINUE SRC=[]" "Pfad C: keine Wiederherstellung angehaengt"
 
-# Pfad C: ufw-Befehl fehlt (rc=127, keine Ausgabe).
+# Pfad C: ufw-Befehl fehlt (rc=127, keine Ausgabe) -> harter Abbruch. Ohne
+# lesbaren Status ist keine Regel-/Policy-Änderung sicher, und der folgende
+# "ufw default deny"-Aufruf scheitert ohnehin; abbrechen, bevor irgendetwas
+# an der Firewall geaendert wird (B6/A1).
 capture "${WORK}/gate.sh" "" 127 "-"
-assert_rc 0 "Pfad C (ufw fehlt) laeuft weiter"
-assert_out "WARN:" "Pfad C (ufw fehlt): Hinweis ausgegeben"
+assert_rc 1 "Pfad C (ufw fehlt): Abbruch vor jeder Aenderung"
+assert_out "ufw-Status nicht lesbar" "Pfad C (ufw fehlt): Klartext-Meldung"
 
 # Pfad B ohne Bypass -> harter Abbruch vor dem Loeschen.
 capture "${WORK}/gate.sh" "${S_RESTRICT_OLD}" 0 "-"
@@ -361,9 +379,13 @@ LANY="$(grep -nF 'sudo ufw limit 22/tcp' "${SETUP}" | cut -d: -f1 || true)"
   && pass "A1: 'ufw limit 22/tcp' steht im else-Zweig NACH dem Delete (Z.${LANY} > Z.${LDL})" \
   || fail "A1: 'ufw limit 22/tcp' nicht im else-Zweig (else=${LANY} del=${LDL})"
 # Zwei getrennte Fragmente, damit die $-Zeichen im Muster hier nicht von der
-# Test-Shell expandiert werden (UFW_AFTER_LOG ist auf Top-Level nicht gesetzt).
-if grep -qF "grep -E '22/tcp[[:space:]]+LIMIT'" "${SETUP}" \
-  && grep -qF "| grep -q 'Anywhere'" "${SETUP}"; then
+# Test-Shell expandiert werden (UFW_AFTER_LOG/UFW_SSH_LINES sind auf Top-Level
+# nicht gesetzt). Geprueft werden die drei tatsaechlichen Stellen: die
+# Zeilenfilterung, der Bypass-Abschlusscheck und der pfad-abhaengige
+# Abschlusscheck nach dem Lauf.
+if grep -qF "grep -E '22/tcp[[:space:]]+(LIMIT|ALLOW)'" "${SETUP}" \
+  && grep -qF "grep -q 'Anywhere'" "${SETUP}" \
+  && grep -qF "grep -Eq '22/tcp[[:space:]]+LIMIT.*Anywhere'" "${SETUP}"; then
   pass "A1: Abschlusscheck prueft nachweislich auf restriktiven Pfad gegen 'LIMIT Anywhere'"
 else
   fail "A1: harter Check gegen weltweite LIMIT-Regel fehlt"

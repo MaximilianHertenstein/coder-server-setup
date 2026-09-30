@@ -9,8 +9,37 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `c66eb30` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `413bf94` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-09-30 – Testsuite wieder vollständig grün (t-071b, t-b2-004)
+
+- **Befund:** Beide Tests fielen bereits bei `c66eb30` durch, ohne dass der
+  Produktionscode defekt war – die Prüfungen selbst waren veraltet.
+  `t-b2-004` hatte als Startanker `UFW_OUT="$(sudo ufw status numbered` und
+  traf damit den neu davorstehenden SSH-Port-Preflight statt des Gate-Blocks;
+  dadurch wurde ein 4-Zeilen-Fragment extrahiert, das mit `exit 1` endete und
+  19 Folgefehler produzierte. Zusätzlich erwartete der Test beim fehlenden
+  `ufw`-Befehl einen Weiterlauf mit Warnung, während das Setup bewusst
+  abbricht (`ufw-Status nicht lesbar – Abbruch vor jeder Regel-/Policy-
+  Änderung`), und suchte zwei alte grep-Formeln des A1-Abschlusschecks, die
+  inzwischen in einer Variablen und einem `grep -Eq` zusammengefasst sind.
+  `t-071b` suchte die alte `printf | grep`-Formel des Headerchecks, nicht die
+  aktuelle here-string-Form.
+- **Änderung:** Anker auf den kompletten Gate-Bereich umgestellt
+  (Start `if ! UFW_OUT=…`, Ende `# B-007: explizite Default-Policy`) mit
+  Eindeutigkeits-Prüfung beider Anker, Erwartungen an die bewusste
+  fail-closed-Verhaltensweise und an die aktuellen A1-Stellen sowie
+  Angleichen des Header-Guards an die here-string-Form.
+- **Geänderte Dateien:** `tests/t-b2-004-ufw-downgrade.sh`,
+  `tests/t-071b-headercheck.sh`.
+- **Teststand (tatsächlich ausgeführt):** alle 10 Dateien in `tests/` grün
+  (zuvor 8 grün / 2 rot); `bash -n setup-coder.sh` und
+  `shellcheck -S warning setup-coder.sh` ohne Befund. Der Produktionscode
+  wurde in dieser Runde nicht angefasst.
+- **Offene Punkte:** ufw-Umbau, Root-Lauf, Ticket-Kürzel.
 
 ---
 

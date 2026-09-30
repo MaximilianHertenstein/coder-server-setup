@@ -80,9 +80,11 @@ else
 fi
 
 # 6. Statischer Guard: Fix in setup-coder.sh vorhanden, alte Einzeiler-Form weg.
+# Der Header steht in HEADER; geprueft wird per here-string (kein Pipe, weil
+# pipefail + SIGPIPE bei grossen Dumps falsch rot waere).
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if grep -qF 'HEADER="$(zcat "${TMP}"' "${REPO_ROOT}/setup-coder.sh" \
-  && grep -qF 'printf '"'"'%s'"'"' "${HEADER}" | grep -q "PostgreSQL database dump"' "${REPO_ROOT}/setup-coder.sh" \
+  && grep -qF 'if ! grep -q "PostgreSQL database dump" <<< "${HEADER}"' "${REPO_ROOT}/setup-coder.sh" \
   && ! grep -qF 'if ! zcat "${TMP}" 2>/dev/null | head -c 4000 | grep -q' "${REPO_ROOT}/setup-coder.sh"; then
   pass "setup-coder.sh enthaelt B2-001-Fix (kein Einzeiler-Headercheck)"
 else
