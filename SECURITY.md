@@ -33,9 +33,9 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 - Passwort-Login ist **nicht** deaktiviert – mit D-SSH (2026-09-30) ist das
   der gewollte Dauerzustand, nicht nur der Zustand der ersten
   Inbetriebnahme. Das Setup führt `ssh-harden.sh` nicht aus; der
-  Abschlusscheck meldet den Zustand bei jedem Lauf, Warnung G2 in
-  [TROUBLESHOOTING.md](TROUBLESHOOTING.md) bleibt deshalb dauerhaft
-  erwartbar.
+  Abschlusscheck meldet den Zustand bei jedem Lauf als `OK`
+  (G2 in [TROUBLESHOOTING.md](TROUBLESHOOTING.md) beschreibt ihn
+  weiterhin; gewarnt wird nur bei `permitrootlogin yes`).
 - **Restrisiko der Entscheidung:** Jedes Gerät im Schulnetz erreicht Port 22
   und kann per Passwort raten; ein geteiltes oder weitergegebenes Passwort
   bleibt gültig. Die Netzbegrenzung verhindert Internetzugriffe, ersetzt
@@ -49,7 +49,7 @@ Test-Host am 2026-09-29:
 | Maßnahme | Ist-Wert | Quelle |
 |---|---|---|
 | `ufw limit 22/tcp` (v4 + v6) | aktiv, Rate-Limiting | `ufw status` |
-| fail2ban-Jail `sshd` | 5 Fehlversuche / 10 min / 1 h Ban, `backend=systemd` | `/etc/fail2ban/jail.d/10-coder-sshd.local` |
+| fail2ban-Jail `sshd` | 5 Fehlversuche / 10 min / 1 h Ban (mit `bantime.increment`), `backend=systemd`, `ignoreip=127.0.0.1/8 ::1` | `/etc/fail2ban/jail.d/10-coder-sshd.local` |
 | fail2ban tatsächlich am Sperren | `Total banned: 134`, `Currently banned: 10` | `fail2ban-client status sshd` |
 | Root per Passwort gesperrt | `permitrootlogin without-password` | `sshd -T` |
 | Leere Passwörter / Kbd-Interactive | `permitemptypasswords no`, `kbdinteractiveauthentication no` | `sshd -T` |
@@ -255,21 +255,29 @@ kein Container) greifen ufw und fail2ban tatsächlich. Ein
 geprüft und **nicht** eingebaut: solange öffentliche Ports ausschließlich
 über Caddy laufen, bleibt die 127.0.0.1-Bindung der Schutz.
 
-**Reihenfolge ist die Sicherheitsfunktion (A1)**: Gelöscht wird ausschließlich
-in der allow→limit-Umwandlung und nur die vorgefundene weltweite 22-Regel;
-eine Quellregel taucht nirgends als Löschziel auf. Nach dem Umwandeln liest
-das Setup den Status neu: bleibt eine weltweite `ALLOW`-Zeile stehen oder
-fehlt am Ende die rate-limitierte Regel, meldet `[FEHLER]` – der Lauf endet
-dann mit Fehlern statt still mit offenem SSH. Ein Abbruch vorher verändert
-keine 22-Regel, der Zustand bleibt also der Ausgangszustand.
+**Reihenfolge ist die Sicherheitsfunktion (A1)**: Ohne lesbaren
+`ufw status`- oder `ufw show added`-Output bricht das Setup ab, bevor es
+etwas ändert – ebenso bei inaktivem ufw mit gespeicherten SSH-Quellregeln.
+Gelöscht wird nur im nicht-beschränkten Zweig und dort ausschließlich eine
+der drei weltweiten Schreibweisen (`allow 22/tcp`, `allow 22`,
+`allow OpenSSH`); eine Quellregel taucht nirgends als Löschziel auf. Nach
+dem Löschen liest das Setup den Status neu: steht noch eine weltweite
+`ALLOW`-Zeile, meldet es `[FEHLER]` und bricht ab – der Lauf endet dann
+mit Fehlern statt still mit offenem SSH. Eine vorgefundene
+quellbeschränkte Regel bleibt unangetastet, es wird keine weltweite
+`limit`-Regel daneben gesetzt.
 
 **fail2ban** – eigene Jails liegen im Drop-In
-`/etc/fail2ban/jail.d/10-coder-sshd.local` (B7), nicht in `jail.local`:
-jail.local hat laut Lese-Reihenfolge Vorrang und würde Hand-Änderungen des
-Operators überschreiben. Eine zuvor setup-eigene `jail.local` wird nur
-entfernt, solange ihr Hash noch der gespeicherten entspricht; sonst bleibt
-sie (mit WARN) und hat Vorrang. Jail `sshd`, `backend=systemd`,
-`maxretry=5`, `findtime=10m`, `bantime=1h`. Ohne Änderung lädt das Setup
+`/etc/fail2ban/jail.d/10-coder-sshd.local` (B7). Eine vorgefundene
+`jail.local` wird nie angefasst; das Setup meldet dann nur, dass das
+Drop-In laut Lese-Reihenfolge (`jail.conf → jail.d/*.conf → jail.local →
+jail.d/*.local`) Vorrang hat und in `jail.local` eingetragene Jails nicht
+greifen. Jail `sshd`, `backend=systemd`, `maxretry=5`, `findtime=10m`,
+`bantime=1h`, `bantime.increment = true`. `ignoreip` schützt Admin-Adressen
+vor der geteilten Schul-NAT (sonst sperrt ein Tippfehler die gemeinsame
+Quell-IP); Default `127.0.0.1/8 ::1`, setzen per
+`sudo env FAIL2BAN_IGNORE_IP='… <Admin-IP>' ./setup-coder.sh` – nur
+Admin-Plätze, nicht das ganze Schülernetz. Ohne Änderung lädt das Setup
 den Dienst **nicht** neu (sonst würden aktive Bans verworfen).
 
 ```bash

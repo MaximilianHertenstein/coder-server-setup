@@ -32,11 +32,12 @@
 # Skript ist mehrfach ausführbar (idempotent) – einfach erneut laufen lassen,
 # sobald DNS/Portweiterleitung stehen.
 #
-# SSH (Port 22): Auf dem Zielserver ist SSH laut Netzvorgabe nur aus dem
-# Schulnetz erreichbar. Passwort-Login bleibt dort fuer die erste
-# Inbetriebnahme bewusst aktiv; dieses Skript schaltet ihn nicht ab. ufw
-# rate-limitiert SSH zusaetzlich und fail2ban sperrt wiederholte Fehlversuche.
-# Auf dem separaten Test-Host (Hetzner) ist Port 22 von ueberall erreichbar.
+# SSH (Port 22): bewusst von ueberall mit Passwort erreichbar (D-SSH,
+# 2026-09-30). Schutz: ufw rate-limitiert (limit 22/tcp), fail2ban sperrt
+# wiederholte Fehlversuche (bantime.increment, ignoreip fuer Admin-Adressen),
+# PermitRootLogin yes meldet das Setup. Eine vorgefundene quellbeschraenkte
+# ufw-Regel wird nicht aufgeweicht (keine weltweite limit-Regel daneben);
+# eine aeußere Schulnetz-Beschaenkung durch den Netzwerkadmin bleibt gueltig.
 #
 # WICHTIG: Der schreibbare Docker-Socket im Coder-Container ist
 # root-aequivalent auf dem Host. Ein kompromittierter Workspace kann damit
@@ -160,6 +161,10 @@ SCRIPT_SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
 : "${PROMETHEUS_VERSION:=v3.14.0}"        # https://github.com/prometheus/prometheus/releases
 : "${GRAFANA_VERSION:=12.4.5}"            # https://github.com/grafana/grafana/releases
 : "${NODE_EXPORTER_VERSION:=v1.12.1}"     # https://github.com/prometheus/node_exporter/releases
+# Review 0.3: Admin-Adressen, die fail2ban nie sperren darf (geteilte
+# Schul-NAT: 5 Fehlversuche sperrten sonst die gemeinsame Quell-IP).
+# Nur Admin-Plaetze eintragen, nicht das ganze Schuelernetz.
+: "${FAIL2BAN_IGNORE_IP:=127.0.0.1/8 ::1}"
 
 # ---- Wirksam gewesene Versionen + Downgrade-Schutz (A5) --------------------
 # Die fünf Versionen sind exakt gepinnt. Führt man das Skript mit einer
@@ -1215,15 +1220,14 @@ if [ "${SSHD_PORTS}" != "22" ]; then
   exit 1
 fi
 
-# B-007/B2-004: Re-Run-Schutz für vorgefundene SSH-Regeln. Der alte Detektor
-#   22/(tcp|ssh).*(ALLOW|LIMIT).*([0-9]{1,3}\.)
-# übersah die reale ufw-Zeile "22 ALLOW 192.168.1.0/24" (ohne /tcp) und hat
-# danach trotz WARN die restriktive Regel gelöscht und SSH weltweit geöffnet.
-# Detektor (POSIX grep -E): Pfad C (inaktiv) zuerst, danach Kandidat minus
-# "Anywhere". Eine vorgefundene Quellbeschränkung wird NICHT gelöscht und
-# nicht ersetzt: dieses Skript löscht keine SSH-Regel, die es nicht selbst
-# angelegt hat. Einzige erlaubte Änderung an einer bestehenden 22-Regel ist
-# die Umwandlung einer weltweiten "allow"-Regel in "limit" (weiter unten).
+# Review 0.1/2.4 (D-SSH): schmaler fester Regelpfad statt Pfad-A/B/C-Analyse.
+# Geblieben sind die Sicherheitsinvarianten:
+#   - Ohne lesbaren ufw-Status wird NICHTS geaendert (Abbruch).
+#   - Gespeicherte SSH-Quellregeln bei inaktiver ufw -> Abbruch vor enable.
+#   - Eine vorgefundene quellbeschraenkte SSH-Regel wird nicht aufgeweicht:
+#     keine weltweite limit-Regel daneben, keine Quellregel wird geloescht.
+#   - Weltweite allow-Regeln (die limit wirkungslos machen wuerden) werden
+#     entfernt und der Erfolg VERIFIZIERT, bevor mit limit weitergemacht wird.
 if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then
   fail "ufw-Status nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
@@ -1232,105 +1236,55 @@ if ! UFW_ADDED_OUT="$(ufw show added 2>/dev/null)"; then
   fail "gespeicherte ufw-Regeln nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
 fi
+# Detektor (POSIX grep -E):22-Regeln aller Schreibweisen, danach minus
+# "Anywhere" = Quellbeschraenkung. "show added" deckt zusaetzlich den
+# inaktiven Fall ab (dort zeigt "ufw status" keine Regeln).
 UFW_SSH_ALL="$(printf '%s\n' "${UFW_OUT}" \
   | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' || true)"
 UFW_RESTRICTED="$(printf '%s\n' "${UFW_SSH_ALL}" \
   | grep -Ev '[[:space:]]Anywhere([[:space:]\(]|$)' || true)"
-# Weltweite Kandidaten (Anywhere in der Quellspalte) – nur sie kommen für die
-# allow→limit-Umwandlung in Frage, nie eine Zeile mit Quelle.
-UFW_WORLDWIDE="$(printf '%s\n' "${UFW_SSH_ALL}" \
-  | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' || true)"
-UFW_WORLDWIDE_ALLOW="$(printf '%s\n' "${UFW_WORLDWIDE}" \
-  | grep -Ei '[[:space:]]ALLOW([[:space:]]|$)' || true)"
-UFW_WORLDWIDE_LIMIT="$(printf '%s\n' "${UFW_WORLDWIDE}" \
-  | grep -Ei '[[:space:]]LIMIT([[:space:]]|$)' || true)"
-# "ufw status" zeigt nur den aktiven Regelsatz. Bei Status inactive zusätzlich
-# "ufw show added" lesen: Debian dokumentiert diesen Report als die Befehle,
-# mit denen UFW-Regeln hinzugefügt wurden, unabhängig vom Laufzeitstatus.
-# Eine vorhandene Quellbeschränkung darf beim späteren Enable nicht unbemerkt
-# durch die globale 22/tcp-Limit-Regel ergänzt/aufgeweicht werden.
 UFW_ADDED_RESTRICTED="$(printf '%s\n' "${UFW_ADDED_OUT}" \
   | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' \
   | grep -Ei '[[:space:]]from[[:space:]]+' \
   | grep -Eiv '[[:space:]]from[[:space:]]+(any|0\.0\.0\.0/0|::/0)([[:space:]]|$)|Anywhere' || true)"
-
 UFW_RESTRICTED_LINE=""
-
 if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
   if [ -n "${UFW_ADDED_RESTRICTED}" ]; then
     fail "ufw ist inaktiv, enthält aber gespeicherte SSH-Quellregeln; Abbruch vor jeder ufw-Regel-/Policy-Änderung."
     printf 'Gespeicherte Regel(n):\n%s\n' "${UFW_ADDED_RESTRICTED}" >&2
-    echo "Die Firewall bleibt unverändert. Prüfe die vorgesehene Schulnetz-Regel und aktiviere UFW anschließend bewusst; das Setup erneut ausführen." >&2
+    echo "Die Firewall bleibt unverändert. Beschränkung bewusst prüfen, UFW danach selbst aktivieren; Setup erneut ausführen." >&2
     exit 1
   fi
-  # Pfad C: UFW inaktiv ohne gespeicherte SSH-Quellbeschränkung – Regelpfad
-  # unten fährt mit der bisherigen Rate-Limit-Regel fort.
-  warn "ufw ist inaktiv (Status: inactive) – SSH-Regel wird jetzt gesetzt"
+  warn "ufw ist inaktiv (Status: inactive) – Firewall wird jetzt eingerichtet"
 elif [ -n "${UFW_RESTRICTED}" ]; then
-  # Pfad B: restriktive SSH-Regel (Quelle != Anywhere). Sie bleibt stehen –
-  # weder Löschen noch Restore, deshalb auch kein weltweiter limit-Eintrag
-  # (der würde die Beschränkung neben sich wirkungslos machen).
   UFW_RESTRICTED_LINE="$(printf '%s\n' "${UFW_RESTRICTED}" | head -n 1)"
-  warn "quellbeschränkte SSH-Regel bleibt unangetastet: ${UFW_RESTRICTED_LINE} – keine weltweite 'limit 22/tcp'-Regel gesetzt"
-  UFW_COEXIST="$(printf '%s\n' "${UFW_WORLDWIDE}" | grep -v '^[[:space:]]*$' || true)"
-  if [ -n "${UFW_COEXIST}" ]; then
-    warn "weltweite SSH-Regel steht NEBEN der Beschränkung, ufw wertet beide (die Quelle greift deshalb nicht): ${UFW_COEXIST} – manuell auflösen: sudo ufw status numbered"
-  fi
 fi
 
-# B-007: explizite Default-Policy (idempotent – gleicher Wert zweimal ist No-Op).
-# Erst nach SSH-Port- und Bestandsregel-Preflight ändern, damit ein Abbruch bei
-# inaktiver UFW oder unerwartetem Regelbestand die bestehende Policy unberührt lässt.
+# Regelanwendung (Review 0.1/2.4): einfache feste Folge. Reihenfolge erst
+# Policy, dann SSH-Regeln; "limit" ist idempotent ("Skipping adding existing
+# rule"), deletes auf nicht vorhandene Regeln scheitern still (|| true).
 ufw default deny incoming
 ufw default allow outgoing
-
-# Regelanwendung. Grundregel: dieses Skript löscht keine SSH-Regel, die es
-# nicht selbst angelegt hat. Genau ein Fall ändert etwas an einem Bestand:
-# eine weltweite "allow"-Regel wird in "limit" umgewandelt (Debian legt bei
-# der Installation `ufw allow OpenSSH` an). Denn ufw wertet "allow" und
-# "limit" nebeneinander: eine weltweite "allow"-Regel macht eine daneben
-# stehende Quell-Beschränkung wirkungslos. "limit" ist zugleich der
-# Normalfall dieses Setups (Rate-Limit statt IP-Liste, weil Heim-IPs dynamisch
-# sind – fail2ban sperrt zusätzlich nach Login-Versuchen). Ein Abbruch hier
-# verändert nichts an 22-Regeln: entweder stand vorher schon eine passende
-# Regel, oder es fehlte jede (dann greift nur die Zeile unten).
-# --force unterdrückt die interaktive "Proceed? (y|n)"-Rückfrage von ufw,
-# die das Skript sonst hängen lassen würde.
 if [ -n "${UFW_RESTRICTED}" ]; then
-  # Pfad B: Quell-Beschränkung vorhanden – an 22-Regeln nichts ändern (im
-  # Gate oben gemeldet), auch keine weltweite Regel ergänzen.
-  :
-elif [ -n "${UFW_WORLDWIDE_ALLOW}" ]; then
-  if grep -q 'OpenSSH' <<< "${UFW_WORLDWIDE_ALLOW}"; then
-    ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
+  warn "quellbeschränkte SSH-Regel bleibt unangetastet: ${UFW_RESTRICTED_LINE} – keine weltweite 'limit 22/tcp'-Regel gesetzt"
+  if grep -Ei 'Anywhere' <<< "${UFW_SSH_ALL}" > /dev/null 2>&1; then
+    warn "weltweite SSH-Regel steht NEBEN der Beschränkung, ufw wertet beide (die Quelle greift deshalb nicht) – manuell auflösen: sudo ufw status numbered"
   fi
-  if grep -Eq '(^|[[:space:]])22(/tcp)?([[:space:]]|\(v6\)|$)' <<< "${UFW_WORLDWIDE_ALLOW}"; then
-    ufw --force delete allow 22/tcp > /dev/null 2>&1 || true
-    ufw --force delete allow 22 > /dev/null 2>&1 || true
-  fi
-  # Verifikation statt Hoffnung: bleibt eine weltweite ALLOW-Zeile stehen
-  # (andere Regel-Schreibweise, Nebenregel), hart abbrechen, damit der Zustand
-  # nicht stillschweigend offen bleibt. `ufw limit` meldet vorhandene Regeln
-  # als "Skipping adding existing rule" und ist damit idempotent.
+else
+  # Nur die drei weltweiten Schreibweisen einer allow-Regel; Quellregeln
+  # ("allow from …") sind davon strukturell nicht betroffen.
+  ufw --force delete allow 22/tcp  > /dev/null 2>&1 || true
+  ufw --force delete allow 22      > /dev/null 2>&1 || true
+  ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
   UFW_LEFTOVER="$(ufw status numbered 2>/dev/null || true)"
   UFW_LEFTOVER="$(printf '%s\n' "${UFW_LEFTOVER}" \
     | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)' \
     | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' \
     | grep -Ei '[[:space:]]ALLOW([[:space:]]|$)' || true)"
   if [ -n "${UFW_LEFTOVER}" ]; then
-    fail "weltweite 'allow'-SSH-Regel steht nach der Umwandlung noch (${UFW_LEFTOVER}) – manuell prüfen: sudo ufw status numbered"
+    fail "weltweite 'allow'-SSH-Regel steht nach dem Löschen noch (${UFW_LEFTOVER}) – manuell prüfen: sudo ufw status numbered"
     exit 1
   fi
-  ufw limit 22/tcp
-  ok "weltweite 'allow'-SSH-Regel entfernt und durch 'limit 22/tcp' ersetzt"
-elif [ -z "${UFW_WORLDWIDE_LIMIT}" ]; then
-  # Normaler Pfad (keine vorgefundene Beschränkung, keine passende Regel):
-  # Zugriff von zuhause gewünscht, Herkunfts-Beschränkung ist bei einer
-  # dynamischen Heim-IP nicht praktikabel. "limit" statt "allow": ufw blockt
-  # automatisch IPs mit auffällig vielen Verbindungsversuchen in kurzer Zeit
-  # (eingebautes Rate-Limiting). fail2ban ist die zweite, schärfere
-  # Verteidigungslinie: es sperrt IPs nach mehreren fehlgeschlagenen
-  # Login-Versuchen komplett.
   ufw limit 22/tcp
 fi
 
@@ -1341,35 +1295,27 @@ fi
 # Verhalten auf systemd-basierten Distributionen). Eine zusätzliche
 # rsyslog/auth.log-Installation ist damit unnötig und wäre auf Debian 13
 # überflüssiger Overhead.
-# B7: Eigene Jails in einen Drop-In unter jail.d/ legen, nicht in jail.local.
+# B7/Review 1.4+2.3: Eigene Jails in einen Drop-In unter jail.d/ legen.
 # Lese-Reihenfolge von fail2ban (man jail.conf):
 #   jail.conf -> jail.d/*.conf -> jail.local -> jail.d/*.local
-# jail.local hat also VORRANG vor unserem Drop-In. Würden wir weiterhin selbst
-# jail.local schreiben, würde jede Hand-Änderung des Operators dort überschrieben
-# (Datei-Datenverlust, B-012). Jetzt: wir schreiben nur noch den Drop-In, und
-# eine zuvor von uns erzeugte jail.local wird nur entfernt, wenn ihr Hash noch
-# dem in .generated-hashes entspricht – andernfalls liegen dort Operator-
-# Änderungen. Solche dürfen wir nicht löschen, aber sie würden laut Reihenfolge
-# unseren Drop-In still überschreiben, also WARN statt stillschweigendem Tun.
+# Unser Dateiname faellt unter "jail.d/*.local" und hat damit VORRANG vor
+# einer Hand-angelegten jail.local – dort geschriebene Jails greifen also
+# NICHT. Deshalb WARN, solange jail.local existiert, statt sie still
+# anzutasten (die alte hash-guardierte Entfernung entfiel mit Review 2.3:
+# ohne Produktion gibt es keine setup-eigene Alt-Datei mehr).
 # P-025: Hash VOR dem Schreiben merken (Vergleich weiter unten entscheidet
 # zwischen reload/restart/start – blinder restart verwirft aktive Bans).
 JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"
 JAIL_BEFORE=$(sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
-JAIL_CHANGED=0
 if [ -f /etc/fail2ban/jail.local ]; then
-  _jl_cur=$(sha256sum /etc/fail2ban/jail.local 2>/dev/null | cut -d' ' -f1 || true)
-  _jl_exp=$(awk -v f="/etc/fail2ban/jail.local" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
-  if [ -n "${_jl_exp}" ] && [ "${_jl_cur}" = "${_jl_exp}" ]; then
-    rm -f /etc/fail2ban/jail.local
-    forget_hash "/etc/fail2ban/jail.local"
-    JAIL_CHANGED=1
-    echo "Alte setup-eigene /etc/fail2ban/jail.local entfernt (Hash identisch), Einstellungen liegen jetzt in ${JAIL_DROPIN}."
-  else
-    warn "Vorgefunden: /etc/fail2ban/jail.local weicht von der letzten Setup-Generation ab – enthält also Hand-Änderungen. Sie bleibt erhalten UND hat Vorrang vor ${JAIL_DROPIN} (Lese-Reihenfolge). Eigene Jails dort prüfen, sonst greifen maxretry/bantime evtl. nicht wie dokumentiert."
-  fi
+  warn "Vorgefunden: /etc/fail2ban/jail.local – unser Drop-In ${JAIL_DROPIN} hat laut Lese-Reihenfolge Vorrang, dort geschriebene Jails greifen nicht. Eigene Werte in den Drop-In übernehmen und jail.local entfernen."
 fi
 mkdir -p /etc/fail2ban/jail.d
-write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<'EOF'
+# Review 0.3: bantime.increment verlängert Wiederholungssperren, ignoreip
+# schützt Admin-Adressen vor der geteilten Schul-NAT (sonst sperrt ein
+# Tippfehler die gemeinsame Quell-IP). Werte per FAIL2BAN_IGNORE_IP setzen:
+#   sudo env FAIL2BAN_IGNORE_IP='127.0.0.1/8 ::1 <Admin-IP>' ./setup-coder.sh
+write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<EOF
 [sshd]
 enabled  = true
 backend  = systemd
@@ -1377,16 +1323,16 @@ port     = ssh
 maxretry = 5
 findtime = 10m
 bantime  = 1h
+bantime.increment = true
+ignoreip = ${FAIL2BAN_IGNORE_IP}
 EOF
 # P-025: "restart" bei jedem Lauf verwirft aktive Bans (Angreifer per Re-Run
 # entbannt). Daher: nur bei geänderter Datei neu laden (reload statt restart,
 # mit restart als Fallback), sonst nur sicherstellen, dass der Dienst läuft
-# (start ist No-Op, wenn aktiv – kein Ban-Verlust). JAIL_CHANGED=1, weil das
-# Entfernen der alten jail.local die wirksame Konfiguration ändert, ohne dass
-# sich der Drop-In-Hash dabei verändert.
+# (start ist No-Op, wenn aktiv – kein Ban-Verlust).
 systemctl enable fail2ban
 JAIL_AFTER=$(sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
-if systemctl is-active --quiet fail2ban && [ "${JAIL_BEFORE}" = "${JAIL_AFTER}" ] && [ "${JAIL_CHANGED}" -eq 0 ]; then
+if systemctl is-active --quiet fail2ban && [ "${JAIL_BEFORE}" = "${JAIL_AFTER}" ]; then
   echo "fail2ban läuft bereits mit unveränderter ${JAIL_DROPIN} – kein Reload (Bans bleiben erhalten, P-025)."
 elif systemctl is-active --quiet fail2ban; then
   systemctl reload fail2ban || systemctl restart fail2ban
@@ -1486,7 +1432,14 @@ if grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && \
    grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
   ok "SSH-Passwort-Login ist deaktiviert (nur noch Keys erlaubt)"
 else
-  warn "SSH-Passwort-Login ist aktiv. Der Schulserver muss laut Netzvorgabe auf das Schulnetz beschränkt sein; auf anderen Hosts die Netzgrenze separat prüfen. Starkes Passwort und fail2ban beibehalten."
+  ok "SSH-Passwort-Login ist aktiv – bewusste Entscheidung (D-SSH); ufw-Rate-Limit und fail2ban sperren Wiederholer"
+fi
+# Review 0.3a: root per Passwort von ueberall waere ein Upgrade-Pfad jeden
+# Brute-Forces – der Debian-Default prohibit-password bleibt gefordert.
+if grep -qi '^permitrootlogin yes' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
+  warn "PermitRootLogin yes ist gesetzt – bei Passwort-SSH von überall nicht tragbar. Abschalten: PermitRootLogin prohibit-password in /etc/ssh/sshd_config, sshd neu laden (Validation-Check vor Reload)."
+else
+  ok "PermitRootLogin erlaubt kein root-Passwort-Login (prohibit-password/without-password)"
 fi
 # Anker ^ am Zeilenanfang: "443/tcp" soll nicht "8443/tcp" treffen, und die
 # Spaltenabfolge verhindert, dass "22/tcp" von einer ganz anderen Regel kommt.
@@ -2054,16 +2007,6 @@ if [ -f "${SCRIPT_SRC_DIR}/RESTORE.md" ]; then
   ok "Runbook nach /opt/coder/RESTORE.md abgelegt"
 else
   warn "RESTORE.md liegt nicht neben setup-coder.sh – kein Runbook auf Server abgelegt"
-fi
-# A9: Härtungs-Skript mitliefern. Der Abschlusscheck verweist auf
-# ssh-harden.sh – ohne diesen Kopierschritt war der Verweis im Repo aufgelöst,
-# auf dem Server aber tot (Dangling).
-if [ -f "${SCRIPT_SRC_DIR}/ssh-harden.sh" ]; then
-  cp -a "${SCRIPT_SRC_DIR}/ssh-harden.sh" /opt/coder/ssh-harden.sh
-  chmod 755 /opt/coder/ssh-harden.sh
-  ok "ssh-harden.sh nach /opt/coder/ssh-harden.sh abgelegt"
-else
-  warn "ssh-harden.sh liegt nicht neben setup-coder.sh – Verweis im Abschlusscheck zeigt ins Leere"
 fi
 
 echo "############################################################"
@@ -2791,25 +2734,6 @@ echo "Neue Releases kommen dabei nur hinter beweglichen Tags (Caddy/Postgres)."
 echo "Exakt gepinnte Images aktualisieren: Pin in setup-coder.sh ändern und"
 echo "das Setup erneut ausführen. Docker-Engine-Updates sind separat und manuell."
 echo "Grafana weiterhin nur per SSH-Tunnel: 127.0.0.1:3001"
-
-# Dauer des aktiven Passwort-Logins: den Zeitstempel beim ersten Lauf merken,
-# damit Folge-Läufe nicht nur "jetzt" als Startzeit anzeigen.
-PW_LOGIN_SINCE_FILE="/opt/coder/.ssh-password-login-since"
-if ! (grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"); then
-  if [ ! -f "${PW_LOGIN_SINCE_FILE}" ]; then
-    date -Is | tee "${PW_LOGIN_SINCE_FILE}" > /dev/null
-    chmod 644 "${PW_LOGIN_SINCE_FILE}"
-  fi
-  PW_LOGIN_SINCE="$(cat "${PW_LOGIN_SINCE_FILE}" 2>/dev/null || echo unbekannt)"
-  echo ""
-  echo "!! SSH-Passwort-Login ist aktiv. Auf dem Schulserver muss die Netzgrenze"
-  echo "!! SSH/22 ausschließlich auf das Schulnetz beschränken; dieses Skript"
-  echo "!! setzt diese äußere Grenze nicht. Starkes individuelles Passwort und"
-  echo "!! fail2ban beibehalten. Auf anderen Hosts die Netzgrenze separat prüfen."
-  echo "!! Passwort-Login aktiv seit ${PW_LOGIN_SINCE} (zuletzt bestätigt $(date -Is))."
-  echo "!! Eine spätere Umstellung braucht getesteten Key-Login + Zweit-Zugang"
-  echo "!! und kann dann bewusst mit ssh-harden.sh erfolgen."
-fi
 
 if [ "${ERROR_COUNT}" -gt 0 ]; then
   echo ""

@@ -1,15 +1,17 @@
 #!/bin/bash
-# T-062 / B2-004 (Stand: kein Delete/Restore von SSH-Regeln mehr).
+# T-062 / B2-004 (Stand: Review 0.1/2.4 – schmaler Regelpfad, kein
+# Delete/Restore von SSH-Regeln).
 # Geprueft: der DETEKTOR aus setup-coder.sh (zwei Stufen wörtlich aus der
 # Quelle extrahiert) gegen die Pflicht-Fixtures, und die echten Stuecke aus
 # setup-coder.sh (nach Zeilen extrahiert, mit sudo-Shim + Fake-ufw in /tmp,
 # ohne Root, ohne Produktion):
-#   Gate: Pfad A weltweit, Pfad C inaktiv, Pfad B restriktiv (beendet den
-#         Lauf NICHT mehr, veraendert aber nichts), Pfad C ohne lesbaren
-#         Status = harter Abbruch
-#   Regelanwendung: bei Beschränkung KEINE 22-Regel anfassen, weltweites
-#         allow -> limit mit Verifikation (sonst Exit 1), fehlende Regel
-#         setzen, vorhandene limit-Regel = No-Op
+#   Gate: ohne lesbaren ufw-Status = harter Abbruch, ohne lesbare
+#         gespeicherte Regeln = harter Abbruch; inaktiv + gespeicherte
+#         Quellregeln = Abbruch VOR jeder Aenderung; Beschaenkung erkannt
+#   Regelanwendung: bei Beschränkung KEINE 22-Regel anfassen (kein limit
+#         daneben, keine Quellregel geloescht, Coexistenz wird gemeldet);
+#         sonst die drei weltweiten allow-Schreibweisen loeschen UND den
+#         Erfolg verifizieren (sonst Exit 1), dann limit 22/tcp
 #   Abschlusscheck: pfadabhaengig (Beschraenkung = keine weltweite 22-Regel
 #         daneben, sonst muss die rate-limitierte Regel existieren)
 #   Statisch: kein Bypass, kein Restore, kein Quellregel-Delete
@@ -40,8 +42,8 @@ RE_INACTIVE="$(sed -n "s/.*grep -qi '\(Status[^']*\)'.*/\1/p" "${SETUP}" | head 
 # SSH-Port-Preflight, und ein "bis zur ersten fi" wuerde schon am
 # Status-Block enden – daher feste Bereiche bis zum naechsten Kommentaranker.
 GATE_ANCHOR='if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then'
-GATE_END='# B-007: explizite Default-Policy'
-APPLY_START='# Regelanwendung. Grundregel'
+GATE_END='# Regelanwendung (Review 0.1/2.4): einfache feste Folge. Reihenfolge erst'
+APPLY_START='# Regelanwendung (Review 0.1/2.4): einfache feste Folge. Reihenfolge erst'
 APPLY_END='# backend=systemd explizit setzen'
 CHECK_START='UFW_STATUS="$(ufw status)"'
 CHECK_END='# A4: Beim ersten Start kann systemd'
@@ -119,7 +121,9 @@ done <<< "${NEGATIVE}"
 # Der Zustand liegt in einer Datei: "delete"/"limit"/"allow"/"enable"
 # schreiben FAKE_UFW_STATUS_AFTER, "status" liest den aktuellen Stand. Damit
 # ist die Verifikation nach der allow->limit-Umwandlung testbar, ohne echtes
-# ufw. Jeder Aufruf wird protokolliert (FAKE_UFW_CALLS).
+# ufw. "show added" liefert FAKE_UFW_ADDED (sonst eine harmlose Leerzeile),
+# damit der Abbruch "inaktiv + gespeicherte Quellregeln" testbar ist. Jeder
+# Aufruf wird protokolliert (FAKE_UFW_CALLS).
 cat > "${BIN}/ufw" <<'FAKE'
 #!/usr/bin/env bash
 rc="${FAKE_UFW_RC:-0}"
@@ -137,6 +141,9 @@ case " $* " in
     else
       printf '%s\n' "${FAKE_UFW_STATUS:-Status: inactive}"
     fi
+    ;;
+  *" show added"*)
+    printf '%s\n' "${FAKE_UFW_ADDED:-Added user rules (see 'ufw status' for running firewall):}"
     ;;
   *" delete "*|*" limit "*|*" allow "*|*" enable "*)
     if [ -n "${FAKE_UFW_STATE:-}" ]; then
@@ -223,24 +230,40 @@ S_ONLY_80_LIMIT='Status: active
 22/tcp                     LIMIT       Anywhere'
 
 # --- Pfad A: weltweit vorhanden ---------------------------------------------
+# Unbeschraenkt: die drei allow-Schreibweisen werden idempotent geloescht
+# (No-Op, wenn nichts vorhanden) und limit 22/tcp (ebenfalls idempotent)
+# gesetzt. Nie darf eine Quellregel ("delete allow from") beruehrt werden.
 capture "${S_ACTIVE}" "${S_ACTIVE}" 0
 assert_rc 0 "Pfad A (weltweit limit) laeuft weiter"
 assert_out "CHECK_CONTINUE" "Pfad A: Lauf geht weiter"
 assert_no_out "WARN:" "Pfad A: keine WARNung"
-assert_no_calls "delete" "Pfad A: keine Regel wird geloescht"
-assert_no_calls "limit 22/tcp" "Pfad A: vorhandene limit-Regel bleibt No-Op"
+assert_calls "delete allow 22/tcp" "Pfad A: allow-Loeschversuch (idempotenter No-Op)"
+assert_calls "limit 22/tcp" "Pfad A: limit wird idempotent gesetzt"
+assert_no_calls "delete allow from" "Pfad A: keine Quellregel wird geloescht"
 
-# Pfad A ohne SSH-Regel: fehlende Regel setzen, sonst nichts.
+# Pfad A ohne SSH-Regel: fehlende Regel setzen, Loeschversuche sind No-Op.
 capture "${S_ONLY_80}" "${S_ONLY_80_LIMIT}" 0
 assert_rc 0 "Pfad A (nur 80/443) laeuft weiter"
 assert_calls "limit 22/tcp" "Pfad A: fehlende SSH-Regel wird gesetzt"
-assert_no_calls "delete" "Pfad A (nur 80/443): nichts wird geloescht"
+assert_no_calls "delete allow from" "Pfad A (nur 80/443): keine Quellregel geloescht"
 
 # --- Pfad C: UFW inaktiv ----------------------------------------------------
 capture "Status: inactive" "${S_ACTIVE}" 0
 assert_rc 0 "Pfad C (inactive) laeuft weiter"
 assert_out "WARN:" "Pfad C: Hinweis ausgegeben"
-assert_no_calls "delete" "Pfad C: nichts wird geloescht"
+assert_no_calls "delete allow from" "Pfad C: keine Quellregel wird geloescht"
+
+# Pfad C: inaktiv + gespeicherte SSH-Quellregeln -> Abbruch VOR jeder
+# Aenderung (sonst wuerde "ufw enable" die Beschraenkung aktivieren, ohne
+# dass sie bewusst geprueft wurde – und Policy-Aenderungen laufen mit).
+export FAKE_UFW_ADDED='Added user rules (see '"'"'ufw status'"'"' for running firewall):
+ufw allow from 192.168.1.0/24 to any port 22 proto tcp'
+capture "Status: inactive" "${S_ACTIVE}" 0
+assert_rc 1 "Pfad C (inaktiv + Quellregeln): Abbruch vor jeder Aenderung"
+assert_out "gespeicherte SSH-Quellregeln" "Pfad C: Klartext-Meldung"
+assert_no_calls "default deny incoming" "Pfad C: keine Policy-Aenderung"
+assert_no_calls "enable" "Pfad C: ufw wird nicht aktiviert"
+unset FAKE_UFW_ADDED
 
 # Pfad C: ufw-Befehl fehlt (rc=127) -> harter Abbruch. Ohne lesbaren Status
 # ist keine Regel-/Policy-Aenderung sicher (B6/A1).
@@ -293,7 +316,7 @@ assert_calls "limit 22/tcp" "Umwandlung: rate-limitierte Regel wird gesetzt"
 # kein stilles Weiterlaufen mit offenem SSH.
 capture "${S_ALLOW_WORLD}" "${S_ALLOW_WORLD}" 0
 assert_rc 1 "Umwandlung ohne Wirkung: Exit 1"
-assert_out "steht nach der Umwandlung noch" "Umwandlung ohne Wirkung: Fehlermeldung"
+assert_out "steht nach dem Löschen noch" "Umwandlung ohne Wirkung: Fehlermeldung"
 printf '%s' "${OUT}" | grep -qF "CHECK_CONTINUE" \
   && fail "Umwandlung ohne Wirkung: darf nicht weiterlaufen" \
   || pass "Umwandlung ohne Wirkung: kein Weiterlauf"
@@ -338,9 +361,9 @@ DEL_APPLY="$(grep -cF 'ufw --force delete' "${WORK}/apply.sh" || true)"
   || fail "Delete-Zeilen ausserhalb der Umwandlung: gesamt=${DEL_ALL} im Block=${DEL_APPLY}"
 grep -qF 'ufw --force delete limit' "${SETUP}" \
   && fail "limit-Regel wird noch geloescht" || pass "limit-Regel wird nicht geloescht"
-grep -qF 'quellbeschränkte SSH-Regel bleibt unangetastet' "${WORK}/gate.sh" \
-  && pass "Gate meldet unangetastete Beschraenkung" \
-  || fail "Gate meldet die unangetastete Beschraenkung nicht"
+grep -qF 'quellbeschränkte SSH-Regel bleibt unangetastet' "${WORK}/apply.sh" \
+  && pass "Regelanwendung meldet unangetastete Beschraenkung" \
+  || fail "Regelanwendung meldet die unangetastete Beschraenkung nicht"
 grep -qF 'if [ -n "${UFW_RESTRICTED}" ]; then' "${SETUP}" \
   && pass "Abschlusscheck ist pfadabhaengig (Beschraenkung)" \
   || fail "pfadabhaengiger Abschlusscheck fehlt"

@@ -173,7 +173,7 @@ fi
 N_ENTRIES=$(grep -c . "${HASHSTORE}")
 [ "${N_ENTRIES}" -eq 1 ] && pass "Hashstore genau 1 Eintrag" || fail "Hashstore-Eintraege=${N_ENTRIES}"
 
-# --- 4. B7: Drop-In statt jail.local, hash-guarded Entfernung ---------------
+# --- 4. B7: Drop-In statt jail.local, Warnung statt stiller Entfernung ------
 if grep -qF 'tee /etc/fail2ban/jail.local ' "${SETUP}"; then
   fail "B7: eigene jail.local wird noch beschrieben (Ueberschreibt Operator-Jails)"
 else
@@ -182,15 +182,24 @@ fi
 grep -qF 'JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"' "${SETUP}" \
   && pass "B7: eigene Jails liegen in jail.d/10-coder-sshd.local" \
   || fail "B7: Drop-In-Pfad fehlt"
-grep -qF '[ -n "${_jl_exp}" ] && [ "${_jl_cur}" = "${_jl_exp}" ]' "${SETUP}" \
-  && pass "B7: Entfernen der alten jail.local ist hash-guarded (Hand-Aenderungen bleiben)" \
-  || fail "B7: Hash-Guard fehlt"
+# Review 2.3: die hash-guardierte Entfernung einer vorgefundenen jail.local
+# entfiel (ohne Produktion gibt es keine setup-eigene Alt-Datei). Was bleibt,
+# ist die WARNUNG – angefasst wird nie.
+grep -qF '[ -f /etc/fail2ban/jail.local ]; then' "${SETUP}" \
+  && pass "B7: vorhandene jail.local wird erkannt (Pflicht: Warnung)" \
+  || fail "B7: Erkennung vorhandener jail.local fehlt"
+grep -qF 'rm -f /etc/fail2ban/jail.local' "${SETUP}" \
+  && fail "B7: vorgefundene jail.local wird noch entfernt (Operator-Datenverlust)" \
+  || pass "B7: vorgefundene jail.local wird nicht entfernt"
 grep -qF 'forget_hash() {' "${SETUP}" \
   && pass "B7: forget_hash vorhanden (kein Rest-Hash nach dem Loeschen)" \
   || fail "B7: forget_hash fehlt"
 grep -qF 'JAIL_CHANGED=1' "${SETUP}" \
-  && pass "B7: Loeschen der alten jail.local loest Reload aus (P-025)" \
-  || fail "B7: Reload-Flag fehlt"
+  && fail "B7: JAIL_CHANGED-Flag ist noch im Setup (entfiel mit dem hash-guardierten Loeschen)" \
+  || pass "B7: kein JAIL_CHANGED-Flag (Reload rein hash-basiert, P-025)"
+grep -qF '[ "${JAIL_BEFORE}" = "${JAIL_AFTER}" ]' "${SETUP}" \
+  && pass "B7: Reload-Entscheidung weiterhin hash-basiert (P-025)" \
+  || fail "B7: hash-basierte Reload-Entscheidung fehlt"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-007: ALLE PRUEFUNGEN BESTANDEN"

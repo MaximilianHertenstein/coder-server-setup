@@ -349,13 +349,13 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | Hand-Änderung an einer generierten Datei (Caddy-Snippet, Cron-Zeit, fail2ban-Drop-In `jail.d/10-coder-sshd.local`, Logrotate). |
 | **Sichere Behebung** | Gewollte Änderung in `setup-coder.sh` aufnehmen und Setup erneut ausführen. Der Lauf schreibt die Datei ohnehin neu – die Hand-Änderung geht sonst verloren. Warnung ist beabsichtigt (kein Still-Lauf). |
 
-### G2. Warnung: `SSH-Passwort-Login ist noch AKTIV`
+### G2. Passwort-Login: Setup meldet `OK` (D-SSH)
 
 | | |
 |---|---|
 | **Diagnose** | `sudo sshd -T \| grep -iE '^(passwordauthentication\|kbdinteractiveauthentication\|permitrootlogin)'` |
-| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv; die Netzvorgabe beschränkt SSH auf das Schulnetz. Die Warnung bleibt deshalb dauerhaft erwartbar. |
-| **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann `ssh-harden.sh` bewusst ausgeführt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
+| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv; der Abschlusscheck meldet ihn als `OK` (Setup-Versionen vor 2026-10-01 warnten hier). Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
+| **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Warnung ist nur dann beabsichtigt, wenn `permitrootlogin yes` steht (muss auf `prohibit-password`). Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann `ssh-harden.sh` bewusst ausgeführt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
 
 ### G3. Warnung: `ufw-IPv6-Pfad unklar (kein IPV6=yes …)`
 

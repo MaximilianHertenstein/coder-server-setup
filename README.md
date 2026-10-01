@@ -29,7 +29,7 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-01: alle 12 Dateien in `tests/` grün (346 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
+| Lokale Tests | Stand 2026-10-01: alle 12 Dateien in `tests/` grün (353 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
 | Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 auf dem Test-Host `2.29.11.30` als frischer Pfad-A-Aufbau (Exit 0 in 58 s); davor Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen 2026-10-01** (Test-Host): Prometheus `ready` 200, alle 6 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`, `TlsCheckStale`, `TlsIssuanceBudgetHigh`, `TlsLogTruncated`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metriken (Backup/TLS) vorhanden |
@@ -228,7 +228,8 @@ November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/suppo
 - **SSH**: Auf dem Schulserver ist Port 22 laut Netzvorgabe nur aus dem
   Schulnetz erreichbar. Passwort-Login bleibt bewusst aktiv (D-SSH,
   2026-09-30); ufw rate-limitiert (`ufw limit 22/tcp`) und fail2ban
-  begrenzen Fehlversuche. `ssh-harden.sh` wird nicht automatisch ausgeführt;
+  begrenzen Fehlversuche (`ignoreip` schützt Admin-Adressen vor der
+  geteilten Schul-NAT). `ssh-harden.sh` wird nicht automatisch ausgeführt;
   es verlangt zwei Bestätigungsflags (`--i-have-key-access --i-have-second-access`), einen
   vorhandenen SSH-Key und bestätigt den Zweit-Zugang.
 - **Firewall**: ufw mit `default deny incoming`; 80/443 (tcp+udp) frei.
@@ -279,7 +280,7 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-10-01: alle 12 Testskripte Exit 0 (346 `PASS`, 0 `FAIL`, in
+Stand 2026-10-01: alle 12 Testskripte Exit 0 (353 `PASS`, 0 `FAIL`, in
 diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
