@@ -490,7 +490,6 @@ if [ ! -f /opt/coder/.env ]; then
   tee "$ENV_TMP" > /dev/null <<EOF
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-DOCKER_GID=${DOCKER_GID}
 EOF
   chown root:root "$ENV_TMP"
   chmod 600 "$ENV_TMP"
@@ -503,8 +502,7 @@ EOF
   echo "Das interne Postgres-Passwort bleibt ebenfalls in /opt/coder/.env."
   echo "------------------------------------------------------------"
 elif grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
-  && grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env \
-  && grep -qE '^DOCKER_GID=[0-9]+$' /opt/coder/.env; then
+  && grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env; then
   echo "/opt/coder/.env existiert bereits und ist vollständig – wird nicht überschrieben."
   # B2-003: Newline/NUL im .env-Wert hart abweisen, bevor der Werteparitäts-
   # Check grün meldet. Ein Hand-Edit kann den Wert über eine zweite Zeile
@@ -512,16 +510,17 @@ elif grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
   if [ "$(sh -c 'LC_ALL=C tr -d -c "\000" < /opt/coder/.env | wc -c')" -ne 0 ] \
     || grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' /opt/coder/.env; then
     echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
-    echo "Reparatur: sudo /opt/coder/reset-passwords.sh setzt Postgres und Grafana neu auf Hex, danach Setup erneut." >&2
+    echo "Reparatur: fehlerhafte .env-Zeile manuell korrigieren (einzeiliger Wert je Schlüssel), danach Setup erneut." >&2
     exit 1
   fi
   # B-014/B2-003: Hex-Validierung bleibt fail-closed (auch im Setup-Re-Run),
-  # Nicht-Hex-Werte brechen ALTER USER/Connection-URL. reset-passwords.sh
-  # setzt Datenbank, Grafana und .env gemeinsam auf neu erzeugte Hex-Werte.
+  # Nicht-Hex-Werte brechen die Postgres-Connection-URL. reset-passwords.sh
+  # würfelt nur noch GRAFANA_ADMIN_PASSWORD neu; POSTGRES_PASSWORD muss
+  # manuell in DB und .env abgeglichen werden (TROUBLESHOOTING.md A4).
   if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
     || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
     echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter." >&2
-    echo "Reparatur: sudo /opt/coder/reset-passwords.sh setzt Postgres und Grafana neu auf Hex, danach Setup erneut." >&2
+    echo "Reparatur: siehe TROUBLESHOOTING.md (A4), danach Setup erneut." >&2
     exit 1
   fi
 else
@@ -529,31 +528,6 @@ else
   echo "Abbruch ohne Änderung – Passwörter werden NICHT neu gewürfelt (neu würfeln würde die Datenbank-Anmeldung zerstören)." >&2
   echo "Reparatur: fehlende Schlüssel in /opt/coder/.env ergänzen (vorhandene Werte behalten) oder bei Totalverlust Restore nach Runbook; danach Setup erneut laufen lassen." >&2
   exit 1
-fi
-
-# F-007 (mit P-012): DOCKER_GID bei jedem Lauf auffrischen. Nur die GID wird
-# getauscht, Passwörter bleiben unangetastet. P-012: kein "sed -i" (nicht
-# atomar), Guard gegen leere/nicht-numerische GID (oben bereits geprüft),
-# Recreate nur bei tatsächlichem Diff und nur wenn der Coder-Container schon
-# existiert – sonst erledigt Schritt 3 das Erstellen mit der neuen GID.
-OLD_DOCKER_GID=$(grep '^DOCKER_GID=' /opt/coder/.env | cut -d= -f2-)
-if [ "${OLD_DOCKER_GID}" != "${DOCKER_GID}" ]; then
-  echo "docker-GID hat sich geändert (${OLD_DOCKER_GID} -> ${DOCKER_GID}), aktualisiere /opt/coder/.env ..."
-  ENV_TMP_GID=$(mktemp /opt/coder/.env.tmp.XXXXXX)
-  install -m 600 /dev/null "$ENV_TMP_GID"
-  chown root:root "$ENV_TMP_GID"
-  grep -v '^DOCKER_GID=' /opt/coder/.env | tee "$ENV_TMP_GID" > /dev/null
-  echo "DOCKER_GID=${DOCKER_GID}" | tee -a "$ENV_TMP_GID" > /dev/null
-  chown root:root "$ENV_TMP_GID"
-  chmod 600 "$ENV_TMP_GID"
-  mv "$ENV_TMP_GID" /opt/coder/.env
-  ENV_TMP_GID=""
-  if [ "$(docker inspect -f '{{.State.Running}}' coder 2>/dev/null || echo false)" = "true" ]; then
-    echo "Erstelle Coder-Container mit neuer GID neu ..."
-    docker compose up -d --no-deps coder
-  else
-    echo "Coder-Container läuft noch nicht – Schritt 3 erstellt ihn mit der neuen GID."
-  fi
 fi
 
 # docker-compose.yml
@@ -605,8 +579,11 @@ services:
         condition: service_healthy
     # Gibt dem Coder-Container Schreibrechte auf den gemounteten Docker-Socket
     # des Hosts (offizielles Setup, siehe coder.com/docs/install/docker).
+    # Die aktuelle GID wird hier direkt eingetragen (kein .env-Umweg): der
+    # Wert muss beim Schreiben stimmen, ein Hand-Edit der .env würde sonst
+    # still wirkungslos bleiben. Ein erneuter Setup-Lauf gleicht ihn an.
     group_add:
-      - "\${DOCKER_GID}"
+      - "${DOCKER_GID}"
     environment:
       - CODER_PG_CONNECTION_URL=postgres://coder:\${POSTGRES_PASSWORD}@postgres:5432/coder?sslmode=disable
       - CODER_HTTP_ADDRESS=0.0.0.0:3000
@@ -1981,13 +1958,13 @@ echo "# [8/10] Passwort-Reset-Skript bereitstellen"
 echo "############################################################"
 write_managed "/opt/coder/reset-passwords.sh" 755 "reset-passwords.sh" <<'EOF'
 #!/bin/bash
-# Setzt neue, zufällige Passwörter für den Postgres-Benutzer "coder" und den
-# Grafana-Admin. Das ist nötig, weil POSTGRES_PASSWORD/GF_SECURITY_ADMIN_PASSWORD
-# nur beim allerersten Start wirken – ein einfaches Ändern der .env reicht bei
-# einer bereits laufenden Installation NICHT aus.
+# Setzt das Grafana-Admin-Passwort neu (zufällig, hex): GF_SECURITY_ADMIN_PASSWORD
+# wirkt nur beim allerersten Start – ein einfaches Ändern der .env genügt bei
+# einer bereits laufenden Installation NICHT. POSTGRES_PASSWORD bleibt bewusst
+# unberührt (Nicht-Hex-Reparatur dort: TROUBLESHOOTING.md A4).
 #
-# Reihenfolge DB->.env ist Status-quo (F-010 sichert nur ab, P-018 diskutiert
-# .env-zuerst – siehe BLOCKER B-10 im Report, keine stille Umstellung).
+# Reihenfolge Grafana -> .env: bei Abbruch heilt ein erneutes Ausführen
+# (würfelt neu und synchronisiert beide Seiten), .bak stellt den alten Stand her.
 # Nutzung: sudo /opt/coder/reset-passwords.sh
 set -euo pipefail
 cd /opt/coder
@@ -2008,8 +1985,13 @@ if [ ! -f .env ]; then
   echo "Fehler: /opt/coder/.env nicht gefunden. Erst setup-coder.sh ausführen." >&2
   exit 1
 fi
-if ! grep -qE '^DOCKER_GID=[0-9]+$' .env; then
-  echo "Fehler: /opt/coder/.env enthält keine gültige DOCKER_GID. Erst reparieren, dann erneut." >&2
+# Beide Passwort-Schlüssel sind Voraussetzung, auch wenn nur GRAFANA rotiert
+# wird: der atomare Tausch unten filtert nur die Grafana-Zeile heraus – ohne
+# POSTGRES_PASSWORD-Zeile als Überlebende würde "grep -v" eine leere Datei
+# erzeugen und set -e abbrechen (Fail-closed, .env unangetastet).
+if ! grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' .env \
+  || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' .env; then
+  echo "Fehler: /opt/coder/.env enthält nicht beide Passwort-Schlüssel (POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD). Erst nach Setup-Vorgabe ergänzen (vorhandene Werte behalten), dann erneut." >&2
   exit 1
 fi
 # B2-003: Newline/NUL im .env-Wert hart abweisen, kein stilles Trimmen. Ein
@@ -2018,14 +2000,11 @@ fi
 if [ "$(LC_ALL=C tr -d -c '\000' < .env | wc -c)" -ne 0 ] \
   || grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' .env; then
   echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
-  echo "Reparatur: .env-Zeilenstruktur manuell korrigieren (Schlüssel=einzeiliger Wert, DOCKER_GID numerisch), dann reset-passwords.sh erneut ausführen." >&2
+  echo "Reparatur: .env-Zeilenstruktur manuell korrigieren (Schlüssel=einzeiliger Wert), dann reset-passwords.sh erneut ausführen." >&2
   exit 1
 fi
-# Das bisherige Postgres-Passwort wird nicht benötigt: ALTER USER läuft lokal
-# im Container über den Unix-Socket, dessen initiale pg_hba.conf-Regel trust
-# verwendet. Das neue Passwort wird danach über TCP geprüft; ein Negativtest
-# weist zuvor trust auf diesem TCP-Pfad zurück.
 
+# Beide Container müssen laufen: Grafana direkt, Postgres für das Vorab-Backup.
 for c in coder-postgres coder-grafana; do
   if [ "$(docker inspect -f '{{.State.Running}}' "${c}" 2>/dev/null || echo false)" != "true" ]; then
     echo "Fehler: Container ${c} läuft nicht. Erst 'docker compose up -d' ausführen." >&2
@@ -2046,9 +2025,9 @@ chmod 600 "${ENV_BAK}"
 echo "Sicherung der alten .env: ${ENV_BAK}"
 
 # Abbruch-Falle (F-010/B-014): weist bei Ctrl-C/SSH-Abbruch/Fehler den Weg, statt
-# still DB=neu/.env=alt zu hinterlassen. Texte pro Fenster getrennt (PG vs.
-# Grafana vs. .env), damit der Zustand ohne Klartext-Log diagnostizierbar ist.
-# Re-Run heilt (würfelt erneut und synchronisiert DB+Grafana+.env); .bak stellt
+# still Grafana=neu/.env=alt zu hinterlassen. Texte pro Fenster getrennt
+# (Grafana vs. .env), damit der Zustand ohne Klartext-Log diagnostizierbar ist.
+# Re-Run heilt (würfelt erneut und synchronisiert Grafana+.env); .bak stellt
 # den Vorzustand wieder her.
 PHASE="Vorbereitung"
 reset_passwords_cleanup() {
@@ -2057,80 +2036,33 @@ reset_passwords_cleanup() {
   if [ "${rc}" -ne 0 ]; then
     echo "ABBRUCH in Phase [${PHASE}]." >&2
     case "${PHASE}" in
-      Postgres-ALTER-USER|Postgres-Verifikation)
-        echo "Fenster PG: DB-Passwort evtl. bereits neu, .env noch alt, Grafana noch alt." >&2 ;;
       Grafana-Reset)
-        echo "Fenster Grafana: DB-Passwort bereits neu, Grafana evtl. neu, .env noch alt." >&2 ;;
-      .env-Tausch|Coder-Recreate)
-        echo "Fenster .env: DB+Grafana neu, .env evtl. bereits getauscht – Coder-Recreate ggf. unvollständig." >&2 ;;
+        echo "Fenster Grafana: Grafana evtl. bereits neu, .env noch alt." >&2 ;;
+      .env-Tausch)
+        echo "Fenster .env: Grafana bereits neu, .env evtl. noch alt." >&2 ;;
       *)
         echo "Fenster Vorbereitung: noch nichts geändert (.bak liegt vor)." >&2 ;;
     esac
-    echo "Reparatur: reset-passwords.sh erneut ausführen; es würfelt neue Werte und synchronisiert Postgres, Grafana und .env. Details stehen in ${ENV_BAK}." >&2
+    echo "Reparatur: reset-passwords.sh erneut ausführen; es würfelt ein neues Grafana-Passwort und synchronisiert die .env. Der alte Stand steht in ${ENV_BAK}." >&2
   fi
   return "${rc}"
 }
 trap reset_passwords_cleanup EXIT
 
-# hex statt base64: garantiert nur 0-9a-f, kann also nie ein "/", "+" oder "="
-# enthalten, das in der Postgres-Connection-URL Probleme machen würde.
-NEW_PG_PW=$(openssl rand -hex 24)
+# hex statt base64: garantiert nur 0-9a-f. Das Setup-Gate verlangt für jeden
+# .env-Passwortwert hex (auch nach Hand-Edit) – die Neuwürfelung muss diese
+# Grenze erfüllen und kann nie Quotes/Sonderzeichen über stdin tragen.
 NEW_GF_PW=$(openssl rand -hex 16)
-# B2-003: Fail-closed für nicht-Hex NEU, BEVOR DB/Grafana/.env angerührt wird.
+# B2-003: Fail-closed für nicht-Hex NEU, BEVOR Grafana/.env angerührt wird.
 # openssl -hex liefert immer Hex; die Prüfung ist die harte Grenze, falls hier
-# je ein anderes Zeichenset gewählt würde (sonst brechen SQL-/Shell-Quoting und
-# die Postgres-Connection-URL still).
-case "${NEW_PG_PW}${NEW_GF_PW}" in
+# je ein anderes Zeichenset gewählt würde (sonst bricht das Setup-Gate beim
+# nächsten Lauf still ab).
+case "${NEW_GF_PW}" in
   ''|*[!0-9a-f]*)
     echo "Fehler: Neuwürfelung lieferte kein Hex – Abbruch ohne Änderung." >&2
     exit 1
     ;;
 esac
-
-echo "Setze neues Postgres-Passwort..."
-PHASE="Postgres-ALTER-USER"
-# Das neue Hex-Passwort geht per stdin an psql (nicht als Prozessargument).
-# psqls Variablenersetzung quotiert es als SQL-Literal; der lokale Socket
-# benötigt wegen trust kein altes Passwort.
-{
-  printf '\\set new_password %s\n' "${NEW_PG_PW}"
-  printf '%s\n' "ALTER USER coder WITH PASSWORD :'new_password';"
-} | docker exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder
-
-# Verifikation mit dem NEUEN Passwort: über den NICHT-Loopback-Pfad.
-# A2 (gemessen auf dem Test-Host): "psql -U coder -d coder" OHNE -h läuft über
-# den UNIX-Socket und wird dort mit "trust" angenommen – ein FALSCHES
-# Passwort war auf diesem Pfad ebenfalls erfolgreich, der alte Check war also
-# eine Behauptung ohne Nachweis. "-h <Container-IP>" geht über
-# "host all all all scram-sha-256" und prüft tatsächlich.
-# Negativkontrolle BEVOR der Positive-Check: muss ein falsches Passwort auf
-# diesem Pfad scheitern, sonst ist pg_hba.conf nicht scram (trust) und der
-# grüne Check unten wäre wertlos. Passwort kommt über STDIN wie überall in
-# diesem Block – kein "docker exec -e", das wäre in "ps" sichtbar.
-# Schlägt der Positive-Check fehl, bricht das Skript ab, BEVOR .env
-# angefasst wird.
-PHASE="Postgres-Verifikation"
-PGH="$(docker exec coder-postgres sh -c 'hostname -i' 2>/dev/null | awk '{print $1}')"
-case "${PGH}" in
-  "" | 127.0.0.1 | ::1)
-    echo "Fehler: Postgres-Host für die Verifikation ist leer oder Loopback ('${PGH:-leer}')." >&2
-    echo "Ohne Nicht-Loopback-Weg ist die Verifikation trust-anfällig – Abbruch, .env unangetastet." >&2
-    exit 1
-    ;;
-esac
-if printf '%s\n' "negativkontrolle-darf-nicht-funktionieren" \
-  | docker exec -i coder-postgres sh -c \
-    "read -rs _neg; export PGPASSWORD=\${_neg}; psql -h ${PGH} -U coder -d coder -c 'SELECT 1;'" \
-    > /dev/null 2>&1; then
-  echo "Fehler: Postgres akzeptiert auf ${PGH} ein FALSCHES Passwort –" >&2
-  echo "pg_hba.conf vergibt diesen Pfad offenbar mit 'trust', nicht 'scram-sha-256'." >&2
-  echo "Prüfen: docker exec coder-postgres cat /var/lib/postgresql/18/docker/pg_hba.conf" >&2
-  exit 1
-fi
-docker exec -i coder-postgres sh <<INNER_EOF
-export PGPASSWORD="${NEW_PG_PW}"
-psql -h ${PGH} -U coder -d coder -c "SELECT 1;" > /dev/null
-INNER_EOF
 
 echo "Setze neues Grafana-Admin-Passwort..."
 PHASE="Grafana-Reset"
@@ -2140,27 +2072,19 @@ PHASE="Grafana-Reset"
 printf '%s\n' "${NEW_GF_PW}" | docker exec -i coder-grafana \
   grafana cli --homepath /usr/share/grafana admin reset-admin-password --password-from-stdin
 
-# .env aktualisieren, damit Coder mit dem neuen Postgres-Passwort verbindet
-# und die Werte für später dokumentiert sind. F-010: atomar per Temp+mv statt
-# "sed -i" (Abbruch während sed korrumpierte .env); beide Schlüssel in EINEM
-# Tausch, DOCKER_GID bleibt erhalten.
+# .env aktualisieren, damit der neue Wert abrufbar dokumentiert ist
+# (GF_SECURITY_ADMIN_PASSWORD wirkt nur beim Erststart). F-010: atomar per
+# Temp+mv statt "sed -i" (Abbruch während sed korrumpierte .env).
 PHASE=".env-Tausch"
 ENV_TMP_PW=$(mktemp .env.tmp.XXXXXX)
 chmod 600 "${ENV_TMP_PW}"
-# Kein "|| true": Exit 1 hieße "alle Zeilen gefiltert" (= DOCKER_GID fehlt),
-# dann ist Abbrechen (Fail-closed, .env unangetastet) richtig.
-grep -v -e '^POSTGRES_PASSWORD=' -e '^GRAFANA_ADMIN_PASSWORD=' .env > "${ENV_TMP_PW}"
-printf 'POSTGRES_PASSWORD=%s\n' "${NEW_PG_PW}" >> "${ENV_TMP_PW}"
+# Kein "|| true": Exit 1 hieße "alle Zeilen gefiltert" (der Gate oben sichert,
+# dass die POSTGRES_PASSWORD-Zeile als Überlebende bleibt) – dann ist Abbrechen
+# (Fail-closed, .env unangetastet) richtig.
+grep -v '^GRAFANA_ADMIN_PASSWORD=' .env > "${ENV_TMP_PW}"
 printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "${NEW_GF_PW}" >> "${ENV_TMP_PW}"
 chmod 600 "${ENV_TMP_PW}"
 mv "${ENV_TMP_PW}" .env
-
-# Coder neu erstellen, damit es die neue Datenbank-Verbindungs-URL verwendet.
-# --no-deps: nur den Coder-Container anfassen, Postgres nicht mit neu starten
-# (dessen Environment referenziert POSTGRES_PASSWORD zwar auch, ein Neustart
-# wäre harmlos, aber unnötig, solange die Datenbank schon initialisiert ist).
-PHASE="Coder-Recreate"
-docker compose up -d --no-deps coder
 
 PHASE="fertig"
 trap - EXIT
@@ -2168,10 +2092,10 @@ trap - EXIT
 echo "------------------------------------------------------------"
 echo "Neues Grafana-Admin-Passwort wurde in /opt/coder/.env (Modus 600) gespeichert."
 echo "Bei Bedarf gezielt abrufen: sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env"
-echo "  Das interne Postgres-Passwort bleibt in /opt/coder/.env (nur root lesbar)."
-echo "  C2: .env ist geändert. Coder wurde sofort neu erstellt; Postgres und"
-echo "      Grafana werden beim nächsten 'docker compose up -d' neu erstellt"
-echo "      (Env-Hash) – Fenster dafür einplanen, kurzfristige DB-Unterbrechung."
+echo "  POSTGRES_PASSWORD wurde NICHT verändert (bleibt in /opt/coder/.env, nur root lesbar)."
+echo "  C2: Beim nächsten vollständigen 'docker compose up -d' wird Grafana neu"
+echo "      erstellt (Env-Hash) – kurzer Neustart, Volumes/Dashboards bleiben."
+echo "      Postgres und Coder sind nicht betroffen."
 echo "------------------------------------------------------------"
 EOF
 

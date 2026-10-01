@@ -29,7 +29,7 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-01: alle 11 Dateien in `tests/` grün (322 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
+| Lokale Tests | Stand 2026-10-01: alle 11 Dateien in `tests/` grün (323 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
 | Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 auf dem Test-Host `2.29.11.30` als frischer Pfad-A-Aufbau (Exit 0 in 58 s); davor Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen 2026-10-01** (Test-Host): Prometheus `ready` 200, alle 6 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`, `TlsCheckStale`, `TlsIssuanceBudgetHigh`, `TlsLogTruncated`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metriken (Backup/TLS) vorhanden |
@@ -94,7 +94,7 @@ Umgebungsvariablen gehören hinter das sudo, siehe unten.
 | 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades, Reboot 03:00, lesendes Boot-Gate (`boot-check.sh`), TLS-Zählung (`check-tls.sh`); Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |
 | 7 | Update-Skript | `update.sh` (manuell, kein Cronjob) mit Pre-Backup und Health-Gate |
-| 8 | Passwort-Reset-Skript | `reset-passwords.sh` (Postgres + Grafana, atomare `.env`-Aktualisierung) |
+| 8 | Passwort-Reset-Skript | `reset-passwords.sh` (Grafana-Admin, atomare `.env`-Aktualisierung) |
 | 9 | Komplett-Reset-Skript | `reset-coder.sh` (Inventar → Backup → Bestätigung → Volumes + `.env`) |
 | 10 | Abschlusscheck & Zusammenfassung | Container, Socket-GID, `https://…/healthz`, Wildcard-DNS, Nutzer-/Owner-Hinweis (B2), `[FEHLER]`-Zähler → Exit 1 bei Fehlern |
 
@@ -239,7 +239,7 @@ November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/suppo
   schreibbar – bei Kompromittierung eines Workspaces ist der Host
   kompromittierbar. Abfederung: [templates/allowlist.md](templates/allowlist.md).
 - **Secrets**: `.env` mit 600/root, Passwörter ausschließlich hex,
-  Rotation über `reset-passwords.sh`. Kein Secret im Repository
+  Rotation (Grafana) über `reset-passwords.sh`. Kein Secret im Repository
   (`.gitignore`).
 - **TLS**: Caddy On-Demand-TLS mit Wildcard. Das `permission http`-Modul nutzt
   den lokalen `ask`-Endpunkt (`127.0.0.1:9123`, nur im Container erreichbar).
@@ -280,7 +280,7 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-10-01: alle 11 Testskripte Exit 0 (322 `PASS`, 0 `FAIL`, in
+Stand 2026-10-01: alle 11 Testskripte Exit 0 (323 `PASS`, 0 `FAIL`, in
 diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
@@ -310,8 +310,8 @@ sudo /opt/coder/backup.sh
 ## Betrieb und Wartung
 
 Kurz: Stack steuern über `cd /opt/coder && sudo docker compose …`, Updates
-bewusst manuell über `sudo /opt/coder/update.sh`, Passwörter über
-`sudo /opt/coder/reset-passwords.sh`, kompletter Reset über
+bewusst manuell über `sudo /opt/coder/update.sh`, das Grafana-Admin-Passwort
+über `sudo /opt/coder/reset-passwords.sh`, kompletter Reset über
 `sudo /opt/coder/reset-coder.sh` (nach Backup und Bestätigung).
 
 Vollständig – Start/Stop, Status- und Health-Checks, Logs, automatische

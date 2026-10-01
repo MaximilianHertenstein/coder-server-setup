@@ -27,7 +27,7 @@ Setup-Version sie ersetzt (siehe Abschnitt 7).
 
 | Pfad | Zweck | Hashstore |
 |---|---|---|
-| `/opt/coder/.env` | Secrets: `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `DOCKER_GID` (600, root) | nein (bewusst) |
+| `/opt/coder/.env` | Secrets: `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` (600, root) | nein (bewusst) |
 | `/opt/coder/docker-compose.yml` | Stack-Definition, Logs, Ports, Volumes | ja |
 | `/opt/coder/caddy/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard (Verzeichnis `caddy/` wird vollständig gemountet) | ja |
 | `/opt/coder/prometheus/prometheus.yml` | Scrape-Jobs `coder`, `node`, Einbindung `rule_files` (Verzeichnis `prometheus/` wird vollständig gemountet) | ja |
@@ -40,7 +40,7 @@ Setup-Version sie ersetzt (siehe Abschnitt 7).
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
 | `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Setup, Backup, Update, Passwortwechsel und Reset (600, root) | nein |
 | `/opt/coder/update.sh` | manuelles Update mit Pre-Backup und Health-Gate | ja |
-| `/opt/coder/reset-passwords.sh` | Passwort-Rotation Postgres + Grafana | ja |
+| `/opt/coder/reset-passwords.sh` | Passwort-Rotation Grafana-Admin | ja |
 | `/opt/coder/reset-coder.sh` | Komplett-Reset des Coder-Stacks | ja |
 | `/opt/coder/boot-check.sh` | lesendes Boot-Gate nach Reboot | ja |
 | `/opt/coder/check-tls.sh` | zählt Let's-Encrypt-Ausstellungen (7 Tage) | ja |
@@ -88,7 +88,7 @@ Konfiguration".
 - Eine unvollständige `.env` wird nie still neu gewürfelt – das Setup
   bricht ab und nennt die Reparatur.
 - Passwörter müssen hex sein (`[0-9a-f]`); sonst bricht das Setup ab und
-  verweist auf `reset-passwords.sh`.
+  nennt die Reparatur (TROUBLESHOOTING.md A4).
 - Rotation: `sudo /opt/coder/reset-passwords.sh` (zieht zuerst ein
   Backup und legt `.env.bak.<Zeitstempel>` an). Passwort bei Bedarf gezielt
   abrufen:
@@ -365,17 +365,16 @@ sudo /opt/coder/reset-passwords.sh
 ```
 
 Reihenfolge im Skript: Vorab-Backup → `.env`-Sicherung (eine Generation)
-→ `ALTER USER` in Postgres → Grafana-Reset → atomarer `.env`-Tausch →
-`up -d --no-deps coder`. Bei Abbruch nennt das Skript die Phase und den
-Weg zurück; erneutes Ausführen heilt in der Regel.
+→ Grafana-Reset → atomarer `.env`-Tausch. `POSTGRES_PASSWORD` wird nicht
+verändert (Nicht-Hex-Reparatur dort: TROUBLESHOOTING.md A4). Bei Abbruch
+nennt das Skript die Phase und den Weg zurück; erneutes Ausführen heilt
+in der Regel.
 
-**C2 – Folge des geänderten `.env`:** Coder läuft sofort mit dem neuen
-Passwort weiter, **Postgres und Grafana aber erst, wenn sie neu erstellt
-werden**, denn der Env-Hash von `docker compose up -d` ändert sich. Beim
-nächsten vollständigen `docker compose up -d` werden diese beiden Container
-**neu erstellt** – kurzfristige Unterbrechung von DB und Grafana einplanen
-(kein Datenverlust, Volumes bleiben). Wer das nicht will, führt die Rotation
-bewusst kurz vor einem Wartungsfenster aus.
+**C2 – Folge des geänderten `.env`:** Beim nächsten vollständigen
+`docker compose up -d` wird **Grafana** neu erstellt (Env-Hash) – kurzer
+Neustart, Volumes/Dashboards bleiben, kurzfristig kein Login möglich.
+Postgres und Coder sind nicht betroffen; wer das Fenster steuern will,
+plant den nächsten Stack-Lauf (Update) entsprechend.
 
 ### Reboot
 
@@ -495,7 +494,7 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-10-01: alle 11 Dateien in `tests/` Exit 0, 322 `PASS`,
+Stand 2026-10-01: alle 11 Dateien in `tests/` Exit 0, 323 `PASS`,
 0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
 ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.

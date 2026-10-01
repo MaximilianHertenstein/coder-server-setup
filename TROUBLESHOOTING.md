@@ -49,9 +49,9 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else if ($1 == "DOCKER_GID") name=$1; else next; print name ": " (substr($0, index($0, "=") + 1) != "" ? "vorhanden" : "leer") }' /opt/coder/.env`, `sudo stat -c '%a %U:%G %n' /opt/coder/.env` – zeigt keine Secret-Werte |
+| **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else next; print name ": " (substr($0, index($0, "=") + 1) != "" ? "vorhanden" : "leer") }' /opt/coder/.env`, `sudo stat -c '%a %U:%G %n' /opt/coder/.env` – zeigt keine Secret-Werte |
 | **Erwartete Ursache** | Hand-Edit oder abgebrochener Lauf hat Schlüssel entfernt/geleert. |
-| **Sichere Behebung** | Wenn `DOCKER_GID` gültig ist und Postgres- sowie Grafana-Container laufen, `sudo /opt/coder/reset-passwords.sh` ausführen. Das Skript sichert zuerst die DB, würfelt beide Passwörter neu und vervollständigt die `.env`; danach Setup erneut. Bei fehlender `.env`, ungültiger `DOCKER_GID` oder nicht laufenden Containern eine vollständige `.env` wiederherstellen oder das Restore-Runbook verwenden. |
+| **Sichere Behebung** | Fehlende Schlüssel von Hand ergänzen, vorhandene Werte behalten (Reparaturtext des Setups), danach Setup erneut ausführen. `reset-passwords.sh` setzt nur `GRAFANA_ADMIN_PASSWORD` und vervollständigt keine fehlenden Schlüssel. Bei fehlender `.env` oder Totalverlust: vollständige `.env` wiederherstellen bzw. Restore nach Runbook. |
 
 ### A4. `/opt/coder/.env enthält Nicht-Hex-Passwörter`
 
@@ -59,15 +59,30 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 |---|---|
 | **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else next; value=substr($0, index($0, "=") + 1); print name ": " (value ~ /^[0-9a-f]+$/ ? "hex" : "nicht-hex") }' /opt/coder/.env` – zeigt keine Secret-Werte |
 | **Erwartete Ursache** | Legacy-Wert mit Sonderzeichen aus einer älteren Installation. |
-| **Sichere Behebung** | `sudo /opt/coder/reset-passwords.sh` sichert zuerst die DB, liest das alte Postgres-Passwort nicht und setzt Postgres, Grafana und `.env` auf neue Hex-Werte. Danach Setup erneut ausführen. |
+| **Sichere Behebung** | Zuerst die betroffene Zeile bestimmen (Diagnose oben). **GRAFANA_ADMIN_PASSWORD betroffen:** `sudo /opt/coder/reset-passwords.sh` ausführen (Backup vorweg, atomare `.env`-Aktualisierung), danach Setup erneut. **POSTGRES_PASSWORD betroffen:** Rezept darunter ausführen, danach Setup erneut. |
+
+`POSTGRES_PASSWORD` neu setzen – Reihenfolge DB → `.env` → Coder, damit ein
+Abbruch immer den alten, konsistenten Zustand lässt (F-010); ein Tausch in
+umgekehrter Reihenfolge trennt Coder von der DB:
+
+```bash
+PG=$(openssl rand -hex 24)
+printf "ALTER USER coder WITH PASSWORD '%s';\n" "$PG" \
+  | sudo docker exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder
+sudo sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${PG}|" /opt/coder/.env
+cd /opt/coder && sudo docker compose up -d --no-deps coder
+```
+
+Der neue Wert steht kurz in der Prozessliste der eigenen root-Shell (gleiche
+Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 ### A5. `.env-Wert enthält Newline/NUL – wird nicht still getrimmt`
 
 | | |
 |---|---|
-| **Diagnose** | `sudo python3 -c 'from pathlib import Path; b=Path("/opt/coder/.env").read_bytes(); print("NUL:", "ja" if b"\0" in b else "nein", "Zeilen:", len(b.splitlines()))'` – die reguläre `.env` hat drei Schlüsselzeilen; das Kommando gibt keine Werte aus |
+| **Diagnose** | `sudo python3 -c 'from pathlib import Path; b=Path("/opt/coder/.env").read_bytes(); print("NUL:", "ja" if b"\0" in b else "nein", "Zeilen:", len(b.splitlines()))'` – die reguläre `.env` hat zwei Schlüsselzeilen (ältere Installationen drei); das Kommando gibt keine Werte aus |
 | **Erwartete Ursache** | Zeilenumbruch beim Hand-Edit; grep/compose lesen nur die erste Zeile. |
-| **Sichere Behebung** | Die fehlerhafte Zusatzzeile entfernen und die Schlüsselzeilen wiederherstellen, ohne Secret-Werte zu trimmen oder auszugeben. Danach `sudo /opt/coder/reset-passwords.sh` ausführen; es setzt Postgres, Grafana und `.env` gemeinsam neu. |
+| **Sichere Behebung** | Die fehlerhafte Zusatzzeile entfernen und die Schlüsselzeilen wiederherstellen, ohne Secret-Werte zu trimmen oder auszugeben. Danach Setup erneut ausführen; zeigt das Setup-Gate Nicht-Hex an: A4. |
 
 ### A6. `Port <p>/<pr> von fremdem Listener belegt (B2-008)`
 
@@ -97,9 +112,9 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | Letzte Ausgabe lesen; bei `reset-passwords.sh` nennt das Skript die Phase (`Postgres-ALTER-USER`, `Grafana-Reset`, `.env-Tausch`, …) und den Zustand. |
-| **Erwartete Ursache** | Teilzustand: je Phase sind DB, Grafana und `.env` unterschiedlich weit. |
-| **Sichere Behebung** | `sudo /opt/coder/reset-passwords.sh` erneut ausführen; es würfelt neue Werte und synchronisiert DB, Grafana und `.env`. Bleibt Grafana defekt, Container-Logs und die konkrete `Grafana-Reset`-Meldung prüfen. Kein Secret als Befehlsargument, Ticket- oder Logtext weitergeben. |
+| **Diagnose** | Letzte Ausgabe lesen; bei `reset-passwords.sh` nennt das Skript die Phase (`Grafana-Reset`, `.env-Tausch`, …) und den Zustand. |
+| **Erwartete Ursache** | Teilzustand: je Phase sind Grafana und `.env` unterschiedlich weit. |
+| **Sichere Behebung** | `sudo /opt/coder/reset-passwords.sh` erneut ausführen; es würfelt ein neues Grafana-Passwort und synchronisiert die `.env`. Bleibt Grafana defekt, Container-Logs und die konkrete `Grafana-Reset`-Meldung prüfen. Kein Secret als Befehlsargument, Ticket- oder Logtext weitergeben. |
 
 ### A10. `Fehler: /etc/docker/daemon.json existiert, enthält aber kein Log-Limit (max-size/max-file)`
 
@@ -169,9 +184,9 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | `getent group docker`, `sudo docker inspect -f '{{json .HostConfig.GroupAdd}}' coder`, `sudo grep DOCKER_GID /opt/coder/.env` |
-| **Erwartete Ursache** | docker-GID hat sich geändert (Neuinstallation), `.env` und Container sind nicht mehr synchron → kein Socket-Zugriff, keine Workspace-Provisionierung. |
-| **Sichere Behebung** | Setup erneut ausführen (Schritt 2 gleicht die GID an und recreated den Coder-Container nur bei tatsächlicher Änderung). Danach muss die Probe `[OK] … Socket-Zugriff konfiguriert` lauten. |
+| **Diagnose** | `getent group docker`, `sudo docker inspect -f '{{json .HostConfig.GroupAdd}}' coder` |
+| **Erwartete Ursache** | docker-GID hat sich geändert (Neuinstallation/Docker-Update), Compose-Datei und Container sind nicht mehr synchron → kein Socket-Zugriff, keine Workspace-Provisionierung. |
+| **Sichere Behebung** | Setup erneut ausführen: es trägt die aktuelle GID fest in die Compose-Datei ein und stellt den Coder-Container bei Änderung neu auf. Danach muss die Probe `[OK] … Socket-Zugriff konfiguriert` lauten. |
 
 ### C3. Caddy-Änderung wirkt nicht
 
@@ -297,9 +312,9 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
 | | |
 |---|---|
-| **Diagnose** | Phasenname im Fehlertext (`Postgres-ALTER-USER`, `Postgres-Verifikation`, `Grafana-Reset`, `.env-Tausch`, `Coder-Recreate`), `.env.bak.<ts>` |
-| **Erwartete Ursache** | Zwischenzustand DB/Grafana/.env. |
-| **Sichere Behebung** | Skript erneut ausführen; es kann Postgres über den lokalen Unix-Socket erneut synchronisieren, ohne das alte Passwort aus `.env.bak.<ts>` zu benötigen. Bleibt der Fehler bestehen, die genannte Phase, Container-Logs und die gesicherte `.env.bak.<ts>` prüfen, bevor weitere Passwortänderungen vorgenommen werden. |
+| **Diagnose** | Phasenname im Fehlertext (`Grafana-Reset`, `.env-Tausch`), `.env.bak.<ts>` |
+| **Erwartete Ursache** | Zwischenzustand Grafana/.env. |
+| **Sichere Behebung** | Skript erneut ausführen; es würfelt ein neues Grafana-Passwort und synchronisiert die `.env` (alter Stand: `.env.bak.<ts>`). Bleibt der Fehler bestehen, die genannte Phase, Container-Logs und die gesicherte `.env.bak.<ts>` prüfen, bevor weitere Passwortänderungen vorgenommen werden. |
 
 ### E8. Warnung: vorhandene Docker-Origin könnte automatische Engine-Updates aktivieren
 

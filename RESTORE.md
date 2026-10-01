@@ -84,11 +84,10 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
    ```
 
 2. `setup-coder.sh` ausführen. Postgres und Grafana übernehmen so schon beim
-   ersten Start die Passwörter aus der originalen `.env`; das Setup aktualisiert
-   darin außerdem `DOCKER_GID`. **Die `.env` danach nicht durch eine andere
-   Version ersetzen.** Ein Tausch nach dem Start würde die gespeicherten
-   Postgres-/Grafana-Passwörter nicht ändern und könnte Coder von Postgres
-   trennen.
+   ersten Start die Passwörter aus der originalen `.env`. **Die `.env` danach
+   nicht durch eine andere Version ersetzen.** Ein Tausch nach dem Start würde
+   die gespeicherten Postgres-/Grafana-Passwörter nicht ändern und könnte
+   Coder von Postgres trennen.
 3. Coder für den Import stoppen:
    `sudo docker compose -f /opt/coder/docker-compose.yml stop coder`
 4. Dump einspielen (B-008: eine Variante, kein „Fehlerprotokoll lesen"):

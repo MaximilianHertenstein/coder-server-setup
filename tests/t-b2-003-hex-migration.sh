@@ -1,14 +1,12 @@
 #!/bin/bash
-# B2-003 / Hex-Migration: Setup-Gate bleibt fail-closed; Rotation braucht das
-# bisherige Postgres-Passwort nicht.
+# B2-003 / Hex-Migration: Setup-Gate bleibt fail-closed; die Rotation
+# (nur noch Grafana) schreibt atomar in die .env.
 # Beweist (nur /tmp, kein Docker, keine Produktion):
 #  1. Setup-Gate: Nicht-Hex -> ROT mit woertlichem Reparaturtext (kein Pingpong).
-#  2. Das Reset-Gate benötigt nur DOCKER_GID; Newline/NUL -> hart ROT
-#     (kein stilles Trimmen).
-#  3. Das neue Postgres-Passwort geht per stdin an psql, nicht in docker-argv.
-#  4. Legacy-Postgres-Werte werden ersetzt, ohne sie zu lesen oder zu trimmen.
-# Diese statische Probe behauptet keinen echten Datenbanklauf. Die
-# Postgres-Verifikation muss auf einer isolierten Test-VM erfolgen.
+#  2. Das Reset-Gate verlangt beide Passwort-Schlüssel; Newline/NUL -> hart ROT
+#     (kein stilles Trimmen). Postgres wird vom Reset nicht angefasst.
+#  3. Das neue Grafana-Passwort geht per stdin an die CLI, nicht in docker-argv.
+#  4. Die .env trägt kein DOCKER_GID mehr; die GID steht fest in der Compose-Datei.
 set -euo pipefail
 
 FAIL=0
@@ -26,8 +24,8 @@ awk '/write_managed .*reset-passwords.sh/,/^EOF$/' "${SETUP}" | tail -n +2 | hea
 
 # ---------- STATIK ----------
 if grep -qF -- 'Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter.' "${SETUP}" \
-  && grep -qF -- 'Reparatur: sudo /opt/coder/reset-passwords.sh setzt Postgres und Grafana neu auf Hex, danach Setup erneut.' "${SETUP}"; then
-  pass "Setup-Gate Ersatztext woertlich (fail-closed + Reset-Verweis)"
+  && grep -qF -- 'Reparatur: siehe TROUBLESHOOTING.md (A4), danach Setup erneut.' "${SETUP}"; then
+  pass "Setup-Gate Ersatztext woertlich (fail-closed + A4-Verweis)"
 else
   fail "Setup-Gate Ersatztext fehlt/abweichend"
 fi
@@ -45,17 +43,30 @@ else
 fi
 
 if grep -qF -- 'keine gültige DOCKER_GID' "${WORK}/reset-block.sh"; then
-  pass "Reset prüft die benötigte DOCKER_GID"
+  fail "Reset-Gate verlangt noch DOCKER_GID (2.7 entfernt)"
 else
-  fail "Reset prüft DOCKER_GID nicht"
+  pass "Reset-Gate verlangt kein DOCKER_GID mehr"
+fi
+
+if grep -qF -- "grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' .env" "${WORK}/reset-block.sh" \
+  && grep -qF -- "grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' .env" "${WORK}/reset-block.sh"; then
+  pass "Reset-Gate verlangt beide Passwort-Schlüssel (Tausch kann .env nie leeren)"
+else
+  fail "Reset-Gate verlangt nicht beide Passwort-Schlüssel"
+fi
+
+if grep -qF -- 'ALTER USER' "${WORK}/reset-block.sh"; then
+  fail "Reset-Block fasst noch Postgres an (2.8: nur noch Grafana)"
+else
+  pass "Reset-Block enthält kein ALTER USER (nur noch Grafana)"
 fi
 
 N_Q="$(grep -cF "<<'INNER_EOF'" "${WORK}/reset-block.sh" || true)"
 N_U="$(grep -c '<<INNER_EOF' "${WORK}/reset-block.sh" || true)"
-if [ "${N_Q}" = "0" ] && [ "${N_U}" = "1" ]; then
-  pass "nur ein unquotierter Heredoc fuer die TCP-Verifikation"
+if [ "${N_Q}" = "0" ] && [ "${N_U}" = "0" ]; then
+  pass "keine INNER_EOF-Heredocs mehr (kein Passwort-/Verifikations-Heredoc)"
 else
-  fail "Heredoc-Anzahl falsch (quotiert=${N_Q} unquotiert=${N_U}, erwartet 0/1)"
+  fail "Heredoc-Anzahl falsch (quotiert=${N_Q} unquotiert=${N_U}, erwartet 0/0)"
 fi
 
 if grep -vE '^[[:space:]]*#' "${SETUP}" | grep -qF -- 'docker exec -e'; then
@@ -64,10 +75,16 @@ else
   pass "kein docker exec -e (kein inspect-Leak)"
 fi
 
-if grep -qF -- "} | docker exec -i coder-postgres psql -v ON_ERROR_STOP=1 -U coder -d coder" "${WORK}/reset-block.sh" && ! grep -qF -- 'OLD_PG_PW' "${WORK}/reset-block.sh"; then
-  pass "ALTER USER nutzt lokalen psql-stdin; altes Passwort wird nicht gelesen"
+if grep -qF -- 'DOCKER_GID=${DOCKER_GID}' "${SETUP}"; then
+  fail "Setup schreibt noch DOCKER_GID in die .env (2.7 entfernt)"
 else
-  fail "ALTER USER-psql-Aufruf fehlt/abweichend"
+  pass "Setup schreibt kein DOCKER_GID mehr in die .env"
+fi
+
+if grep -qF -- '- "${DOCKER_GID}"' "${SETUP}" && ! grep -qF -- '- "\${DOCKER_GID}"' "${SETUP}"; then
+  pass "Compose group_add trägt die GID als Literal (kein .env-Umweg)"
+else
+  fail "Compose group_add nutzt nicht das GID-Literal"
 fi
 
 if grep -qF -- 'Neuwürfelung lieferte kein Hex' "${WORK}/reset-block.sh"; then
@@ -87,8 +104,9 @@ setup_gate_green() { # 0 = GRUEN (Hex), 1 = ROT
   grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' "$1" \
     && grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' "$1"
 }
-reset_complete() { # 0 = Reset kann die Werte erneuern
-  grep -qE '^DOCKER_GID=[0-9]+$' "$1"
+reset_complete() { # 0 = Reset darf laufen (beide Schluessel da)
+  grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' "$1" \
+    && grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' "$1"
 }
 newline_guard_clean() { # 0 = sauber, 1 = schlaegt an (Produktionsausdruck)
   ! { [ "$(LC_ALL=C tr -d -c '\000' < "$1" | wc -c)" -ne 0 ] || grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' "$1"; }
@@ -104,26 +122,35 @@ GFHEX="abcdef0123456789abcdef0123456789"
 
 while IFS= read -r V; do
   ENV="${WORK}/env-legacy"
-  printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\nDOCKER_GID=%s\n' "${V}" "${GFHEX}" "999" > "${ENV}"
+  printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\n' "${V}" "${GFHEX}" > "${ENV}"
   TAG="Legacy-Wert [${V}]"
   if setup_gate_green "${ENV}"; then fail "${TAG}: Setup-Gate GRUEN (muss ROT)"; else pass "${TAG}: Setup-Gate ROT (fail-closed)"; fi
-  if reset_complete "${ENV}"; then pass "${TAG}: Reset kann den Legacy-Wert ersetzen"; else fail "${TAG}: Reset-Gate braucht eine gültige DOCKER_GID"; fi
+  if reset_complete "${ENV}"; then pass "${TAG}: Reset-Gate grün (beide Schlüssel da)"; else fail "${TAG}: Reset-Gate ohne beide Schlüssel"; fi
   if newline_guard_clean "${ENV}"; then pass "${TAG}: Newline/NUL-Guard still"; else fail "${TAG}: Guard feuert faelschlich"; fi
   if printf '%s\n' "${V}" | grep -F -q -- "${V}"; then pass "${TAG}: Leak-Grep mit -- + -F findet Vollwert"; else fail "${TAG}: Leak-Grep-Mechanik defekt"; fi
 done < "${FIXT}"
 
 # Genau ein gruener Weg: migrierte Hex-.env -> beide Gates GRUEN.
 ENV_NEW="${WORK}/env-new"
-printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\nDOCKER_GID=%s\n' "${NEWHEX}" "${GFHEX}" "999" > "${ENV_NEW}"
+printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\n' "${NEWHEX}" "${GFHEX}" > "${ENV_NEW}"
 if setup_gate_green "${ENV_NEW}" && reset_complete "${ENV_NEW}" && newline_guard_clean "${ENV_NEW}"; then
   pass "migrierte Hex-.env: Setup GRUEN + Reset GRUEN (genau ein gruener Weg)"
 else
   fail "migrierte Hex-.env: Gates nicht beide GRUEN"
 fi
 
+# Alte .env-Gestalt (mit DOCKER_GID-Zeile) bleibt weiterhin bedienbar.
+ENV_ALT="${WORK}/env-alt"
+printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\nDOCKER_GID=999\n' "${NEWHEX}" "${GFHEX}" > "${ENV_ALT}"
+if setup_gate_green "${ENV_ALT}" && reset_complete "${ENV_ALT}"; then
+  pass "alte .env mit DOCKER_GID-Zeile: beide Gates weiterhin grün"
+else
+  fail "alte .env mit DOCKER_GID-Zeile wird abgelehnt"
+fi
+
 # Negativ: Newline im Wert -> Guard feuert, kein stilles Trimmen.
 ENV_NL="${WORK}/env-newline"
-printf 'POSTGRES_PASSWORD=%s\n%s\nGRAFANA_ADMIN_PASSWORD=%s\nDOCKER_GID=%s\n' "abc" "def" "${GFHEX}" "999" > "${ENV_NL}"
+printf 'POSTGRES_PASSWORD=%s\n%s\nGRAFANA_ADMIN_PASSWORD=%s\n' "abc" "def" "${GFHEX}" > "${ENV_NL}"
 if newline_guard_clean "${ENV_NL}"; then
   fail "Newline-Wert passiert Guard (stilles Trimmen moeglich)"
 else
@@ -133,9 +160,9 @@ fi
 # Negativ: NUL im Wert -> Guard feuert.
 ENV_NUL="${WORK}/env-nul"
 if command -v python3 >/dev/null 2>&1; then
-  python3 -c "open('${ENV_NUL}','wb').write(b'POSTGRES_PASSWORD=ab\x00cd\nGRAFANA_ADMIN_PASSWORD=${GFHEX}\nDOCKER_GID=999\n')"
+  python3 -c "open('${ENV_NUL}','wb').write(b'POSTGRES_PASSWORD=ab\x00cd\nGRAFANA_ADMIN_PASSWORD=${GFHEX}\n')"
 elif [ -x /usr/bin/printf ] && /usr/bin/printf 'a\x00b' | LC_ALL=C tr -d -c '\000' | grep -q .; then
-  { /usr/bin/printf 'POSTGRES_PASSWORD=ab\x00cd\nGRAFANA_ADMIN_PASSWORD=%s\nDOCKER_GID=999\n' "${GFHEX}"; } > "${ENV_NUL}"
+  { /usr/bin/printf 'POSTGRES_PASSWORD=ab\x00cd\nGRAFANA_ADMIN_PASSWORD=%s\n' "${GFHEX}"; } > "${ENV_NUL}"
 else
   fail "kein NUL-faehiger Writer (python3//usr/bin/printf)"; ENV_NUL=""
 fi
@@ -153,19 +180,17 @@ if new_hex_ok ""; then fail "NEU-Hex-Assert: leer passiert"; else pass "NEU-Hex-
 if new_hex_ok 'zz$top'; then fail "NEU-Hex-Assert: Nicht-Hex passiert"; else pass "NEU-Hex-Assert: Nicht-Hex ROT"; fi
 
 # ---------- LIVE (Produktionszeilen, Docker stubbed: argv + stdin) ----------
-STMT_PG="$(awk '$0=="{" {p=1} p {print} p && /^} \| docker exec -i coder-postgres psql/ {exit}' "${WORK}/reset-block.sh")"
-STMT_VERIFY="$(awk '/docker exec -i coder-postgres sh <<INNER_EOF/,/^INNER_EOF$/' "${WORK}/reset-block.sh")"
 STMT_GRAFANA="$(awk '/printf .*NEW_GF_PW.*\| docker exec -i coder-grafana/,/reset-admin-password --password-from-stdin/' "${WORK}/reset-block.sh")"
-if [ -z "${STMT_PG}" ] || [ -z "${STMT_VERIFY}" ] || [ -z "${STMT_GRAFANA}" ]; then
-  fail "Produktions-Statements nicht extrahierbar (Postgres/Verify/Grafana)"
+if [ -z "${STMT_GRAFANA}" ]; then
+  fail "Grafana-Produktions-Statement nicht extrahierbar"
 else
-  pass "Produktions-Statements extrahierbar"
+  pass "Grafana-Produktions-Statement extrahierbar"
 fi
 
 run_stmt() {
   local argv="${WORK}/$2.argv" stdin="${WORK}/$2.stdin"
   rm -f "${argv}" "${stdin}"
-  ( NEW_PG_PW="$3"; NEW_GF_PW="$4"; PGH="172.18.0.2";
+  ( NEW_GF_PW="$3";
     docker() { printf '%s\n' "$@" >> "${argv}"; cat > "${stdin}"; }
     eval "$(cat "$1")" )
 }
@@ -181,21 +206,7 @@ check_argv_clean() {
   pass "${tag}: docker-argv secret-frei"
 }
 
-NEWHEX="0123456789abcdef0123456789abcdef0123456789abcdef"
-GFHEX="abcdef0123456789abcdef0123456789"
-run_stmt <(printf '%s\n' "${STMT_PG}") "pg" "${NEWHEX}" "${GFHEX}"
-check_argv_clean "pg" "${NEWHEX}" "${NEWHEX:0:8}"
-if grep -F -q -- "${NEWHEX}" "${WORK}/pg.stdin" && grep -qF "ALTER USER coder WITH PASSWORD :'new_password';" "${WORK}/pg.stdin"; then
-  pass "neues PG-Passwort nur über stdin und als psql-Literal"
-else
-  fail "PG-stdin enthält Passwort/Literal nicht"
-fi
-
-run_stmt <(printf '%s\n' "${STMT_VERIFY}") "verify" "${NEWHEX}" "${GFHEX}"
-check_argv_clean "verify" "${NEWHEX}" "${NEWHEX:0:8}"
-grep -F -q -- "${NEWHEX}" "${WORK}/verify.stdin" && pass "Verify-Passwort geht per stdin" || fail "Verify-Passwort fehlt in stdin"
-
-run_stmt <(printf '%s\n' "${STMT_GRAFANA}") "grafana" "${NEWHEX}" "${GFHEX}"
+run_stmt <(printf '%s\n' "${STMT_GRAFANA}") "grafana" "${GFHEX}"
 check_argv_clean "grafana" "${GFHEX}" "${GFHEX:0:8}"
 grep -F -q -- "${GFHEX}" "${WORK}/grafana.stdin" && pass "Grafana-Passwort geht per stdin" || fail "Grafana-Passwort fehlt in stdin"
 

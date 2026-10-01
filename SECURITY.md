@@ -110,18 +110,16 @@ wege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
 - Eine vorhandene, aber **unvollständige** `.env` wird nie still neu
   gewürfelt (das würde die DB-Anmeldung zerstören) – das Setup bricht ab
   und nennt die Reparatur.
-- Nicht-Hex-Werte in der `.env` führen zum Abbruch mit Verweis auf
-  `sudo /opt/coder/reset-passwords.sh`. Die Rotation liest das alte Postgres-
-  Passwort nicht, setzt beide Passwörter neu und schreibt Hex-Werte in die
-  `.env`.
+- Nicht-Hex-Werte in der `.env` führen zum Abbruch mit der Reparatur aus
+  TROUBLESHOOTING.md A4: `GRAFANA_ADMIN_PASSWORD` über
+  `sudo /opt/coder/reset-passwords.sh` neu würfeln, `POSTGRES_PASSWORD`
+  manuell in DB und `.env` abgleichen.
 - Newline/NUL in `.env`-Werten wird hart abgewiesen, nicht still getrimmt.
 - Rotation: `reset-passwords.sh` zieht zuerst ein Backup und sichert die alte
-  `.env` (genau eine Generation). Das bisherige Postgres-Passwort wird nicht
-  gelesen: `ALTER USER` läuft lokal über den Unix-Socket mit `trust`. Das neue
-  Hex-Passwort geht über STDIN an `psql`, wird danach über TCP mit einer
-  Negativkontrolle verifiziert und landet atomar in `.env`. Das neue Grafana-
-  Passwort geht ebenfalls per STDIN an `grafana cli`; keins wird als
-  `docker exec`-Argument übergeben. Nur Coder wird mit `--no-deps` neu erstellt.
+  `.env` (genau eine Generation). Das neue Grafana-Hex-Passwort geht über
+  STDIN an `grafana cli`, nie als `docker exec`-Argument; der `.env`-Tausch
+  ist atomar (Temp+mv). `POSTGRES_PASSWORD` bleibt unangetastet – keine
+  DB-Änderung, kein Coder-/Postgres-Neustart.
 - Repository-Hygiene: `.gitignore` schließt `.env`, `*.env`, `*.sql`,
   `*.sql.gz`, `*.log`, `backups/` aus. Kein Secret liegt im Repository.
 - Beim Erstlauf und bei Rotation werden die Passwörter in der geschützten
