@@ -15,6 +15,9 @@ backups/
 .idea/
 .DS_Store
 
+# Session-Exports
+session-*.md
+
 # Temporary files
 *.tmp
 *.swp

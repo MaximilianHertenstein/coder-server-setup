@@ -9,8 +9,37 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `3db65ec` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `d446314` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Dokumentations-Konsistenzdurchgang und Bündelung der offenen Punkte
+
+- **Anlass:** Betreiber-Frage, ob alles, was er zu tun hat, auch in den
+  Dokumenten steht (Chat-Verlauf ist weg, Doku nicht).
+- **Neu in README:** Abschnitt „Offene Punkte – wer macht was" direkt
+  hinter der Statustabelle – acht Zeilen mit Verantwortlichkeiten
+  (Betreiber, Netzwerkadmin, Domainverwalter, „wartet auf …") und
+  Verweisen: Pre-Flow/Erstlauf, IServ-Portkonflikt, DNS-Anfrage,
+  03:00-Fenster im Wartungsplan, Template-Schritt 4, DNS-01-Klärung,
+  Produktionsfreigabe, offene Verifikationen. Vorher war das über
+  README/OPERATIONS/SECURITY/CHANGELOG verstreut.
+- **Veraltete Teststände korrigiert:** README Dateitabelle 10 → 12
+  Testskripte; README-Testabsatz und OPERATIONS §10 von „10/10, 311 PASS,
+  SC2034-Befund, Caddy-Test übersprungen" auf 2026-10-01 / 12 Dateien /
+  346 PASS / ohne Befund / ohne SKIP; Prüfstand-Kopfzeile auf 2026-10-01.
+- **Aufräumen:** `session-ses_f0f3.md` (5618-zeiliger Chat-Export dieser
+  Sitzung) war in `2dd2b4d` mit `git add -A` versehentlich gelandet –
+  entfernt und `session-*.md` in `.gitignore` aufgenommen; der Inhalt
+  bleibt in der Historie, falls er noch gebraucht wird.
+- **Geänderte Dateien:** `README.md`, `OPERATIONS.md`, `.gitignore`,
+  `CHANGELOG.md`; entfernt: `session-ses_f0f3.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** identisch mit der neuen README-Tabelle – nix davon
+  ist hier ohne Betreiber/Netzwerkadmin/VM/DNS erledigbar.
 
 ---
 

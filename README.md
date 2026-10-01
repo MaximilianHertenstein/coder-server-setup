@@ -37,6 +37,22 @@ nicht im Repository.
 | SSH-Härtung | **Entschieden (D-SSH, 2026-09-30):** Passwort-Login bleibt Standard, `ssh-harden.sh` ist nicht Standard und bleibt unaufgerufen; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `limit 22/tcp` und fail2ban zusätzlich ([SECURITY.md](SECURITY.md) §1) |
 | Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting/IServ). Von den D-Entscheidungen sonst nichts mehr offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
 
+### Offene Punkte – wer macht was (Stand 2026-10-01)
+
+Alles, was noch jemanden braucht, an einem Ort (Details jeweils in der
+verlinkten Stelle):
+
+| Was | Wer | Wo |
+|---|---|---|
+| Pre-Flight-Checkliste durchlaufen, dann erster `setup-coder.sh`-Lauf am Schulserver | Betreiber | [OPERATIONS.md](OPERATIONS.md) §11 |
+| IServ/nginx-Konflikt auf 80/443 **vor** dem Lauf klären (Entscheidung: Ports an Caddy vs. anderer Ort) | Betreiber + Hosting/IServ | §11 Pre-Flight Punkt 1 |
+| DNS: A-Record, Wildcard, 80/443-Weiterleitung, Proxy-Durchreichung beantragen | Netzwerkadmin; der Betreiber fordert nur Zeilen 1–4 an | §11 „Netzwerkadmin" |
+| 03:00-Rebootfenster mit Schulbetrieb abstimmen und im Wartungsplan hinterlegen | Betreiber | OPERATIONS §7 „Reboot", [SECURITY.md](SECURITY.md) §9 D-Reboot-Fenster |
+| Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
+| Zone/Hosting/IServ klären – erst danach DNS-01-Modul einbauen | Domainverwalter/Hosting, **nicht** der Betreiber | OPERATIONS §11 Zeile 6, [SECURITY.md](SECURITY.md) §9 D-TLS |
+| Produktionsfreigabe aussprechen – bewusst hier nicht dokumentiert | Betreiber | diese README |
+| Offene Verifikation: RTO inkl. VM-Boot, `/healthz` + Wildcard, volle Platte, 03:00-Fire | wartet auf frische VM / DNS / Kernel-Update | Prüfstand-Tabelle unten |
+
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
 **Zielbetrieb:** ein Schulserver, per SSH nur aus dem Schulnetz
@@ -61,7 +77,7 @@ Abschnitt 11.
 | `ssh-harden.sh` | Vorbereiteter SSH-Härtungspfad, **wird nicht vom Setup aufgerufen** |
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
-| `tests/` | 10 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
+| `tests/` | 12 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
 | `ai-review/` | Reviews, Pläne, Implementierungsberichte (B-/B2-/P-/F-Nummern); [Prüfung der Setup-Fundliste A1–A13, B1–B10 und C1–C5](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
 ## Was das Setup-Skript macht
@@ -263,12 +279,11 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand nach Prüfung der angehängten Punkte am 2026-09-29: alle 10 Testskripte
-Exit 0 (311 `PASS`, 0 `FAIL`); `bash -n` ohne Befund; ShellCheck mit einem
-vorhandenen Befund (SC2034, ungenutzter Retry-Schleifenzähler) ist inzwischen
-behoben; `shellcheck -S warning setup-coder.sh` meldet derzeit nichts. Der
-lokale Caddy-Parsertest wurde übersprungen, weil kein Caddy-Image lokal
-vorhanden war; ein vollständiger Setup-/VM-Lauf wurde nicht ausgeführt.
+Stand 2026-10-01: alle 12 Testskripte Exit 0 (346 `PASS`, 0 `FAIL`, in
+diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
+ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
+Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
+Prüfstand-Liste unten.
 
 Was die Tests **belegen**: das Verhalten der extrahierten Codestellen
 (Backup-Headercheck, TLS-/Boot-Gates, Hex-Migration, ufw-SSH-Regel-Gate
@@ -349,7 +364,7 @@ Produktivsystem geprüft werden:
     erreicht – und der Re-Run (Konto existiert) darf scheitern, ohne
     abzubrechen.
 
-### Prüfstand der Liste (Test-Host `2.29.11.30`, Stand 2026-09-30)
+### Prüfstand der Liste (Test-Host `2.29.11.30`, Stand 2026-10-01)
 
 | # | Status |
 |---|---|

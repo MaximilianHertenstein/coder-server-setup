@@ -492,11 +492,10 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand nach Prüfung der angehängten Punkte am 2026-09-29: 10/10 Skripte
-Exit 0, 311 `PASS`, 0 `FAIL`; ShellCheck `-S warning` meldet einen
-vorhandenen Befund (SC2034). `t-090` wurde wegen Loopback-Listener außerhalb
-der Sandbox ausgeführt. Der Caddy-Parsertest war mangels lokalem Image
-übersprungen; kein vollständiger Setup-/VM-Lauf.
+Stand 2026-10-01: alle 12 Dateien in `tests/` Exit 0, 346 `PASS`,
+0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
+ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
+dokumentiert (README „Prüfstand der Liste"), nicht lokal.
 
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder
 Root noch Docker und berühren keine Produktion. Sie belegen das Verhalten
