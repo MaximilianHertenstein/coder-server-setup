@@ -9,8 +9,26 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `d446314` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `6e61e2a` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Doku-Regel in AGENTS.md
+
+- **Regel festgehalten (Betreiber, 2026-10-01):** alles Wichtige gehört
+  in die Dokumentation, nicht nur in den Chat – und die Doku bleibt
+  dabei fokussiert und gut lesbar. Nachtrag in AGENTS.md „Documentation":
+  Operator-/Betriebswissen an seine Einzelquelle (offene Punkte: README
+  „Offene Punkte – wer macht was"; Verfahren: OPERATIONS/RESTORE;
+  Entscheidungen: SECURITY); Chroniken, Chat-Transkripte und
+  Session-Exporte bleiben draußen.
+- **Geänderte Dateien:** `AGENTS.md`, `CHANGELOG.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** unverändert, gebündelt in README „Offene Punkte –
+  wer macht was".
 
 ---
 

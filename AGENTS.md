@@ -121,6 +121,14 @@ Never claim a test passed unless it was actually executed.
 
 ## Documentation
 
+Everything the operator or operations depends on lives in the docs at its
+single source of truth, not only in the chat: open items with owner in
+README „Offene Punkte – wer macht was", procedures in OPERATIONS/RESTORE,
+decisions in SECURITY.
+
+Keep the docs focused and skimmable: current state, decisions, and where
+to act; leave chronicles, chat transcripts, and session exports out.
+
 Keep comments synchronized with actual behavior.
 
 If a comment claims that software behaves a certain way, verify the claim before relying on it.
