@@ -937,28 +937,6 @@ groups:
           description: "Logrotation (10 MB x 3) hat Eintraege der letzten 7 Tage verworfen; coder_tls_issuances_7d ist deshalb nur eine Untergrenze. Wert: /opt/coder/node-textfile/coder_tls.prom"
 EOF
 
-# Migration der alten Einzeldatei-Pfade (bis 09/2026 gemountet). Die Alt-Datei
-# wird nur entfernt, wenn sie exakt dem gerade neu Geschriebenen entspricht;
-# eine abweichende bleibt liegen und wird gemeldet, weil dort jemand von Hand
-# geändert haben könnte. Sie wird nicht mehr gemountet und ist damit wirkungslos.
-migrate_away() {
-  local old="$1" new="$2"
-  [ -e "${old}" ] || return 0
-  if cmp -s "${old}" "${new}" 2>/dev/null; then
-    rm -f "${old}"
-    forget_hash "${old}"
-    echo "  Alte Einzeldatei entfernt (inhaltsgleich): ${old}"
-  else
-    warn "Alte Datei weicht von ${new} ab: ${old} bleibt liegen (nicht mehr gemountet) – bitte manuell prüfen"
-  fi
-}
-migrate_away /opt/coder/Caddyfile /opt/coder/caddy/Caddyfile
-migrate_away /opt/coder/prometheus.yml /opt/coder/prometheus/prometheus.yml
-migrate_away /opt/coder/rules/coder-alerts.yml /opt/coder/prometheus/rules/coder-alerts.yml
-# Leer hinterbliebenes Alt-Verzeichnis entfernen; sonst bleiben (z. B. bei
-# manuellen Zusatzdateien) Teile von /opt/coder/rules liegen.
-rmdir /opt/coder/rules 2>/dev/null || true
-
 # C3: Datasource für Grafana provisioning statt manuelle UI-Konfigurations-
 # Eintragung. Betrifft nur den Beginn der Container-Welt; ob provisioniert
 # wurde, sieht der erste Start in den Grafana-Logs.
@@ -997,87 +975,6 @@ if ! docker info > /dev/null 2>&1; then
   echo "Fehler: Docker-Daemon antwortet nicht (docker info). Erst Daemon heilen, dann Setup erneut." >&2
   exit 1
 fi
-
-# B2-008: Der Port-Check matchte bislang nur den rohen ss-Output und warnte
-# deshalb bei jedem Re-Run zu Recht vor den eigenen Containern (Caddy 80/443,
-# 9090/9100/3001) – fünf WARN-Zeilen ohne Informationswert, in denen echte
-# Fremd-Konflikte untergingen. Jetzt: TCP (ss -tlnp) und UDP (ss -ulnp)
-# getrennt, denn ss -tlnp sieht UDP 443/QUIC nie. Eigene Bindings kommen aus
-# docker inspect je Projekt-Container (docker compose ps -q, Präfix coder-*),
-# der Vergleich ist exakt nach Host-IP:Host-Port (v4-Wildcard 0.0.0.0,
-# v6-Wildcard ::/*, Loopback/gebundene IPs nur identisch). Unterdrückt wird
-# ausschließlich ein exakter Treffer – jeder andere Listener auf den
-# geprüften Ports warnt mit Prozessname, auch bei Port-Gleichheit ohne
-# IP-Gleichheit.
-PORT_CHECK="80/tcp 443/tcp 443/udp 9090/tcp 9100/tcp 3001/tcp"
-OWN_PORT_KEYS=""
-for _cid in $(docker compose ps -q 2>/dev/null || true); do
-  _cname="$(docker inspect --format '{{.Name}}' "${_cid}" 2>/dev/null || true)"
-  _cname="${_cname#/}"
-  case "${_cname}" in
-    coder-*) ;;
-    *) continue ;;
-  esac
-  # D2: docker-eigenes Template statt Parsing eines Go-Roh-Strings. Der
-  # Range-Baum in "docker inspect --format" liefert je Binding genau eine
-  # Zeile "containerport|hostip|hostport" mit sauberen Werten; der alte Weg
-  # zerlegte den von docker/Go gerenderten PortBindings-Rohstring per awk und
-  # brauchte dafür eigene Regeln gegen die verschiedenen Renderings.
-  _pb="$(docker inspect --format '{{range $p,$b := .HostConfig.PortBindings}}{{range $b}}{{printf "%s|%s|%s\n" $p .HostIp .HostPort}}{{end}}{{end}}' "${_cid}" 2>/dev/null || true)"
-  [ -n "${_pb}" ] || continue
-  # Erstes Feld ist der CONTAINER-Port (trägt das Protokoll), drittes Feld der
-  # HOST-Port – nur der zählt für den Abgleich mit ss. Leere Host-IP =
-  # Wildcard und wird auf v4- UND v6-Wildcard aufgelöst.
-  _keys="$(printf '%s\n' "${_pb}" | awk -F'|' '
-    NF == 3 {
-      proto = $1; sub(/.*\//, "", proto)
-      ip = $2; port = $3
-      if (ip == "")                { printf "%s|v4*|%s\n%s|v6*|%s\n", proto, port, proto, port; next }
-      if (ip == "0.0.0.0")         { printf "%s|v4*|%s\n", proto, port; next }
-      if (ip == "::" || ip == "*") { printf "%s|v6*|%s\n", proto, port; next }
-      printf "%s|%s|%s\n", proto, ip, port
-    }' || true)"
-  OWN_PORT_KEYS="${OWN_PORT_KEYS}${_keys}"$'\n'
-done
-
-for _pr in tcp udp; do
-  if [ "${_pr}" = "tcp" ]; then
-    _ss_out="$(ss -tlnp 2>/dev/null || true)"
-  else
-    _ss_out="$(ss -ulnp 2>/dev/null || true)"
-  fi
-  while IFS= read -r _line; do
-    [ -n "${_line}" ] || continue
-    case "${_line}" in
-      State\ *) continue ;;
-    esac
-    _local="$(printf '%s\n' "${_line}" | awk '{print $4}')"
-    case "${_local}" in
-      *:*) ;;
-      *) continue ;;
-    esac
-    _port="${_local##*:}"
-    _ip="${_local%:*}"
-    _ip="${_ip#\[}"
-    _ip="${_ip%\]}"
-    case "${_ip}" in
-      0.0.0.0) _ip="v4*" ;;
-      "*" | "::") _ip="v6*" ;;
-    esac
-    case " ${PORT_CHECK} " in
-      *" ${_port}/${_pr} "*)
-        ;;
-      *)
-        continue ;;
-    esac
-    if grep -qxF -- "${_pr}|${_ip}|${_port}" <<< "${OWN_PORT_KEYS}"; then
-      continue
-    fi
-    _proc="$(printf '%s\n' "${_line}" | awk '{$1="";$2="";$3="";$4="";sub(/^ +/,"");print}')"
-    [ -n "${_proc}" ] || _proc="${_local} (Prozessname nicht lesbar)"
-    warn "Port ${_port}/${_pr} von fremdem Listener belegt: ${_proc} – vor 'up -d' aufräumen"
-  done <<< "${_ss_out}"
-done
 
 if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' '); then
   if [ "${_avail}" -lt 1073741824 ]; then
@@ -1482,23 +1379,6 @@ Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "03:00";
 EOF
 
-# Docker-Engine-Updates bleiben manuell. Ein dockerd-Neustart beendet
-# Workspace-Container; deshalb wird die zuvor eingerichtete Docker-Origin-
-# Freigabe nur entfernt, wenn die Datei noch exakt der gespeicherten
-# Setup-Version entspricht. Handgeaenderte/unverwaltete Dateien bleiben
-# unangetastet und werden zur manuellen Pruefung gemeldet.
-LEGACY_DOCKER_UU="/etc/apt/apt.conf.d/52-coder-docker-upgrades"
-if [ -f "${LEGACY_DOCKER_UU}" ]; then
-  LEGACY_STORED_HASH="$(awk -v f="${LEGACY_DOCKER_UU}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null | tail -n1 || true)"
-  LEGACY_FILE_HASH="$(sha256sum "${LEGACY_DOCKER_UU}" 2>/dev/null | awk '{print $1}' || true)"
-  if [ -n "${LEGACY_STORED_HASH}" ] && [ "${LEGACY_STORED_HASH}" = "${LEGACY_FILE_HASH}" ]; then
-    rm -- "${LEGACY_DOCKER_UU}"
-    forget_hash "${LEGACY_DOCKER_UU}"
-    ok "Verwaltete Docker-Origin fuer unattended-upgrades entfernt; Docker wird manuell aktualisiert"
-  else
-    warn "${LEGACY_DOCKER_UU} ist geaendert oder nicht vom Setup verwaltet und bleibt unangetastet. Pruefen, ob sie Docker-Updates freigibt."
-  fi
-fi
 APT_UU_CONFIG="$(apt-config dump 2>/dev/null || true)"
 if grep -Fq 'o=Docker' <<< "${APT_UU_CONFIG}"; then
   warn "Die wirksame APT-Konfiguration enthält weiterhin eine Docker-Origin für unattended-upgrades; prüfen mit: grep -rn 'o=Docker' /etc/apt/apt.conf.d/"
@@ -1899,18 +1779,6 @@ for IDX in "${!NEWEST[@]}"; do
 done
 EOF
 
-# Falls von einer früheren Skript-Version noch ein Eintrag in der
-# Root-Crontab existiert (dieses Skript nutzte anfangs "crontab -e"): erst
-# entfernen, sonst würde das Backup doppelt laufen (einmal von dort, einmal
-# von der neuen /etc/cron.d/-Datei unten).
-ROOT_CRONTAB="$(crontab -l 2>/dev/null || true)"
-if grep -qF "/opt/coder/backup.sh" <<< "${ROOT_CRONTAB}"; then
-  # "|| true": grep -v liefert Exit 1, wenn nach dem Filtern keine Zeile
-  # übrig ist (F-001: einzige Alt-Zeile). Ohne das bricht das Setup unter
-  # "set -euo pipefail" hier lautlos ab.
-  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/backup.sh" || true) | crontab -
-fi
-
 # F-009(a): ohne Cron-Daemon läuft nie ein Backup, das Setup meldete trotzdem
 # [OK]. Das Paket wurde bereits in Schritt 1 installiert; hier werden die
 # geordneten Eintraege aktiviert.
@@ -2128,18 +1996,6 @@ echo "Update-Gate grün: alle Container laufen, Postgres healthy, /healthz via C
 # Versionen (es aktualisiert nur, was schon in der Compose-Datei steht) und
 # zieht bei Minor-Pins wie caddy:2.10 zusätzlich die neueste Patch-Version.
 EOF
-
-# Falls ein früherer Lauf einen automatischen Update-Cronjob angelegt hat:
-# entfernen, weil Updates jetzt bewusst manuell laufen sollen.
-ROOT_CRONTAB="$(crontab -l 2>/dev/null || true)"
-if grep -qF "/opt/coder/update.sh" <<< "${ROOT_CRONTAB}"; then
-  # Siehe F-001 oben: "|| true" verhindert stillen Abbruch, wenn die
-  # Update-Zeile die einzige Crontab-Zeile war.
-  (printf '%s\n' "${ROOT_CRONTAB}" | grep -vF "/opt/coder/update.sh" || true) | crontab -
-  warn "Vorhandenen automatischen Update-Cronjob entfernt – Updates laufen jetzt nur noch manuell"
-else
-  ok "Kein automatischer Update-Cronjob vorhanden (wie gewünscht)"
-fi
 
 if [ -x /opt/coder/update.sh ] && bash -n /opt/coder/update.sh; then
   ok "update.sh ist vorhanden und ausführbar – manuell starten mit: sudo /opt/coder/update.sh"

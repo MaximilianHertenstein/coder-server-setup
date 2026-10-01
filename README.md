@@ -29,7 +29,7 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-01: alle 12 Dateien in `tests/` grün (353 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
+| Lokale Tests | Stand 2026-10-01: alle 11 Dateien in `tests/` grün (322 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
 | Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 auf dem Test-Host `2.29.11.30` als frischer Pfad-A-Aufbau (Exit 0 in 58 s); davor Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen 2026-10-01** (Test-Host): Prometheus `ready` 200, alle 6 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`, `TlsCheckStale`, `TlsIssuanceBudgetHigh`, `TlsLogTruncated`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metriken (Backup/TLS) vorhanden |
@@ -89,7 +89,7 @@ Umgebungsvariablen gehören hinter das sudo, siehe unten.
 |---|---|---|
 | 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
 | 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `caddy/Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus/prometheus.yml` + `prometheus/rules/coder-alerts.yml`, Grafana-Datasource-Provisioning, `node-textfile/` |
-| 3 | Docker-Stack starten | Preflights (Daemon, fremde Listener, Platte), Compose-Konfiguration, Pull, Caddy- und Prometheus-Konfiguration samt Regeln validieren, dann `up -d`; Caddy bei Änderung `validate` + `reload`, Prometheus lädt geänderte Regeln per SIGHUP; Grafana startet bei geänderter Provisioning-Datei neu |
+| 3 | Docker-Stack starten | Preflights (Daemon, Platte), Compose-Konfiguration, Pull, Caddy- und Prometheus-Konfiguration samt Regeln validieren, dann `up -d`; Caddy bei Änderung `validate` + `reload`, Prometheus lädt geänderte Regeln per SIGHUP; Grafana startet bei geänderter Provisioning-Datei neu |
 | 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw limit 22/tcp`, 80/443 frei, fail2ban-Jail `sshd`, Abschluss-Checks |
 | 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades, Reboot 03:00, lesendes Boot-Gate (`boot-check.sh`), TLS-Zählung (`check-tls.sh`); Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |
@@ -280,7 +280,7 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-10-01: alle 12 Testskripte Exit 0 (353 `PASS`, 0 `FAIL`, in
+Stand 2026-10-01: alle 11 Testskripte Exit 0 (322 `PASS`, 0 `FAIL`, in
 diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
@@ -289,7 +289,7 @@ Prüfstand-Liste unten.
 Was die Tests **belegen**: das Verhalten der extrahierten Codestellen
 (Backup-Headercheck, TLS-/Boot-Gates, Hex-Migration, ufw-SSH-Regel-Gate
 inkl. „Beschränkung bleibt unangetastet, kein Delete von Bestandsregeln",
-Reset-Precheck, Drift-Hashes über 16 Dateien, Port-Preflight,
+Reset-Precheck, Drift-Hashes über 16 Dateien,
 `ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
 (`t-b1-on-demand-ask.sh`: Muster-Falluntersuchung, optional `caddy validate`
