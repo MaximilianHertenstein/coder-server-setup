@@ -9,8 +9,30 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `7928080` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `3db65ec` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Monitoring abgenommen
+
+- **Anlass:** D-Monitoring (2026-09-30) sagte „Grafana reicht, kein
+  zusätzlicher Kanal" – belegt, dass die Kette überhaupt läuft, war bisher
+  nicht gemacht.
+- **Ergebnis am Test-Host:** Prometheus `/-/ready` 200; **alle sechs
+  Alarmregeln geladen** (`BackupStale`, `CoderTargetDown`,
+  `RootPartitionFillingUp`, `TlsCheckStale`, `TlsIssuanceBudgetHigh`,
+  `TlsLogTruncated`); Targets `coder` und `node` auf `up`; node-exporter
+  textfile-Collector liefert die fünf `coder_*`-Metriken (Backup-Laufzeit,
+  TLS-Check-Laufzeit, Ausstellungen der letzten 7 Tage, Truncated-Flag,
+  Logfenster); Grafana `api/health` 200 auf 127.0.0.1:3001.
+- **Doku:** README-Statustabelle, neue Zeile „Monitoring".
+- **Geänderte Dateien:** `README.md`, `CHANGELOG.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** unverändert (VM-Boot-RTO, `/healthz` + DNS, volle
+  Platte, 03:00-Fire, Inbetriebnahme/IServ, DNS-01-Aufschub).
 
 ---
 
