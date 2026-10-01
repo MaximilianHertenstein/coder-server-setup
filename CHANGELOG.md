@@ -9,8 +9,39 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `2dd2b4d` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `7928080` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Passwortrotation live, Reboot-Fenster konfiguriert, Doku synchron
+
+- **`reset-passwords.sh` live auf dem Test-Host:** RC 0, Rotation von
+  `POSTGRES_PASSWORD` und `GRAFANA_ADMIN_PASSWORD` nachweisbar (Werte
+  nirgends ausgegeben, Vergleich per Hash), `.env` bleibt Modus 600 mit
+  drei Keys (`DOCKER_GID` + beide Passwörter), Coder-Container sofort neu
+  erstellt (API grün), danach der dokumentierte C2-Schritt
+  `docker compose up -d`, damit auch Postgres und Grafana das neue Env
+  übernehmen: postgres healthy, Stack komplett grün. Wartungspfad damit
+  in der Praxis bestätigt.
+- **Reboot-Fenster konfiguriert geprüft (Matrix-Punkt 5 Rest):**
+  `/etc/apt/apt.conf.d/52-coder-reboot` vorhanden mit
+  `Automatic-Reboot "true"` und `Automatic-Reboot-Time "03:00"` samt
+  Kommentar zu D-Reboot-Fenster/B-011. Der tatsächliche Fire um 03:00 ist
+  weiter nicht beobachtet (braucht eine Nacht am Zielrechner).
+- **Doku synchronisiert:** README-Statustabelle auf 2026-10-01
+  angehoben, Zeilen „Lokale Tests", „Vollständiger Setup-Lauf" (neuester
+  Lauf = Pfad-A-Aufbau 2026-10-01), „Restore-Test" (Pfad A komplett)
+  und Matrix-Zeile 5 (Reboot-Fenster konfiguriert) aktualisiert; kein
+  „nicht geprobt"-Rest mehr im Bestand außer den ehrlich offenen
+  Punkten (VM-Boot-RTO, `/healthz` mit echtem DNS, volle Platte).
+- **Geänderte Dateien:** `README.md`, `CHANGELOG.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** RTO inkl. VM-Boot (frische VM), `/healthz` + Wildcard
+  (DNS auf den Server), volle Platte (Rettungskonsole), 03:00-Fire
+  beobachten, Inbetriebnahme-Termin (IServ/Netzwerkadmin), DNS-01-Aufschub.
 
 ---
 

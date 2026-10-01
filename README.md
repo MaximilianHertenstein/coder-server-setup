@@ -24,14 +24,14 @@ nicht im Repository.
 | Welches Workspace-Template darf was? | [templates/allowlist.md](templates/allowlist.md) |
 | Befunde, Pläne, Prüfprotokolle (Referenz) | `ai-review/` – keine Lese-Pflicht für den Betrieb; neueste Setup-Prüfung: [ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
-## Status (Stand 2026-09-30)
+## Status (Stand 2026-10-01)
 
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-09-30: alle 12 Dateien in `tests/` grün (346 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf auf dem Test-Host `2.29.11.30` am 2026-09-30 (nach B2-005 und Restore-Probe), Exit 0, 0 Fehler, Firewall unverändert (Details [CHANGELOG.md](CHANGELOG.md)) |
-| Restore-Test | **teilweise geprobt** 2026-09-30: Dump-Import in isolierten Probencontainer grün (Datenprobe 1, 3,0 s); Stack-Restore auf frischer VM und volle RTO weiter offen ([RESTORE.md](RESTORE.md)) |
+| Lokale Tests | Stand 2026-10-01: alle 12 Dateien in `tests/` grün (346 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
+| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 auf dem Test-Host `2.29.11.30` als frischer Pfad-A-Aufbau (Exit 0 in 58 s); davor Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
+| Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg |
 | SSH-Härtung | **Entschieden (D-SSH, 2026-09-30):** Passwort-Login bleibt Standard, `ssh-harden.sh` ist nicht Standard und bleibt unaufgerufen; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `limit 22/tcp` und fail2ban zusätzlich ([SECURITY.md](SECURITY.md) §1) |
 | Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting/IServ). Von den D-Entscheidungen sonst nichts mehr offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
@@ -356,7 +356,7 @@ Produktivsystem geprüft werden:
 | 2 | erledigt 2026-09-30 19:05: Re-Run RC 0 in 48 s; Hand-Patch an der Compose-Datei wurde als Drift erkannt und deterministisch regeneriert, Stack nicht neu erstellt |
 | 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher bleibt offen – ein echter Plattenausfall ist nur mit Rettungskonsole sicher zurückspielbar |
 | 4 | fast erledigt: Dump-Import isoliert 3,0 s, Major-Wechsel 15 → 18 live (2,3 s), **Pfad A am 2026-10-01 komplett** (Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück; 1 min 50 s ohne VM-Boot); offen bleibt nur RTO inkl. VM-Boot/Paketinstallation und `/healthz` unter echtem DNS |
-| 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); 03:00-Fenster nicht beobachtet |
+| 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); Reboot-Fenster konfiguriert geprüft (`52-coder-reboot`: `Automatic-Reboot true`, `03:00`) – tatsächlicher Fire noch nicht beobachtet |
 | 6 | erledigt: Re-Run ließ genau eine `22/tcp LIMIT`-Regel (v4/v6) stehen, keine zweite Weltregel; fail2ban aktiv |
 | 7 | erledigt, inklusive Rest: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und Dumps erhalten; der Pfad „fremder Container“ wurde mit einem bewusst fremden Container geprüft (als `fremd: fremd-inventartest` gemeldet, danach selbst entfernt), Neuaufbau mit Owner-Konto grün |
 | 8 | entfällt (D-SSH, 2026-09-30) |
