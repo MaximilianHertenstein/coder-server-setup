@@ -22,7 +22,7 @@ nicht im Repository.
 | Einen Fehler diagnostizieren und sicher beheben | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Was wurde wann geändert? | [CHANGELOG.md](CHANGELOG.md) |
 | Welches Workspace-Template darf was? | [templates/allowlist.md](templates/allowlist.md) |
-| Befunde, Pläne, Prüfprotokolle (Referenz) | `ai-review/` – keine Lese-Pflicht für den Betrieb; neueste Setup-Prüfung: [ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
+| Befunde, Pläne, Prüfprotokolle (Referenz) | `ai-review/` – keine Lese-Pflicht für den Betrieb, Stand 26.–29.09.2026; neueste Setup-Prüfung vom 01.10.2026 mit Umsetzung/Ablehnungen: [CHANGELOG.md](CHANGELOG.md) (Eintrag „Externe Review-Liste"); in `ai-review/` selbst zuletzt [REVIEW-2026-09-29-SETUP-PUNKTE.md](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
 ## Status (Stand 2026-10-01)
 
