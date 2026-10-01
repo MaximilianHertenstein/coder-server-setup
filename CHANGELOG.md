@@ -9,8 +9,25 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `6e61e2a` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `82cb0b2` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Owner-E-Mail für den Erstlauf festgelegt
+
+- **Festgesetzt (Betreiber):** die E-Mail des Owner-Kontos für den
+  ersten Lauf am Schulserver ist `maximilian.hertenstein@ghse.de`.
+  OPERATIONS §11 Schritt 4 verwendet sie im Beispiel
+  (Benutzername `maximilian`, Full Name abgeleitet; **Passwort bleibt
+  Platzhalter** und gehört nicht ins Repo – beim Lauf als `…_PASSWORD`
+  hinter `sudo env` setzen, niemals vorher speichern oder committen).
+- **Geänderte Dateien:** `OPERATIONS.md`, `CHANGELOG.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** unverändert, gebündelt in README „Offene Punkte –
+  wer macht was".
 
 ---
 

@@ -595,11 +595,14 @@ zum Server.
    beim ersten Lauf über die drei Variablen (nur so sieht das Skript sie,
    `sudo` leitet fremde Variablen nicht durch):
 
+   E-Mail ist laut Betreiber (2026-10-01) festgesetzt; Benutzername und
+   Passwort entsprechend anpassen:
+
    ```bash
-   sudo env CODER_FIRST_USER_EMAIL='admin@ghse-unterricht.de' \
-            CODER_FIRST_USER_USERNAME='admin' \
+   sudo env CODER_FIRST_USER_EMAIL='maximilian.hertenstein@ghse.de' \
+            CODER_FIRST_USER_USERNAME='maximilian' \
             CODER_FIRST_USER_PASSWORD='<starkes, eigenes Passwort>' \
-            CODER_FIRST_USER_FULL_NAME='Schulverwaltung' \
+            CODER_FIRST_USER_FULL_NAME='Maximilian Hertenstein' \
             ./setup-coder.sh
    ```
 
