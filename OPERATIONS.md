@@ -494,7 +494,7 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh scripts/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-10-01: alle 11 Dateien in `tests/` Exit 0, 328 `PASS`,
+Stand 2026-10-01: alle 11 Dateien in `tests/` Exit 0, 329 `PASS`,
 0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
 ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.

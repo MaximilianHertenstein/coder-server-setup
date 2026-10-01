@@ -29,8 +29,8 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-01: alle 11 Dateien in `tests/` grün (328 PASS, 0 FAIL), `bash -n setup-coder.sh ssh-harden.sh scripts/*.sh` und `shellcheck -S warning` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 auf dem Test-Host `2.29.11.30` als frischer Pfad-A-Aufbau (Exit 0 in 58 s); davor Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
+| Lokale Tests | Stand 2026-10-01: alle 11 Dateien in `tests/` grün (329 PASS, 0 FAIL), `bash -n setup-coder.sh ssh-harden.sh scripts/*.sh` und `shellcheck -S warning` ohne Befund |
+| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 auf dem Test-Host `2.29.11.30` als frischer Pfad-A-Aufbau (Exit 0 in 58 s); danach zwei Re-Runs nach der Skript-Extraktion (RC 0, 56 s / 47 s, sechs Skripte byte-identisch zu `scripts/`, kein erneutes Schreiben); davor Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen 2026-10-01** (Test-Host): Prometheus `ready` 200, alle 6 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`, `TlsCheckStale`, `TlsIssuanceBudgetHigh`, `TlsLogTruncated`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metriken (Backup/TLS) vorhanden |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg |
@@ -282,7 +282,7 @@ shellcheck -S warning setup-coder.sh ssh-harden.sh scripts/*.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-10-01: alle 11 Testskripte Exit 0 (328 `PASS`, 0 `FAIL`, in
+Stand 2026-10-01: alle 11 Testskripte Exit 0 (329 `PASS`, 0 `FAIL`, in
 diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
@@ -374,7 +374,7 @@ Produktivsystem geprüft werden:
 | # | Status |
 |---|---|
 | 1 | erledigt: Original-Lauf auf frischer Debian-13-VM 2026-09-28/29; zusätzlich Neuaufbau nach `reset-coder.sh` heute (RC 0) |
-| 2 | erledigt 2026-09-30 19:05: Re-Run RC 0 in 48 s; Hand-Patch an der Compose-Datei wurde als Drift erkannt und deterministisch regeneriert, Stack nicht neu erstellt |
+| 2 | erledigt 2026-09-30 19:05: Re-Run RC 0 in 48 s; Hand-Patch an der Compose-Datei wurde als Drift erkannt und deterministisch regeneriert, Stack nicht neu erstellt; erneut bestätigt 2026-10-01 nach der Skript-Extraktion: zwei Re-Runs RC 0 (56 s / 47 s), mtimes der sechs Wartungsskripte unverändert, 0 Drift |
 | 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher bleibt offen – ein echter Plattenausfall ist nur mit Rettungskonsole sicher zurückspielbar |
 | 4 | fast erledigt: Dump-Import isoliert 3,0 s, Major-Wechsel 15 → 18 live (2,3 s), **Pfad A am 2026-10-01 komplett** (Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück; 1 min 50 s ohne VM-Boot); offen bleibt nur RTO inkl. VM-Boot/Paketinstallation und `/healthz` unter echtem DNS |
 | 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); Reboot-Fenster konfiguriert geprüft (`52-coder-reboot`: `Automatic-Reboot true`, `03:00`) – tatsächlicher Fire noch nicht beobachtet |

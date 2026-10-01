@@ -15,6 +15,11 @@ fail() { echo "FAIL: $1"; FAIL=1; }
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETUP="${REPO_ROOT}/setup-coder.sh"
 
+# Aufruf-Kontrakt: die Doku ruft "sudo ./setup-coder.sh" auf – ohne Exec-Bit
+# im Repo scheitert jeder frische Clone mit Permission denied (RC 126).
+[ -x "${SETUP}" ] && pass "setup-coder.sh ist im Repo ausfuehrbar (Doku: sudo ./setup-coder.sh)" \
+  || fail "Exec-Bit von setup-coder.sh fehlt (100644 statt 100755)"
+
 GUARD='if [ "$(id -u)" -ne 0 ]; then'
 n="$(grep -cF "${GUARD}" "${SETUP}" || true)"
 [ "${n}" -eq 1 ] && pass "Guard-Anker genau einmal" || fail "Guard-Anker-Anzahl=${n} (erwartet 1)"

@@ -9,8 +9,35 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-01 · Basisstand dieses Eintrags: `1e51f0d` auf `main`.
+Stand: 2026-10-01 · Basisstand dieses Eintrags: `bc05da2` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Extraktion live verifiziert, Exec-Bit von setup-coder.sh repariert
+
+- **Live-Prüfung der Skript-Extraktion (Test-Host `2.29.11.30`, keine
+  Produktion):** Stand `bc05da2` per rsync eingespielt. Re-Run RC 0 in
+  56 s; alle sechs Wartungsskripte in `/opt/coder` byte-identisch zu
+  `scripts/` (md5), 0 Warnungen, 0 Fehler. Zweiter Re-Run RC 0 in 47 s
+  ohne einzige mtime-Änderung an den sechs Skripten – identischer Inhalt
+  wird nicht umgeschrieben (Idempotenz), 0 Drift. Anschließend
+  `backup.sh` RC 0 mit frischem Dump (`gzip -t` grün) und `check-tls.sh`
+  RC 0 (Logfenster 0 h nach Container-Neustart, Meldung korrekt).
+  Veraltete Kopie `/opt/coder/ssh-harden.sh` vom Altstand entfernt
+  (Review 0.2: das Setup legt sie nicht mehr an).
+- **Bugfix:** `setup-coder.sh` stand seit dem ersten Commit als `100644`
+  im Repo, die Doku ruft aber überall `sudo ./setup-coder.sh` auf – ein
+  frischer Clone scheiterte mit Permission denied (RC 126, festgestellt
+  beim Live-Deploy). Jetzt `100755` (ebenso `scripts/*.sh`), Guard gegen
+  Wiederverlust in `t-root-guard.sh` ergänzt.
+- **Geänderte Dateien:** `setup-coder.sh`, `scripts/` (nur Modus),
+  `tests/t-root-guard.sh`, `README.md`, `OPERATIONS.md`, `CHANGELOG.md`.
+- **Teststand (tatsächlich ausgeführt, 2026-10-01):** alle 11 Dateien in
+  `tests/` grün (329 PASS, 0 FAIL); `bash -n` und `shellcheck -S warning`
+  ohne Befund; Setup-Re-Runs auf dem Test-Host wie oben.
+- **Offene Punkte:** unverändert, gebündelt in README „Offene Punkte –
+  wer macht was".
 
 ---
 
