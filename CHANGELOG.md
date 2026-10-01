@@ -9,8 +9,33 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `bda2035` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `2dd2b4d` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Pre-Flight-Checkliste für den Schulserver
+
+- **Anlass:** der Betreiber will `setup-coder.sh` bald am echten
+  Schulserver laufen lassen; bisher gab es keine Sammlung dessen, was das
+  Skript selbst **nicht** vorflightet.
+- **Neu in OPERATIONS.md §11:** „Pre-Flight vor dem ersten Lauf"
+  (Betreiber-Checkliste vor Schritt 1): Webserver-Konflikt mit IServ/
+  nginx/Apache auf 80/443 samt Entscheidungshilfe (Port-Übergabe vs.
+  anderer Ort, Verweis Netzwerkadmin-Zeile 4), `sshd` muss Port 22 sein
+  (sonst bricht das Skript vor der Firewall-Änderung ab – eigene Regel),
+  Internetabbindung Docker Hub + ghcr.io, Ressourcen, DNS/Weiterleitung
+  (läuft auch ohne, aber ohne Zertifikat), `CODER_FIRST_USER_*` nur per
+  `sudo env`, danach Zweiter-Lauf/Checks/Cron/Backup.
+- **Bewusst nicht aufgenommen:** nicht belegte Richtwerte für RAM/Platte
+  (keine Zahl im Repo, keine erfunden) und jede Annahme darüber, wo IServ
+  tatsächlich läuft – das bleibt Punkt 1 der Klärung.
+- **Geänderte Dateien:** `OPERATIONS.md`, `CHANGELOG.md`.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** unverändert (RTO inkl. VM-Boot, `/healthz` + DNS,
+  volle Platte, Inbetriebnahme-Termin/IServ, DNS-01-Aufschub).
 
 ---
 

@@ -518,6 +518,45 @@ einfach erneut ausführen).
 > Solange unklar ist, wer DNS, Wildcard und 80/443 übernimmt, bleiben die
 > Inbetriebnahme und die TLS-Frage (On-Demand vs. DNS-01) aufgeschoben.
 
+### Pre-Flight vor dem ersten Lauf (Betreiber)
+
+Zehn Minuten am Zielserver, bevor `sudo ./setup-coder.sh` läuft – geordnet
+nach dem, was das Skript **nicht** selbst prüft:
+
+1. **Webserver-Konflikt klären – besonders IServ.** Laut Betreiber läuft
+   der Schulserver künftig mit IServ; wenn am Zielserver IServ, nginx oder
+   Apache schon **80/443** halten, kann Caddy die Ports nicht binden:
+
+   ```bash
+   ss -ltnp | grep -E ':(80|443|5432) '
+   systemctl list-units --type=service --state=running | grep -Ei 'iserv|nginx|apache|caddy'
+   ```
+
+   Bei fremdem Listener auf 80/443 **vor dem Lauf entscheiden**: Caddy
+   bekommt die Ports (IServ-Web umziehen/Proxy-Regel, s. Netzwerkadmin
+   Zeile 4) oder Coder läuft an anderer Stelle. Das Setup erwartet 80/443.
+   Eigenes Docker-Postgres (5432) ist kein Konflikt – der Stack
+   veröffentlicht diesen Port nicht.
+2. **sshd muss auf Port 22 laufen** – sonst bricht das Skript eigens vor
+   der ersten Firewall-Änderung ab (eigene Regel, `sshd -T | grep -i ^port`).
+3. **Internetabbindung** (Images + Zertifikate):
+
+   ```bash
+   curl -sI 'https://auth.docker.io/token?service=registry.docker.io' | head -1   # Docker Hub
+   curl -sI https://ghcr.io/v2/ | head -1                                          # Coder-Image
+   ```
+
+4. **Ressourcen:** `df -h /` (Images, laufende Dumps), `free -h` (Stack +
+   Workspaces), `nproc`.
+5. **DNS/Weiterleitung** stehen? Netzwerkadmin-Zeilen 1–4 unten. Fehlen
+   sie, läuft der Stack trotzdem (Skript ist idempotent), bekommt aber kein
+   Zertifikat – späterer zweiter Lauf genügt.
+6. **Erstkonto vorbereiten:** ohne `CODER_FIRST_USER_*` ist der erste
+   Anmeldende Owner. Variablen nur über `sudo env …` übergeben (sudo leitet
+   eigene Variablen nicht durch), Beispiel in Schritt 4 unten.
+7. **Danach:** zweiter Lauf, Checks aus OPERATIONS §5, Cron-Dateien unter
+   `/etc/cron.d/` prüfen, erster `backup.sh`-Lauf per `gzip -t`.
+
 ### Netzwerkadmin
 
 | # | Was | Warum |
