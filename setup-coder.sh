@@ -616,10 +616,9 @@ services:
       - CODER_PROMETHEUS_ENABLE=true
       - CODER_PROMETHEUS_COLLECT_AGENT_STATS=true
       - CODER_PROMETHEUS_ADDRESS=0.0.0.0:2112
-      # B6: Telemetrie an Coder, Inc. aus. Funktioniert im freien Open-Source-
-      # Build nicht (nur in der Enterprise-Edition), der explizite Abschalter
-      # dokumentiert die Absicht und schützt vor einem Versionswechsel, der das
-      # Verhalten ändert.
+      # B6: Telemetrie an Coder, Inc. bewusst aus – unabhängig davon, was der
+      # Build aktuell standardmäßig tut (Review 1.8: keine unbelegten
+      # Editions-Behauptungen im Kommentar).
       - CODER_TELEMETRY_ENABLE=false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -707,6 +706,10 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
       # Kein GF_SERVER_ROOT_URL nötig – Zugriff läuft per SSH-Tunnel auf
       # 127.0.0.1:3001, nicht über eine eigene Domain.
+      # Telemetrie/Update-Checks an Grafana Inc. aus (Review 1.8): passt zur
+      # bewusst telemetriefreien Haltung des Stacks (siehe CODER_TELEMETRY).
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
     # Zusätzlich lokal erreichbar für Direktzugriff/Debugging
     ports:
       - "127.0.0.1:3001:3000"
@@ -1088,6 +1091,22 @@ docker compose config --quiet
 # "docker compose pull" nennt den fehlenden Tag im Fehlerfall ohnehin und
 # bricht vor jedem Container-Start ab.
 retry3 docker compose pull
+
+# 1.1/Review: KEIN Upgrade ohne frisches Backup. Schritt 3 zieht Bilder und
+# "up -d" kann eine Coder-DB-Schema-Migration ausführen – ohne Dump wäre danach
+# kein Rollback möglich. Nur wenn die DB schon läuft und backup.sh existiert
+# (Erstlauf: beides nicht -> kein Backup nötig). Der Wartungs-Lock hängt schon
+# an diesem Prozess (CODER_MAINTENANCE_LOCK_HELD=1), backup.sh erwirbt keinen
+# zweiten. Fehlschlag bricht vor "up -d" ab, nichts ist verändert.
+if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || echo false)" = "true" ] \
+  && [ -x /opt/coder/backup.sh ]; then
+  echo "Ziehe Pre-Upgrade-Backup vor möglicher DB-Migration ..."
+  if ! env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
+    echo "FEHLER: Pre-Upgrade-Backup fehlgeschlagen – Abbruch vor 'docker compose up -d'." >&2
+    echo "Ursache prüfen (Platte/Postgres), Backup laufen lassen, dann Setup erneut." >&2
+    exit 1
+  fi
+fi
 
 # Erstlauf-Validierung mit genau den Images, die anschließend gestartet werden.
 # Caddy lädt Zertifikate erst zur Laufzeit; validate prüft die Caddyfile, ohne
@@ -1907,18 +1926,24 @@ else
   logger -t coder-backup "Warnung: Backup OK, Metrik-Datei konnte nicht angelegt werden" || true
 fi
 
-# Stückzahlbasierte Rotation (F-008): neueste 14 "coder_*.sql.gz" behalten
-# (Kommentar-vs-Code-Mismatch behoben), Rest löschen. Mindestbestand ist
-# eingebaut (bei <= 14 keine Löschung) – kein Totalverlust nach Cron-Lücken.
-# Gezählt wird alles unter finalem Namen; dort landet seit F-005 nur
-# Verifiziertes.
-KEEP=14
+# Rotation nach ALTER mit Mindestbestand (Review 1.7): reine Stückzahl-
+# rotation verdrängt bei mehreren Wartungsläufen am selben Tag die täglichen
+# Backups – die Historie wird kürzer als 14 Tage. Gelöscht wird nur, was
+# älter als 14 Tage ist; dazu nie die 7 neuesten Dateien, damit auch nach
+# langen Cron-Lücken (alle Dumps > 14 Tage) nie der Bestand auf Null fällt.
+KEEP_MIN=7
+RETENTION_SECONDS=1209600
 mapfile -t NEWEST < <(ls -t "${BACKUP_DIR}"/coder_*.sql.gz 2>/dev/null || true)
-if [ "${#NEWEST[@]}" -gt "${KEEP}" ]; then
-  for OLD in "${NEWEST[@]:${KEEP}}"; do
-    rm -f "${OLD}"
-  done
-fi
+NOWS=$(date +%s)
+for IDX in "${!NEWEST[@]}"; do
+  if [ "${IDX}" -lt "${KEEP_MIN}" ]; then
+    continue
+  fi
+  MT=$(stat -c %Y "${NEWEST[$IDX]}" 2>/dev/null || continue)
+  if [ $((NOWS - MT)) -gt "${RETENTION_SECONDS}" ]; then
+    rm -f "${NEWEST[$IDX]}"
+  fi
+done
 EOF
 
 # Falls von einer früheren Skript-Version noch ein Eintrag in der
@@ -2330,7 +2355,7 @@ if printf '%s\n' "negativkontrolle-darf-nicht-funktionieren" \
     > /dev/null 2>&1; then
   echo "Fehler: Postgres akzeptiert auf ${PGH} ein FALSCHES Passwort –" >&2
   echo "pg_hba.conf vergibt diesen Pfad offenbar mit 'trust', nicht 'scram-sha-256'." >&2
-  echo "Prüfen: docker exec coder-postgres cat /var/lib/postgresql/18/pg_hba.conf" >&2
+  echo "Prüfen: docker exec coder-postgres cat /var/lib/postgresql/18/docker/pg_hba.conf" >&2
   exit 1
 fi
 docker exec -i coder-postgres sh <<INNER_EOF
