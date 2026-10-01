@@ -2,88 +2,23 @@
 # ============================================================================
 # Coder-Server Setup – coder.ghse-unterricht.de
 # Zielsystem: Debian 13 (trixie)
-# ============================================================================
 #
-# Voraussetzung für vollständig funktionierendes HTTPS:
-#   - DNS: coder.ghse-unterricht.de UND *.coder.ghse-unterricht.de (Wildcard,
-#     für Workspace-Apps/Port-Forwarding) müssen per A-Record (ggf. AAAA) auf
-#     die öffentliche IP des Servers zeigen.
-#   - Die Schulnetz-Infrastruktur muss Port 80 und 443 zum Server
-#     (intern 10.16.103.13) durchreichen (Portweiterleitung/Reverse Proxy).
-#
-# Wildcard-Subdomains bekommen ihr Zertifikat erst bei Bedarf (Caddy
-# On-Demand-TLS, offiziell von Coder empfohlen ohne eigenen DNS-Provider-API-
-# Zugang) - beim allerersten Aufruf einer neuen Workspace-App-URL dauert das
-# 5-30 Sekunden länger. On-Demand gilt NUR noch für die Wildcard, die
-# Apex-Domain holt ihr Zertifikat beim Start (ohne On-Demand).
-# Der ask-Endpunkt läuft lokal im Caddy-Container (:9123) und prüft das
-# Hostnamenmuster gegen Coders Subdomain-Schema (port--agent--workspace--user).
-# Ehrliche Grenze: das Muster kann ein Angreifer selbst bilden (z.B.
-# "1--2--3--4"), es schützt also vor Zufallstreffern und Müll-Ausstellungen,
-# NICHT vor einem gezielten Budget-DoS. Wochenbudget: 50 pro registrierter
-# Domain "ghse-unterricht.de", GETEILT mit allen anderen Schuldiensten
-# derselben Domain. Erkennung: /opt/coder/check-tls.sh (wöchentlich per Cron,
-# "obtaining certificate" im Caddy-Log). Echter Fix gegen Budget-DoS ist
-# DNS-01-Wildcard ohne On-Demand – nur per D-TLS-Entscheidung mit Frist.
-#
-# Falls das beim Ausführen noch nicht steht: Der Stack startet trotzdem.
-# Caddy versucht im Hintergrund weiter, ein Zertifikat zu bekommen, und der
-# Abschlusscheck (Schritt 10) meldet das als WARNUNG statt als Fehler. Das
-# Skript ist mehrfach ausführbar (idempotent) – einfach erneut laufen lassen,
-# sobald DNS/Portweiterleitung stehen.
-#
-# SSH (Port 22): bewusst von ueberall mit Passwort erreichbar (D-SSH,
-# 2026-09-30). Schutz: ufw rate-limitiert (limit 22/tcp), fail2ban sperrt
-# wiederholte Fehlversuche (bantime.increment, ignoreip fuer Admin-Adressen),
-# PermitRootLogin yes meldet das Setup. Eine vorgefundene quellbeschraenkte
-# ufw-Regel wird nicht aufgeweicht (keine weltweite limit-Regel daneben);
-# eine aeußere Schulnetz-Beschaenkung durch den Netzwerkadmin bleibt gueltig.
-#
-# WICHTIG: Der schreibbare Docker-Socket im Coder-Container ist
-# root-aequivalent auf dem Host. Ein kompromittierter Workspace kann damit
-# den Host uebernehmen. Schueler-Templates muessen deshalb geprueft und mit
-# Ressourcenlimits versehen werden (siehe SECURITY.md und templates/).
-#
-# Grafana bleibt bewusst nur über 127.0.0.1 (SSH-Tunnel) erreichbar, nicht
-# über die Domain – kein öffentlicher Zugriff auf das Monitoring nötig.
-#
-# Coder-Updates laufen NICHT automatisch. update.sh liegt bereit, wird aber
-# manuell mit "sudo /opt/coder/update.sh" ausgeführt.
-#
-# CODER_VERSION: Das Image-Tag auf ghcr.io TRÄGT das "v"-Präfix (v2.36.6).
-# Am 2026-09-28 gegen die Registry geprüft: ghcr.io/coder/coder:2.36.6 ->
-# HTTP 404, ghcr.io/coder/coder:v2.36.6 -> Pull ok; Docker Hub coder/coder
-# kennt keinen der beiden Tags. Die Release-Notes zu v2.36.6 nennen selbst
-# "docker pull ghcr.io/coder/coder:2.36.6" ohne "v" – dieser Satz ist dort
-# falsch und darf hier nicht kopiert werden (er bricht Schritt 3 ab).
-# Für eine neuere Version: https://github.com/coder/coder/releases
-# Vor Merge neuer Version IMMER per "docker pull" gegen die Registry belegen,
-# nicht nach dem Wortlaut der Release-Notes.
-#
-# Versionierung: CODER_VERSION, PROMETHEUS_VERSION und GRAFANA_VERSION sind
-# exakte Versionen (ändern sich nie von selbst). CADDY_VERSION ist bewusst nur
-# auf die Minor-Version gepinnt (z.B. "2.10"), nicht exakt - Caddy terminiert
-# TLS, Patch-Updates (Sicherheitsfixes) sollen dort über "docker compose pull"
-# automatisch ankommen. postgres:18-alpine folgt demselben Prinzip (Major-Tag,
-# holt 18.x-Patches; Wechsel von 15 am 2026-09-30 vor Inbetriebnahme, per
-# Dump/Restore, siehe RESTORE.md). Für einen
-# wirklich bit-genauen, reproduzierbaren Pin müsste man ein Image-Digest
-# (sha256:...) statt eines Tags verwenden. Ab und zu manuell auf neue Major-
-# Versionen prüfen.
-#
-# Ausführen als root (ohne root bricht das Skript vor Änderungen ab):
+# Aufruf als root (ohne root bricht das Skript vor jeder Änderung ab):
 #   chmod +x setup-coder.sh
 #   sudo ./setup-coder.sh
 # Umgebungsvariablen gehören hinter das sudo (siehe OPERATIONS.md):
 #   sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh
 #
-# Manuelle Wartungsskripte unter /opt/coder (mit sudo aufzurufen):
-#   backup.sh           Postgres-Backup (täglich per Cron, 01:00 Uhr)
-#   update.sh           Images der konfigurierten Tags ziehen + Stack pruefen
-#   reset-passwords.sh  Neue Postgres-/Grafana-Passwörter setzen
-#   reset-coder.sh      Coder-Reset (Datenbank, .env - Zertifikate bleiben)
-# Automatische Aufgaben: backup.sh täglich 01:00, check-tls.sh montags 06:30,
-# boot-check.sh nach jedem Boot; unattended-upgrades kann um 03:00 rebooten.
+# Mehrfach ausführbar (idempotent): bei Abbruch, fehlendem DNS oder fehlender
+# Portweiterleitung einfach erneut laufen lassen; fehlendes DNS meldet der
+# Abschlusscheck als WARNUNG, nicht als Fehler.
+#
+# Inhaltliche Details bewusst nur in den Dokumenten (Single Source):
+#   README.md        Start, Voraussetzungen (DNS/Wildcard), Prüfstand
+#   OPERATIONS.md    Betrieb, Wartungsskripte, Cron, Netz-Anforderung, Updates
+#   SECURITY.md      Socket-Risiko, D-SSH, On-Demand-TLS-Budget, Monitoring
+#   RESTORE.md       Wiederherstellung
+# Image-Versionen und Pin-Regeln stehen an den Variablendefinitionen unten.
 # ============================================================================
 
 set -euo pipefail
@@ -123,11 +58,10 @@ fi
 # dieses Prozesses und bleibt gesperrt, bis alle Prozesse ihn geerbt haben,
 # beendet sind. Alle Aufrufe hier sind kurzlebig, kein Dauerläufer erbt ihn.
 ENV_TMP=""
-ENV_TMP_GID=""
 MANAGED_TMP=""
 setup_cleanup() {
   local rc=$?
-  for _tmp in "${ENV_TMP}" "${ENV_TMP_GID}" "${MANAGED_TMP}"; do
+  for _tmp in "${ENV_TMP}" "${MANAGED_TMP}"; do
     [ -n "${_tmp}" ] && rm -f -- "${_tmp}" 2>/dev/null || true
   done
   return "${rc}"
@@ -156,6 +90,15 @@ SCRIPT_SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # wurde.
 : "${DOMAIN_CODER:=coder.ghse-unterricht.de}"
 : "${ACME_EMAIL:=hert@ghse.de}"
+# Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt, CADDY bewusst nur
+# minor-gepinnt (z. B. "2.10") – TLS-taugliche Patch-Updates sollen über
+# "docker compose pull" ankommen; postgres:18-alpine analog (Major-Tag).
+# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.36.6). Am 2026-09-28 gegen
+# die Registry geprüft: ghcr.io/coder/coder:2.36.6 -> HTTP 404,
+# :v2.36.6 -> Pull ok; die Release-Notes nennen das Tag teils ohne "v" (falsch,
+# das bricht Schritt 3 ab). Vor jeder Versionserhöhung IMMER per "docker pull"
+# gegen die Registry belegen, nicht nach dem Wortlaut der Notes. Für einen
+# bit-genauen, reproduzierbaren Pin bräuchte man ein Image-Digest (sha256:...).
 : "${CODER_VERSION:=v2.36.6}"              # https://github.com/coder/coder/releases prüfen
 : "${CADDY_VERSION:=2.10}"                # https://hub.docker.com/_/caddy/tags
 : "${PROMETHEUS_VERSION:=v3.14.0}"        # https://github.com/prometheus/prometheus/releases
