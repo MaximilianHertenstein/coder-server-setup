@@ -16,41 +16,49 @@ fail() { echo "FAIL: $1"; FAIL=1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETUP="${REPO_ROOT}/setup-coder.sh"
+BOOTGATE="${REPO_ROOT}/scripts/boot-check.sh"
+UPDGATE="${REPO_ROOT}/scripts/update.sh"
 DOMAIN="gate.test.local"
 
-# ---------- STATIK: Produktionszeilen in setup-coder.sh ----------
+# ---------- STATIK: Produktionszeilen in setup-coder.sh + Gate-Skripten ----
+if grep -qF 'scripts/boot-check.sh' "${SETUP}" && grep -qF 'scripts/update.sh' "${SETUP}"; then
+  pass "Setup installiert boot-check.sh und update.sh aus scripts/"
+else
+  fail "Setup installiert die Gate-Skripte nicht aus scripts/"
+fi
 # Boot-Gate: --resolve DOMAIN:443:127.0.0.1 + https://DOMAIN/healthz + max-time 10
-if grep -qF -- '--resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/healthz"' "${SETUP}" \
-  && grep -qF -- 'curl -sS --max-time 10 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:443:127.0.0.1"' "${SETUP}"; then
+if grep -qF -- '--resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/healthz"' "${BOOTGATE}" \
+  && grep -qF -- 'curl -sS --max-time 10 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:443:127.0.0.1"' "${BOOTGATE}"; then
   pass "Boot-Gate prüft TLS-Vertrauen und SNI (--resolve DOMAIN:443:127.0.0.1, max-time 10)"
 else
   fail "Boot-Gate nicht SNI-korrekt"
 fi
 
 # Update-Gate: --resolve GATE_DOMAIN:443:127.0.0.1 + https://GATE_DOMAIN/healthz + max-time 60
-if grep -qF -- '--resolve "${GATE_DOMAIN}:443:127.0.0.1" "https://${GATE_DOMAIN}/healthz"' "${SETUP}" \
-  && grep -qF -- 'curl -sS --max-time 60 -o /dev/null -w "%{http_code}" --resolve "${GATE_DOMAIN}:443:127.0.0.1"' "${SETUP}"; then
+if grep -qF -- '--resolve "${GATE_DOMAIN}:443:127.0.0.1" "https://${GATE_DOMAIN}/healthz"' "${UPDGATE}" \
+  && grep -qF -- 'curl -sS --max-time 60 -o /dev/null -w "%{http_code}" --resolve "${GATE_DOMAIN}:443:127.0.0.1"' "${UPDGATE}"; then
   pass "Update-Gate prüft TLS-Vertrauen und SNI (--resolve GATE_DOMAIN:443:127.0.0.1, max-time 60)"
 else
   fail "Update-Gate nicht SNI-korrekt"
 fi
 
-if grep -qF 'curl -sk --max-time 10' "${SETUP}" || grep -qF 'curl -sk --max-time 60' "${SETUP}"; then
+if grep -qF 'curl -sk --max-time 10' "${SETUP}" "${BOOTGATE}" "${UPDGATE}" \
+  || grep -qF 'curl -sk --max-time 60' "${SETUP}" "${BOOTGATE}" "${UPDGATE}"; then
   fail "Produktions-Smoke ignoriert TLS-Zertifikatsfehler weiterhin"
 else
   pass "Produktions-Smokes verlangen vertrauenswürdiges TLS-Zertifikat"
 fi
 
-# Nirgends SNI=127.0.0.1: kein https://127.0.0.1/healthz mehr im Setup
-if grep -qF -- 'https://127.0.0.1/healthz' "${SETUP}"; then
+# Nirgends SNI=127.0.0.1: kein https://127.0.0.1/healthz mehr
+if grep -qF -- 'https://127.0.0.1/healthz' "${SETUP}" "${BOOTGATE}" "${UPDGATE}"; then
   fail "SNI=127.0.0.1 noch vorhanden (https://127.0.0.1/healthz)"
 else
   pass "kein https://127.0.0.1/healthz mehr (kein SNI=127.0.0.1)"
 fi
 
 # Kein Host-Header-Trick gegen 127.0.0.1 mehr
-if grep -qF -- '-H "Host: ${DOMAIN}" "https://127.0.0.1' "${SETUP}" \
-  || grep -qF -- '-H "Host: ${GATE_DOMAIN}" "https://127.0.0.1' "${SETUP}"; then
+if grep -qF -- '-H "Host: ${DOMAIN}" "https://127.0.0.1' "${SETUP}" "${BOOTGATE}" "${UPDGATE}" \
+  || grep -qF -- '-H "Host: ${GATE_DOMAIN}" "https://127.0.0.1' "${SETUP}" "${BOOTGATE}" "${UPDGATE}"; then
   fail "Host-Header gegen 127.0.0.1 noch vorhanden"
 else
   pass "kein Host-Header gegen 127.0.0.1 mehr"

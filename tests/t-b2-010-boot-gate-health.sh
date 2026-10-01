@@ -4,7 +4,7 @@
 # @reboot, las den Health-Status sofort (T+0 s => "starting") und meldete
 # "ROT: Postgres nicht healthy nach Boot", obwohl der Stack gesund war
 # (healthy ab T+4 s). Jeder Reboot erzeugte damit ein falsches ROT.
-# Der ECHTE boot-check.sh-Block aus setup-coder.sh wird extrahiert und mit
+# Der ECHTE boot-check.sh liegt als Datei unter scripts/ und wird mit
 # Fake-docker/Fake-sleep in /tmp gefahren (kein Root, keine Produktion).
 set -euo pipefail
 
@@ -20,22 +20,20 @@ trap 'rm -rf "${WORK}"' EXIT
 BIN="${WORK}/bin"
 mkdir -p "${BIN}"
 
-# ---------- Extraktion des boot-check.sh-Heredocs ----------
-L_START="$(grep -nF 'write_managed "/opt/coder/boot-check.sh" 755 "boot-check.sh" <<' "${SETUP}" | cut -d: -f1 || true)"
-if [ -z "${L_START}" ]; then
-  fail "boot-check.sh-Heredoc nicht gefunden"
+# ---------- boot-check.sh als echte Datei unter scripts/ ----------
+BOOT="${WORK}/boot-check.sh"
+if cp "${REPO_ROOT}/scripts/boot-check.sh" "${BOOT}" 2>/dev/null; then
+  pass "scripts/boot-check.sh vorhanden"
+else
+  fail "scripts/boot-check.sh nicht lesbar"
   echo "T-B2-010: FEHLGESCHLAGEN"; exit 1
 fi
-pass "Heredoc-Zeile gefunden (Z.${L_START})"
-L_END="$(awk -v s="${L_START}" 'NR>s && $0=="EOF" {print NR; exit}' "${SETUP}")"
-if [ -n "${L_END}" ] && [ "${L_END}" -gt "${L_START}" ]; then
-  pass "Endmarkierung gefunden (Z.${L_END})"
+if grep -qF 'scripts/boot-check.sh' "${SETUP}"; then
+  pass "Setup installiert boot-check.sh aus scripts/"
 else
-  fail "Endmarkierung fehlt"
+  fail "Setup installiert scripts/boot-check.sh nicht"
 fi
-BOOT="${WORK}/boot-check.sh"
-awk -v s="${L_START}" -v e="${L_END}" 'NR>s && NR<e {print}' "${SETUP}" > "${BOOT}"
-bash -n "${BOOT}" && pass "extrahiertes boot-check.sh ist syntaktisch gueltig" || fail "Syntax"
+bash -n "${BOOT}" && pass "boot-check.sh ist syntaktisch gueltig" || fail "Syntax"
 
 # Erwartete Warteschleife vorhanden, alter Kurz-Check ohne Wartezeit weg.
 grep -qF 'for _ in $(seq 1 24); do' "${BOOT}" \

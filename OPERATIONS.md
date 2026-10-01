@@ -13,7 +13,7 @@ Verweise: Wiederherstellung → [RESTORE.md](RESTORE.md), Sicherheit →
 
 | Wo | Was |
 |---|---|
-| Repository | Quelltext: `setup-coder.sh`, `ssh-harden.sh`, `RESTORE.md`, `templates/allowlist.md`, `tests/`, `ai-review/` |
+| Repository | Quelltext: `setup-coder.sh`, `ssh-harden.sh`, `scripts/`, `RESTORE.md`, `templates/allowlist.md`, `tests/`, `ai-review/` |
 | `/opt/coder/` auf dem Server | Alles Erzeugte: Stack-Konfiguration, `.env`, Wartungsskripte, Backups, Hashstore |
 | `/etc/cron.d/`, `/etc/logrotate.d/`, `/etc/fail2ban/`, `/etc/apt/apt.conf.d/` | vom Setup erzeugte Systemdateien |
 
@@ -489,12 +489,12 @@ Prüfen: `systemctl is-active cron`, `ls -l /etc/cron.d/`,
 ## 10. Tests
 
 ```bash
-bash -n setup-coder.sh ssh-harden.sh
-shellcheck -S warning setup-coder.sh ssh-harden.sh
+bash -n setup-coder.sh ssh-harden.sh scripts/*.sh
+shellcheck -S warning setup-coder.sh ssh-harden.sh scripts/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-10-01: alle 11 Dateien in `tests/` Exit 0, 323 `PASS`,
+Stand 2026-10-01: alle 11 Dateien in `tests/` Exit 0, 328 `PASS`,
 0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
 ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.

@@ -17,12 +17,18 @@ SETUP="${REPO_ROOT}/setup-coder.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
-# reset-coder.sh-Heredoc extrahieren (genau der eingebettete Block).
-awk '/^write_managed .*reset-coder.sh/ {f=1;next} f&&/^EOF$/{f=0} f' \
-  "${SETUP}" > "${WORK}/reset-coder.sh"
+# reset-coder.sh als echte Datei unter scripts/ (das Setup spielt sie ein).
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cp "${REPO_ROOT}/scripts/reset-coder.sh" "${WORK}/reset-coder.sh" \
+  || fail "scripts/reset-coder.sh nicht lesbar"
 LINES=$(wc -l < "${WORK}/reset-coder.sh")
-echo "INFO: extrahiertes reset-coder.sh = ${LINES} Zeilen"
-[ "${LINES}" -gt 50 ] || fail "reset-coder.sh-Heredoc nicht extrahiert"
+echo "INFO: scripts/reset-coder.sh = ${LINES} Zeilen"
+[ "${LINES}" -gt 50 ] || fail "reset-coder.sh zu kurz (nicht extrahierbar?)"
+if grep -qF 'scripts/reset-coder.sh' "${SETUP}"; then
+  pass "Setup installiert reset-coder.sh aus scripts/"
+else
+  fail "Setup installiert scripts/reset-coder.sh nicht"
+fi
 
 line_of() { grep -nF -- "$1" "${WORK}/reset-coder.sh" | head -n1 | cut -d: -f1; }
 

@@ -29,7 +29,7 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-01: alle 11 Dateien in `tests/` grün (323 PASS, 0 FAIL), `bash -n setup-coder.sh` und `shellcheck -S warning` ohne Befund |
+| Lokale Tests | Stand 2026-10-01: alle 11 Dateien in `tests/` grün (328 PASS, 0 FAIL), `bash -n setup-coder.sh ssh-harden.sh scripts/*.sh` und `shellcheck -S warning` ohne Befund |
 | Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 auf dem Test-Host `2.29.11.30` als frischer Pfad-A-Aufbau (Exit 0 in 58 s); davor Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen 2026-10-01** (Test-Host): Prometheus `ready` 200, alle 6 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`, `TlsCheckStale`, `TlsIssuanceBudgetHigh`, `TlsLogTruncated`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metriken (Backup/TLS) vorhanden |
@@ -74,10 +74,11 @@ Abschnitt 11.
 | Datei | Zweck |
 |---|---|
 | `setup-coder.sh` | Das Setup-Skript (10 Schritte, `set -euo pipefail`, mehrfach ausführbar) |
+| `scripts/` | Wartungsskripte als echte Dateien (`backup.sh`, `boot-check.sh`, `check-tls.sh`, `reset-coder.sh`, `reset-passwords.sh`, `update.sh`); das Setup spielt sie per `write_managed` nach `/opt/coder/` ein |
 | `ssh-harden.sh` | Vorbereiteter SSH-Härtungspfad, **wird nicht vom Setup aufgerufen** |
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
-| `tests/` | 12 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
+| `tests/` | 11 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
 | `ai-review/` | Reviews, Pläne, Implementierungsberichte (B-/B2-/P-/F-Nummern); [Prüfung der Setup-Fundliste A1–A13, B1–B10 und C1–C5](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
 ## Was das Setup-Skript macht
@@ -275,21 +276,23 @@ Grenzen, Nachweisbefehle und offene Entscheidungen: [SECURITY.md](SECURITY.md).
 Lokal ausführbar (kein Docker, kein Root, keine Produktion):
 
 ```bash
-bash -n setup-coder.sh ssh-harden.sh
-shellcheck -S warning setup-coder.sh ssh-harden.sh
+bash -n setup-coder.sh ssh-harden.sh scripts/*.sh
+shellcheck -S warning setup-coder.sh ssh-harden.sh scripts/*.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-10-01: alle 11 Testskripte Exit 0 (323 `PASS`, 0 `FAIL`, in
+Stand 2026-10-01: alle 11 Testskripte Exit 0 (328 `PASS`, 0 `FAIL`, in
 diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
 Prüfstand-Liste unten.
 
-Was die Tests **belegen**: das Verhalten der extrahierten Codestellen
-(Backup-Headercheck, TLS-/Boot-Gates, Hex-Migration, ufw-SSH-Regel-Gate
+Was die Tests **belegen**: das Verhalten der Wartungsskripte (echte Dateien
+unter `scripts/`: Backup-Headercheck, TLS-/Boot-Gates, Reset-Precheck) und
+weiterer Setup-Codestellen
+(ufw-SSH-Regel-Gate
 inkl. „Beschränkung bleibt unangetastet, kein Delete von Bestandsregeln",
-Reset-Precheck, Drift-Hashes über 16 Dateien,
+Hex-Migration, Drift-Hashes über 16 Dateien,
 `ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
 (`t-b1-on-demand-ask.sh`: Muster-Falluntersuchung, optional `caddy validate`

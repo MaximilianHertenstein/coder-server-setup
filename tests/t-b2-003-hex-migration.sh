@@ -18,9 +18,16 @@ SETUP="${REPO_ROOT}/setup-coder.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
-# Reset-Block (eingebettetes reset-passwords.sh) zur statischen Pruefung.
-awk '/write_managed .*reset-passwords.sh/,/^EOF$/' "${SETUP}" | tail -n +2 | head -n -1 > "${WORK}/reset-block.sh"
-[ -s "${WORK}/reset-block.sh" ] || { fail "Reset-Block nicht extrahierbar"; }
+# reset-passwords.sh als echte Datei unter scripts/ (das Setup spielt sie
+# von dort ein – Link-Waechter unten).
+RESETPW="${REPO_ROOT}/scripts/reset-passwords.sh"
+cp "${RESETPW}" "${WORK}/reset-block.sh" || { fail "reset-passwords.sh nicht lesbar"; }
+[ -s "${WORK}/reset-block.sh" ] || { fail "reset-passwords.sh leer"; }
+if grep -qF 'scripts/reset-passwords.sh' "${SETUP}"; then
+  pass "Setup installiert reset-passwords.sh aus scripts/"
+else
+  fail "Setup installiert scripts/reset-passwords.sh nicht"
+fi
 
 # ---------- STATIK ----------
 if grep -qF -- 'Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter.' "${SETUP}" \
@@ -69,10 +76,10 @@ else
   fail "Heredoc-Anzahl falsch (quotiert=${N_Q} unquotiert=${N_U}, erwartet 0/0)"
 fi
 
-if grep -vE '^[[:space:]]*#' "${SETUP}" | grep -qF -- 'docker exec -e'; then
+if grep -vE '^[[:space:]]*#' "${SETUP}" scripts/*.sh 2>/dev/null | grep -qF -- 'docker exec -e'; then
   fail "docker exec -e als Kommando vorhanden (inspect-Leak)"
 else
-  pass "kein docker exec -e (kein inspect-Leak)"
+  pass "kein docker exec -e in setup oder scripts (kein inspect-Leak)"
 fi
 
 if grep -qF -- 'DOCKER_GID=${DOCKER_GID}' "${SETUP}"; then

@@ -22,20 +22,18 @@ trap 'rm -rf "${WORK}"' EXIT
 BIN="${WORK}/bin"
 mkdir -p "${BIN}"
 
-# --- Extrakt des Produktions-Skripts ---------------------------------------
-START_ANCHOR='write_managed "/opt/coder/check-tls.sh" 755 "check-tls.sh" <<'"'"'EOF'"'"''
-END_ANCHOR='write_managed "/etc/cron.d/coder-tlscheck"'
-s="$(grep -nF "${START_ANCHOR}" "${SETUP}" | cut -d: -f1 || true)"
-e="$(grep -nF "${END_ANCHOR}" "${SETUP}" | cut -d: -f1 || true)"
-if [ -n "${s}" ] && [ -n "${e}" ] && [ "${s}" -lt "${e}" ]; then
-  # a = write_managed-Zeile, b = naechster write_managed: der Abschluss
-  # "EOF" liegt davor und darf NICHT mit extrahiert werden (sonst rc=127).
-  awk -v a="${s}" -v b="${e}" 'NR>a && NR<(b - 1) {print}' "${SETUP}" > "${WORK}/check-tls.raw"
-  pass "check-tls-Heredoc extrahiert (Z.$((s + 1))-Z.$((e - 2)))"
+# --- Produktions-Skript als echte Datei unter scripts/ ----------------------
+if cp "${REPO_ROOT}/scripts/check-tls.sh" "${WORK}/check-tls.raw" 2>/dev/null; then
+  pass "scripts/check-tls.sh vorhanden"
 else
-  fail "Anker fehlen/ungeordnet: start=${s} end=${e}"
+  fail "scripts/check-tls.sh nicht lesbar"
 fi
-bash -n "${WORK}/check-tls.raw" && pass "extrahiertes check-tls.sh ist syntaktisch gueltig" || fail "Syntax check-tls.sh"
+if grep -qF 'scripts/check-tls.sh' "${SETUP}"; then
+  pass "Setup installiert check-tls.sh aus scripts/"
+else
+  fail "Setup installiert scripts/check-tls.sh nicht"
+fi
+bash -n "${WORK}/check-tls.raw" && pass "check-tls.sh ist syntaktisch gueltig" || fail "Syntax check-tls.sh"
 
 # --- Fakes ------------------------------------------------------------------
 cat > "${BIN}/docker" <<'FAKE'
