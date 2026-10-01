@@ -43,6 +43,17 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
   (entstehen per Setup-Re-Run neu), Caddy-Zertifikate, Grafana-Dashboards
   (als Code/Export pflegen oder Verlust akzeptieren), Prometheus-Historie
   (15 d, verzichtbar), Workspace-Dateien (Unterrichtsdaten!).
+- **Was das nach einem Restore heißt:**
+  - `caddy_data` (ACME-Kontostand, Zertifikate) fehlt auf frischer VM –
+    Caddy stellt automatisch neu aus (Erstverzögerung 5–30 s, B3). Mehrere
+    Restore-Versuche hart hintereinander können das Let's-Encrypt-Duplikat-
+    Limit (5/Woche) erreichen – Restores nicht probeweise wiederholen,
+    vorher kurz `docker logs coder-caddy` prüfen.
+  - Workspace-Homes/-Dateien stehen **nur** in den Workspace-Volumes der
+    Alt-Installation. Bei VM-/Plattenverlust sind sie weg, der Dump hilft
+    nicht. Vor Produktivbetrieb entscheiden (Betreiber): Unterrichtsdaten
+    als akzeptierter Verlust oder separate Sicherung der Workspace-Volumes
+    mit aufnehmen – siehe README „Offene Punkte".
 - Offsite-Kopie: NICHT eingerichtet (BLOCKER B-02/Offsite). Platten-/Host-
   Verlust = DB + alle Backups weg, solange das gilt.
 

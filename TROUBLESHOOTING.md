@@ -168,6 +168,14 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 | **Erwartete Ursache** | (1) Der Name passt nicht zum Coder-Muster (mindestens zwei `--`-Trenner, keine Punkte in der ersten Gruppe) – dann ist 404 **korrekt**; das Subformat steht in `SECURITY.md` Abschnitt 3. (2) `Connection refused` = Endpunkt nicht erreichbar, weil Caddyfile/Container-Status defekt ist. (3) Caddyfile-Syntaxfehler. |
 | **Sichere Behebung** | Bei (1): Subdomain-Format prüfen, nicht das Muster aufweiten (`.*` würde jede Zertifikatsausstellung öffnen). Bei (2)/(3): Caddyfile aus `setup-coder.sh` neu schreiben (Setup erneut ausführen), danach den Befehl oben wiederholen. **Nicht** `on_demand` entfernen – dann scheitert die Wildcard-Ausstellung komplett. |
 
+### B6. Lokal geht es (mit `--resolve`), von außen/öffentlicher Pfad nicht
+
+| | |
+|---|---|
+| **Diagnose** | Beide Pfade wie in Schritt 10 getrennt testen: lokal `curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' --resolve coder.…:443:127.0.0.1 https://coder.…/healthz`, öffentlich ohne `--resolve` (echter DNS-Weg), zusätzlich von einem externen Netz (Handy-Hotspot) derselben URL. `getent hosts coder.…` zeigt die öffentliche IP. |
+| **Erwartete Ursache** | NAT-Hairpin/Loopback: der Router im Schulnetz erlaubt es LAN-Clients nicht, die eigene öffentliche IP anzusprechen (Verbindung hängt/`000`), während der lokale `--resolve`-Pfad und echte externe Clients einwandfrei laufen. |
+| **Sichere Behebung** | Ergebnis außerhalb des Schulnetzes verifizieren (Hotspot/externes Netz): dort 200 = Betrieb in Ordnung, Hairpin ist nur ein Testeffekt. Hairpin-NAT am Router aktivieren, falls vorhanden und gewünscht; sonst LAN-Tests über den lokalen Pfad dokumentieren und den öffentlichen Pfad nur extern prüfen. **Nicht** Caddy/TLS umkonfigurieren – die Ursache liegt am NAT, nicht am Stack. |
+
 ---
 
 ## C. Stack und Container

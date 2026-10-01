@@ -9,8 +9,58 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `82cb0b2` auf `main`.
+Stand: 2026-10-01 · Basisstand dieses Eintrags: `1e51f0d` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Externe Review-Liste (0.x–3.x) abgearbeitet, Wartungsskripte nach `scripts/`
+
+- **Anlass:** externe Review-Liste (SSH 0.x, Risiken 1.x, Vereinfachungen
+  2.1–2.11, Entscheidungen 3.x), im Chat stattgefunden; die Liste selbst
+  liegt nicht im Repo. Umsetzung, Ablehnungen und Review-Befunde werden
+  hier als Einzelnachweis festgehalten, die Punktnummern stammen aus den
+  Commit-Meldungen und Code-Kommentaren der Umsetzung.
+- **Umfang (7 Commits, `8a5f78c`..`1e51f0d`):**
+
+  | Commit | Review-Punkte | Inhalt |
+  |---|---|---|
+  | `8a5f78c` | 1.1, 1.7, 1.8 | kein Upgrade ohne frisches Pre-Backup (bricht vor `up -d` ab), Backup-Rotation nach Alter mit Mindestbestand 7, unbelegte Telemetrie-/Editions-Aussagen aus Kommentaren und Grafana-Analytics raus |
+  | `67cf4e8` | 0.1, 0.2, 0.3, 1.4, 2.3, 2.4 | ufw/SSH-Schritt als feste Sequenz (Quellbeschränkungen unangetastet, nur die drei weltweiten Allow-Schreibweisen gelöscht, `limit 22/tcp` verifiziert), Passwort-Nag-Block und Kopie von `ssh-harden.sh` nach `/opt/coder` raus, fail2ban `bantime.increment`+`ignoreip`, Warnung bei `PermitRootLogin yes`, jail.d-Lese-Reihenfolge korrigiert, Warnung statt Hash-Guard bei vorhandenem `jail.local` |
+  | `374d0ab` | 2.3, 2.5 | tote Migrationspfade raus (Alt-Mounts, `52-coder-docker-upgrades`, Root-Crontab – Test-Host per ssh geprüft, nichts davon vorhanden); warn-only Port-Preflight raus, `t-b2-008` gestrichen (ein echter Konflikt bricht `compose up` ohnehin mit klarem Fehler ab) |
+  | `b24d418` | 2.6, 2.9, 2.10 | Caddy/Prometheus statt Hash-Gate jetzt Validierung+SIGHUP/Admin-Reload bei jedem Lauf (Grafana behält sein Hash-Gate, nur sein Neustart ist störend); ACME-Email globale Caddy-Option statt zwei Issuer-Blöcke (mit `caddy:2.10 validate/adapt` verifiziert); x-logging-Anker und sechs Referenzen raus (`daemon.json` ist Einzelquelle) |
+  | `a9b0d08` | 2.7, 2.8 | Compose-`group_add` mit numerischer GID direkt aus dem Lauf (kein `.env`-Umweg, kein Refresh/Recreate-Block), Passwort-Reset auf Grafana beschränkt (Zwei-Schlüssel-Gate, kein Postgres-`ALTER USER` mehr) |
+  | `f3c6383` | Kopf/Version | Setup-Kopf von 89 auf 24 Zeilen (DNS, On-Demand, SSH, Skriptlisten usw. leben in README/OPERATIONS/SECURITY), Versionswissen an die `CODER_VERSION`-Definitionsstelle |
+  | `1e51f0d` | 2.1 | sechs Wartungsskripte als echte Dateien unter `scripts/` (erstmals `bash -n`- und shellcheck-bar), Setup spielt sie per `write_managed` ein; sechs Tests auf Dateipfade umgestellt, je mit Link-Wächter; SC2106-Fix: `\|\| continue` bei der Backup-Rotation stand innerhalb der Subshell |
+
+- **Bewusst nicht umgesetzt / abgelehnt:**
+
+  | Punkt | Entscheidung und Grund |
+  |---|---|
+  | 2.2 (Drift-Mechanik vereinfachen) | behalten: Drift-Prüfung vor dem atomaren Austausch, Hash danach, über `t-b2-007` abgesichert |
+  | 0.3-Teil „Drop-In auf Default-Werte schrumpfen" | behalten: explizite Werte bleiben (z. B. `backend=systemd` mit Begründung im Code); die übrigen 0.3-Vorschläge (`bantime.increment`, `ignoreip`) sind umgesetzt |
+  | Vorschlag zur 9100-Bindung | unverändert: Port bleibt an `127.0.0.1` gebunden |
+  | 1.2 (Offsite-Backup neu aufsetzen) | kein Vorschlag ohne festgelegtes Ziel/Transport/Schlüsselverwahrung; D-Offsite ist entschieden 2026-09-30: kein zweiter Standort, Restrisiko akzeptiert ([SECURITY.md](SECURITY.md) §9) |
+  | 1.3, 3.1, 3.2 (Alarmwege) | kein erfundener Empfänger, Kanal oder Zugang; D-Monitoring ist entschieden 2026-09-30: kein Kanal, Grafana/Prometheus sind die Anlaufstelle (SECURITY §9). Umentscheiden bleibt dem Betreiber vorbehalten |
+  | Review-Befund „`ssh-harden.sh` fehlt im Repo" | widerlegt: die Datei liegt im Repo, wird nur nicht vom Setup aufgerufen (D-SSH) |
+  | Review-Befund „`ai-review/` fehlt" | widerlegt: das Verzeichnis ist mitgeliefert |
+
+- **Neu in der Doku:** RESTORE „Was das nach einem Restore heißt"
+  (ACME-/Rate-Limit-Folgen ohne `caddy_data`, Workspace-Homes-Verlust),
+  TROUBLESHOOTING B6 (NAT-Hairpin: lokal `--resolve` ok, öffentlicher Pfad
+  von innen tot – extern verifizieren, nicht am Stack drehen), README
+  „Offene Punkte" um die Workspace-Homes-Entscheidung.
+- **Geänderte Dateien:** `setup-coder.sh`, `scripts/` (neu: `backup.sh`,
+  `boot-check.sh`, `check-tls.sh`, `reset-coder.sh`, `reset-passwords.sh`,
+  `update.sh`), `tests/` (6 umgestellt, `t-b2-003` neu geschrieben,
+  `t-b2-008` gestrichen), `README.md`, `OPERATIONS.md`, `SECURITY.md`,
+  `RESTORE.md`, `TROUBLESHOOTING.md`, `CHANGELOG.md`.
+- **Teststand (tatsächlich ausgeführt, 2026-10-01):** alle 11 Dateien in
+  `tests/` grün (328 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh
+  scripts/*.sh` und `shellcheck -S warning` ohne Befund.
+- **Offene Punkte:** gebündelt in README „Offene Punkte – wer macht was";
+  neu und vor Produktivbetrieb zu entscheiden: Unterrichtsdaten
+  (Workspace-Homes) als akzeptierter Verlust oder eigene Volume-Sicherung.
 
 ---
 

@@ -51,6 +51,7 @@ verlinkten Stelle):
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
 | Zone/Hosting/IServ klären – erst danach DNS-01-Modul einbauen | Domainverwalter/Hosting, **nicht** der Betreiber | OPERATIONS §11 Zeile 6, [SECURITY.md](SECURITY.md) §9 D-TLS |
 | Produktionsfreigabe aussprechen – bewusst hier nicht dokumentiert | Betreiber | diese README |
+| Unterrichtsdaten: Workspace-Homes als akzeptierter Verlust deklarieren oder eigene Volume-Sicherung mit einrichten (vor Produktivbetrieb) | Betreiber | [RESTORE.md](RESTORE.md) „Was gesichert wird" |
 | Offene Verifikation: RTO inkl. VM-Boot, `/healthz` + Wildcard, volle Platte, 03:00-Fire | wartet auf frische VM / DNS / Kernel-Update | Prüfstand-Tabelle unten |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
