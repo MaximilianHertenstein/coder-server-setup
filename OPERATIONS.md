@@ -133,7 +133,8 @@ sudo docker exec coder-caddy caddy reload    --config /etc/caddy/Caddyfile --ada
 ```
 
 Prometheus lädt `prometheus.yml` und Alarmregeln auf SIGHUP neu; das Setup
-sendet das Signal nur bei einer Dateiänderung. Manuell:
+sendet das Signal bei jedem Lauf, solange Prometheus läuft (Reload ist
+No-Op bei unveränderter Datei). Manuell:
 `sudo docker kill -s HUP coder-prometheus`. Grafana liest seine Datasource-
 Provisioning-Datei beim Start; das Setup startet Grafana bei einer Änderung
 dieser Datei neu (`sudo docker restart coder-grafana`).

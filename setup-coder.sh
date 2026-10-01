@@ -377,9 +377,10 @@ apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-co
 
 # C2: Loggrößen begrenzen. Ohne Limit wächst das json-file-Logging der
 # Standard-Installation bis die Root-Partition voll ist (Plattenkiller Nr. 1);
-# die "logging:"-Blöcke der compose-Datei decken nur die eigenen Container ab,
-# nicht z.B. "docker run"-Experimente oder spätere Projekte. Deshalb hier die
-# daemon-weite Vorgabe – und KEINE Fremdkonfiguration anfassen: eine
+# eine projektweite compose-"logging:"-Anker-Datei deckte nur die eigenen
+# Container ab, nicht z.B. "docker run"-Experimente oder spätere Projekte
+# (Review 2.10: Anker entfernt, daemon.json ist die einzige Quelle).
+# Deshalb hier die daemon-weite Vorgabe – und KEINE Fremdkonfiguration anfassen: eine
 # vorhandene daemon.json ohne unsere Log-Schlüssel wird weder überschrieben
 # (insecure-registries, live-restore, mirrors gingen verloren) noch still
 # gemergt (kein jq/python3 als Abhängigkeit), sondern der Lauf bricht mit
@@ -559,8 +560,9 @@ fi
 # WICHTIG: \${...} bleibt hier absichtlich für Docker Compose stehen (wird aus
 # /opt/coder/.env aufgelöst); ${DOMAIN_CODER} etc. werden dagegen jetzt von
 # der Shell eingesetzt.
-# P-007: JSON-File-Logging ohne Limit wächst auf der Root-Partition unbegrenzt
-# (Plattenkiller Nr. 1). 10m x 3 pro Container als konservativer Standard.
+# P-007: Log-Limit kommt daemon-weit aus /etc/docker/daemon.json (C2, 10m x 3)
+# und deckt damit auch fremde Container; ein eigenes compose-logging wäre nur
+# eine zweite Quelle fuer denselben Wert.
 # C9: Fester Projektname. Sonst leitet compose den Projektnamen aus dem
 # Verzeichnis ab (/opt/coder -> "coder") – ein Umbenennen/Umziehen des
 # Verzeichnisses würde die laufenden Container als fremd behandeln und einen
@@ -568,12 +570,6 @@ fi
 # davon, von wo aus compose aufgerufen wird.
 write_managed "/opt/coder/docker-compose.yml" 644 "docker-compose.yml" <<EOF
 name: coder
-
-x-logging: &coder-logging
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
 
 services:
   postgres:
@@ -583,7 +579,6 @@ services:
     # B-011: längere Shutdown-Gnade nur für Postgres (längere Checkpoint-/
     # WAL-Phase bei Reboot 03:00). Keine pauschale Grace für alle Services.
     stop_grace_period: 30s
-    logging: *coder-logging
     environment:
       POSTGRES_DB: coder
       POSTGRES_USER: coder
@@ -605,7 +600,6 @@ services:
     image: ghcr.io/coder/coder:${CODER_VERSION}
     container_name: coder
     restart: unless-stopped
-    logging: *coder-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -632,7 +626,6 @@ services:
     image: caddy:${CADDY_VERSION}
     container_name: coder-caddy
     restart: unless-stopped
-    logging: *coder-logging
     ports:
       - "80:80"
       - "443:443"
@@ -653,7 +646,6 @@ services:
     image: prom/prometheus:${PROMETHEUS_VERSION}
     container_name: coder-prometheus
     restart: unless-stopped
-    logging: *coder-logging
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -677,7 +669,6 @@ services:
     image: prom/node-exporter:${NODE_EXPORTER_VERSION}
     container_name: coder-node-exporter
     restart: unless-stopped
-    logging: *coder-logging
     pid: host
     # Nur lesend eingebunden, damit Host-Metriken (u.a. freier Speicherplatz)
     # in Prometheus/Grafana sichtbar werden - bisher hing der fertige
@@ -704,7 +695,6 @@ services:
     image: grafana/grafana:${GRAFANA_VERSION}
     container_name: coder-grafana
     restart: unless-stopped
-    logging: *coder-logging
     environment:
       # Wirkt nur beim allerersten Start (leere grafana_data). Passwort danach
       # ändern: sudo /opt/coder/reset-passwords.sh
@@ -787,11 +777,9 @@ CADDY_ACME_CA=""
 if [ -n "${ACME_CA:-}" ]; then
   CADDY_ACME_CA="    acme_ca ${ACME_CA}"
 fi
-# P-025: Hash VOR dem Schreiben merken – Schritt 3 lädt die neue
-# Konfiguration nur bei tatsächlicher Änderung neu (blinder Neustart =
-# TLS-Unterbrechung bei jedem Re-Run). Pfad unter /opt/coder/caddy, weil die
-# compose-Datei das Verzeichnis statt der Einzeldatei bindet.
-CADDY_BEFORE=$(sha256sum /opt/coder/caddy/Caddyfile 2>/dev/null | cut -d' ' -f1 || true)
+# Lauf-Status VOR Schritt 3 (Reload/Neustart-Entscheidung unten). Pfad der
+# Caddyfile unter /opt/coder/caddy, weil die compose-Datei das Verzeichnis
+# statt der Einzeldatei bindet.
 CADDY_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
 # A2: Domain einmalig ablegen. boot-check.sh und update.sh haben sie vorher
 # per awk aus der Caddyfile gezogen und dabei auf die @askOK-Matcherzeile
@@ -807,6 +795,7 @@ install -d -m 0755 /opt/coder/caddy
 write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" <<EOF
 {
 ${CADDY_ACME_CA}
+    email ${ACME_EMAIL}
     on_demand_tls {
         # Caddy 2.9+ empfiehlt permission; ask ist deprecated.
         permission http http://127.0.0.1:9123/ask
@@ -825,33 +814,22 @@ ${CADDY_ACME_CA}
 
 ${DOMAIN_CODER} {
     reverse_proxy coder:3000
-    tls {
-        issuer acme {
-            email ${ACME_EMAIL}
-        }
-    }
 }
 
 *.${DOMAIN_CODER} {
     reverse_proxy coder:3000
     tls {
         on_demand
-        issuer acme {
-            email ${ACME_EMAIL}
-        }
     }
 }
 EOF
 
-# C3/B10: Signatur über prometheus.yml UND die Alarmregeln. Schritt 3 sendet
-# Prometheus nur dann SIGHUP, wenn sich eine der beiden Dateien tatsächlich
-# geändert hat (SIGHUP braucht kein --web.enable-lifecycle); ein blinder
-# Neustart bei jedem Re-Run würde Messlücken reißen (P-025-Prinzip).
-prom_cfg_sig() {
-  { sha256sum /opt/coder/prometheus/prometheus.yml /opt/coder/prometheus/rules/coder-alerts.yml 2>/dev/null || true; } | sha256sum | cut -d' ' -f1
-}
-PROM_CFG_BEFORE=$(prom_cfg_sig)
-# Grafana liest Provisioning-Dateien ebenfalls nur beim Start.
+# Review 2.6: Prometheus bekommt SIGHUP bei jedem Lauf, solange es lief –
+# Reload statt Neustart (P-025), ohne Hash-Vergleich: ein SIGHUP auf
+# unveränderte Regeln ist ein No-Op (braucht kein --web.enable-lifecycle).
+# Nur Grafana hat keine Reload-API und braucht weiterhin den Hash – dessen
+# Neustart ist invasiv und bleibt an die tatsächliche Änderung gebunden.
+# Grafana liest Provisioning-Dateien nur beim Start.
 GRAFANA_PROV_BEFORE=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml 2>/dev/null | cut -d' ' -f1 || true)
 # Lauf-Status VOR dem Schreiben (gleiche Idee wie CADDY_WAS_RUNNING): nur ein
 # Container, der schon mit der alten Datei lief, braucht danach einen Neustart.
@@ -959,7 +937,6 @@ EOF
 # könnte node-exporter die Datei nicht lesen und die Metrik bliebe tot.
 install -d -m 0755 /opt/coder/node-textfile
 
-PROM_CFG_AFTER=$(prom_cfg_sig)
 GRAFANA_PROV_AFTER=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml | cut -d' ' -f1)
 
 echo "############################################################"
@@ -1039,56 +1016,49 @@ GRAFANA_VERSION=${GRAFANA_VERSION}
 NODE_EXPORTER_VERSION=${NODE_EXPORTER_VERSION}
 VERSIONSEOF
 
-# Docker Compose erkennt Änderungen am Inhalt einer eingebundenen Datei
-# (Caddyfile) nicht automatisch, nur Änderungen an der docker-compose.yml
-# selbst. P-025: trotzdem NICHT blind neu starten (TLS-Unterbrechung + Ban-/
-# Verbindungs-Verlust bei jedem Re-Run), sondern nur bei tatsächlicher
-# Caddyfile-Änderung – und nur, wenn Caddy vorher schon lief (Erstlauf braucht
-# keinen Reload, "up -d" hat ihn gerade erstellt).
-# C4: Statt "docker compose restart" (Verbindungsabbruch, Zertifikats-Cache
-# neu aufgebaut) lädt Caddy die Konfiguration per Admin-API neu. Vorteil: die
-# laufenden Verbindungen bleiben bestehen, und eine ungültige Konfiguration
-# lässt sich VORHER per "caddy validate" erkennen – im Fehlerfall behält
-# Caddy bewusst die alte, laufende Konfiguration (kein Ausfall durch einen
-# kaputten Schreibfehler). "restart" ist damit bewusst KEIN Fallback mehr.
-CADDY_AFTER=$(sha256sum /opt/coder/caddy/Caddyfile | cut -d' ' -f1)
-if [ "${CADDY_WAS_RUNNING}" = "true" ] && [ "${CADDY_BEFORE}" != "${CADDY_AFTER}" ]; then
-  echo "Caddyfile geändert – prüfe und lade die Konfiguration neu (reload statt restart) ..."
+# Review 2.6: validate + reload bei JEDEM Lauf, solange Caddy lief. Reload
+# geht über die Admin-API (verbindungserhaltend – P-025 verbietet nur
+# Restarts), ist bei unveränderter Datei ein No-Op und fängt damit auch
+# Abweichungen ab, die nicht über write_managed entstanden sind. Ohne
+# Hash-Vergleich: eine ungültige Datei meldet "caddy validate" vor dem
+# Neuladen, Caddy behält dann die laufende Konfiguration (kein Ausfall).
+# "restart" ist bewusst KEIN Fallback (C4). Erstlauf ohne laufendes Caddy
+# braucht kein Reload – "up -d" hat den Container gerade mit der Datei
+# gestartet.
+if [ "${CADDY_WAS_RUNNING}" = "true" ]; then
   if docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
     if docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
-      ok "Caddy hat die neue Konfiguration per reload übernommen (ohne Verbindungsabbruch) (C4)"
+      ok "Caddy validate + reload OK (ohne Verbindungsabbruch) (C4)"
     else
       warn "caddy reload fehlgeschlagen – Caddy läuft weiter mit der ALTEN Konfiguration. Manuell prüfen: sudo docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
     fi
   else
-    fail "Neue Caddyfile ist ungültig (caddy validate rot) – Caddy behält die laufende Konfiguration, kein Ausfall. Fehler anzeigen mit: sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
+    fail "Caddyfile ungültig (caddy validate rot) – Caddy behält die laufende Konfiguration, kein Ausfall. Fehler anzeigen mit: sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
   fi
 else
-  echo "Caddyfile unverändert (oder Erstlauf) – kein Caddy-Reload."
+  echo "Caddy lief vorher nicht (Erstlauf) – kein Reload nötig, up -d startet ihn mit der Datei."
 fi
 
-# C3: Alarmregeln (Prometheus) und Datasource-Provisioning (Grafana) liegen als
-# Bind-Mounts im Container – "docker compose up -d" erkennt deren Inhalt NICHT.
-# Nur bei tatsächlicher Änderung und nur, wenn der Container schon lief (im
-# Erstlauf hat "up -d" ihn gerade mit der neuen Datei erstellt), deshalb kein
-# sinnloser Zweistart; bei unveränderter Datei bleibt jeder Lauf startfrei.
-restart_on_cfg_change() { # $1=hash_vorher $2=hash_nachher $3=lief_vorher $4=container $5=was
-  if [ "$1" = "$2" ]; then
-    echo "$5 unverändert – kein Neustart."
-  elif [ "$3" != "true" ]; then
-    echo "$5 neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
-  elif [ "$4" = "coder-prometheus" ] && docker kill -s HUP "$4" > /dev/null 2>&1; then
-    ok "$5 geändert – Prometheus hat Konfiguration und Alarmregeln per SIGHUP neu geladen"
-  elif [ "$4" = "coder-prometheus" ]; then
-    warn "Prometheus konnte SIGHUP nicht laden – Konfiguration manuell prüfen: sudo docker logs $4"
-  elif docker restart "$4" > /dev/null 2>&1; then
-    ok "$5 geändert – Container $4 neu gestartet, damit Grafana-Provisioning greift (C3)"
+# C3: Prometheus-Dateien und Grafana-Provisioning liegen als Bind-Mounts im
+# Container – "docker compose up -d" erkennt deren Inhalt NICHT.
+if [ "${PROM_CFG_WAS_RUNNING}" = "true" ]; then
+  if docker kill -s HUP coder-prometheus > /dev/null 2>&1; then
+    ok "Prometheus per SIGHUP neu geladen (Konfiguration und Alarmregeln) (C3)"
   else
-    warn "Neustart von $4 fehlgeschlagen – Konfiguration manuell nachziehen: sudo docker restart $4 (C3)"
+    warn "Prometheus konnte SIGHUP nicht laden – Konfiguration manuell prüfen: sudo docker logs coder-prometheus"
   fi
-}
-restart_on_cfg_change "${PROM_CFG_BEFORE}" "${PROM_CFG_AFTER}" "${PROM_CFG_WAS_RUNNING}" coder-prometheus "Prometheus-Regeln"
-restart_on_cfg_change "${GRAFANA_PROV_BEFORE}" "${GRAFANA_PROV_AFTER}" "${GRAFANA_WAS_RUNNING}" coder-grafana "Grafana-Datasource"
+else
+  echo "Prometheus lief vorher nicht – kein SIGHUP (läuft mit der neuen Datei)."
+fi
+if [ "${GRAFANA_PROV_BEFORE}" = "${GRAFANA_PROV_AFTER}" ]; then
+  echo "Grafana-Datasource unverändert – kein Neustart."
+elif [ "${GRAFANA_WAS_RUNNING}" != "true" ]; then
+  echo "Grafana-Datasource neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
+elif docker restart coder-grafana > /dev/null 2>&1; then
+  ok "Grafana neu gestartet, damit Provisioning greift (C3)"
+else
+  warn "Neustart von coder-grafana fehlgeschlagen – Konfiguration manuell nachziehen: sudo docker restart coder-grafana (C3)"
+fi
 
 docker compose ps
 

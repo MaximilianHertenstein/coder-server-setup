@@ -89,7 +89,7 @@ Umgebungsvariablen gehören hinter das sudo, siehe unten.
 |---|---|---|
 | 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
 | 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `caddy/Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus/prometheus.yml` + `prometheus/rules/coder-alerts.yml`, Grafana-Datasource-Provisioning, `node-textfile/` |
-| 3 | Docker-Stack starten | Preflights (Daemon, Platte), Compose-Konfiguration, Pull, Caddy- und Prometheus-Konfiguration samt Regeln validieren, dann `up -d`; Caddy bei Änderung `validate` + `reload`, Prometheus lädt geänderte Regeln per SIGHUP; Grafana startet bei geänderter Provisioning-Datei neu |
+| 3 | Docker-Stack starten | Preflights (Daemon, Platte), Compose-Konfiguration, Pull, Caddy- und Prometheus-Konfiguration samt Regeln validieren, dann `up -d`; Caddy `validate` + `reload` bei laufendem Container, Prometheus per SIGHUP bei laufendem Container; Grafana nur bei geänderter Provisioning-Datei neu |
 | 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw limit 22/tcp`, 80/443 frei, fail2ban-Jail `sshd`, Abschluss-Checks |
 | 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades, Reboot 03:00, lesendes Boot-Gate (`boot-check.sh`), TLS-Zählung (`check-tls.sh`); Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |

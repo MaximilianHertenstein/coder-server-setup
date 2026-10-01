@@ -84,7 +84,13 @@ printf '%s\n' "${APEX}" | grep -qF 'on_demand' \
   && fail "Apex hat on_demand (muss ohne, Budget-Schutz)" || pass "Apex OHNE on_demand"
 printf '%s\n' "${WILD}" | grep -qF 'on_demand' \
   && pass "Wildcard MIT on_demand" || fail "Wildcard ohne on_demand"
-printf '%s\n' "${WILD}" | grep -qF 'issuer acme' && pass "Wildcard hat issuer acme" || fail "Wildcard: issuer acme fehlt"
+# Review 2.9: ACME-E-Mail liegt als globale Option im Header-Block, nicht
+# mehr pro Site in "issuer acme { }".
+grep -qF 'email admin@example.test' "${CF}" \
+  && pass "ACME-E-Mail als globale Option" || fail "globale email-Option fehlt"
+grep -qF 'issuer acme' "${CF}" \
+  && fail "issuer acme steht noch in der Caddyfile (Email gehört global)" \
+  || pass "kein issuer acme mehr in der Caddyfile"
 
 # --- 3. Muster-Verhalten (grep -E als POSIX-ERE-Proxy fuer CEL/RE2) ---------
 re_match() { printf '%s\n' "$1" | grep -Eq "${DOMAIN_CODER_REGEX}"; }
@@ -132,17 +138,21 @@ else
 import json, sys
 d = json.load(open(sys.argv[1]))
 pols = d.get("apps", {}).get("tls", {}).get("automation", {}).get("policies", [])
-apex = [p for p in pols if p.get("subjects") == ["coder.test"]]
 wild = [p for p in pols if p.get("subjects") == ["*.coder.test"]]
-assert apex, "Apex-Policy fehlt"
 assert wild, "Wildcard-Policy fehlt"
-assert not apex[0].get("on_demand"), "Apex-Policy hat on_demand"
 assert wild[0].get("on_demand") is True, "Wildcard-Policy ohne on_demand"
+# Review 2.9: Apex braucht keine eigene Subject-Policy mehr (globale email-
+# Option); zählt hat nur, dass ausserhalb der Wildcard keine Policy
+# on_demand trägt (Budget-Schutz).
+for p in pols:
+    if p is not wild[0]:
+        assert not p.get("on_demand"), f"undogene on_demand-Policy: {p}"
+assert "admin@example.test" in json.dumps(d), "globale ACME-E-Mail fehlt im adapt-JSON"
 od = d.get("apps", {}).get("tls", {}).get("automation", {}).get("on_demand", {})
 assert od.get("permission", {}).get("endpoint") == "http://127.0.0.1:9123/ask", od
 PY
       then
-        pass "caddy adapt: Apex ohne, Wildcard mit on_demand, ask-URL gesetzt"
+        pass "caddy adapt: Wildcard mit on_demand, Rest ohne, globale email, ask-URL gesetzt"
       else
         fail "caddy adapt: Policy-Struktur weicht ab ($(python3 -c 'import json,sys' 2>/dev/null; echo details siehe adapted.json))"
       fi
