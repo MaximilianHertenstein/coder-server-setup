@@ -76,6 +76,7 @@ Abschnitt 11.
 |---|---|
 | `setup-coder.sh` | Das Setup-Skript (10 Schritte, `set -euo pipefail`, mehrfach ausführbar) |
 | `scripts/` | Wartungsskripte als echte Dateien (`backup.sh`, `boot-check.sh`, `check-tls.sh`, `reset-coder.sh`, `reset-passwords.sh`, `update.sh`); das Setup spielt sie per `write_managed` nach `/opt/coder/` ein |
+| `show-sources.sh` | Gibt Setup, Härtung und Wartungsskripte mit Dateimarker und Zeilennummern aus – z. B. um die Quellen einem Chatbot zu geben (Teilmengen als Argumente) |
 | `ssh-harden.sh` | Vorbereiteter SSH-Härtungspfad, **wird nicht vom Setup aufgerufen** |
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
