@@ -9,8 +9,46 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-09-30 · Basisstand dieses Eintrags: `756c893` auf `main`.
+Stand: 2026-09-30 · Basisstand dieses Eintrags: `bda2035` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Pfad A komplett, Wartungspfade live geprüft
+
+- **Pfad A (Restore-Runbook) am Test-Host vollständig gespielt**, nicht nur
+  der Import: Alt-Verzeichnis beiseite (mit `.env` + 14 Dumps),
+  DB-/Grafana-/Prometheus-Volumes gelöscht, Caddy-Zertifikate behalten →
+  `setup-coder.sh` frisch (RC 0 in 58 s, übernimmt die bereitgelegte
+  `.env`, meldet „Noch kein Nutzerkonto") → `coder` stoppen,
+  `dropdb`/`createdb`, Import per `zcat | psql -v ON_ERROR_STOP=1`
+  (**RC 0, 2,3 s**) → Stack hoch. Ergebnis: Datenprobe **1**,
+  **119/944**, `owner` + `prebuilds` wieder da, `SELECT 1` und API grün.
+  Zeitspanne „Volumen weg → alles verifiziert": **1 min 50 s** (ohne
+  VM-Boot). Nicht erfüllbar hier: `/healthz`-TLS-Smoke (000, Domain zeigt
+  auf fremde IP) – grün wird dieser Punkt erst am Zielserver.
+  Alt-Verzeichnis nach Prüfung entfernt (Dumps doppelt vorhanden).
+- **`update.sh` live:** RC 1 wie designt – Backup und Stack-Update liefen,
+  das Update-Gate blieb **ausschließlich** am TLS-Smoke rot (dieser
+  externe DNS-Blocker), sonst grün. Verhalten also korrekt: Gate rot statt
+  stummem Erfolg.
+- **`check-tls.sh` live:** RC 0, schreibt `coder_tls.prom`
+  (4 Ausstellungen, Logfenster 0 Std. wegen frischer Container – Zähler
+  ehrlich als Untergrenze markiert).
+- **fail2ban ohne eigenen Angriffstest belegt:** das Jail hatte bereits
+  312 Ban-Einträge (2 IPs aktiv gesperrt), und nach dem Reboot um 19:07
+  kamen „Restore Ban"-Meldungen – Bannen überleben den Neustart damit in
+  der Praxis.
+- **Doku:** RESTORE.md (dritter Beleg-Absatz, RTO-Tabelle mit drei Zeilen
+  statt „offen", offene Reste klar benannt), README Prüfstand-Zeile 4.
+- **Teststand (tatsächlich ausgeführt):** alle 12 Dateien in `tests/` grün
+  (346 PASS, 0 FAIL); `bash -n setup-coder.sh ssh-harden.sh` und
+  `shellcheck -S warning setup-coder.sh ssh-harden.sh` ohne Befund.
+- **Offene Punkte:** RTO inkl. VM-Boot (braucht frische VM),
+  `/healthz`-Grün und Wildcard-DNS (braucht DNS auf den Server),
+  volle Platte (braucht Rettungskonsole), Inbetriebnahme-Termin
+  (Netzwerkadmin-Zeilen 1–4, IServ unklar), DNS-01-Aufschub;
+  Vor-Flug-Checkliste für den Schulserver als Nächstes.
 
 ---
 

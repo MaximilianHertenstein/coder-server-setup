@@ -16,9 +16,23 @@ grün) nach dem Wechsel des Test-Hosts auf `postgres:18-alpine` (18.6) per
 bestätigt: ein Major-Wechsel ist Dump/Restore, kein Tag-Wechsel – das 18er-Image
 verweigert sogar das alte Volume-Mount `/var/lib/postgresql/data`
 (docker-library/postgres #1259), siehe `setup-coder.sh` und OPERATIONS §8.
-**Nicht geprobt:** Pfad A/B auf einer frischen VM inklusive Stack-Start,
-`/healthz` und Dashboard-Login – die volle RTO (VM + Stack + Prüfung) bleibt
-deshalb unbekannt, nur der Importteil ist mit 3,0 s belegt.
+**Dritter Beleg: Pfad A am 2026-10-01 vollständig auf dem Test-Host.**
+Das Alt-Verzeichnis samt `.env` und Dumps beiseite, DB-/Grafana-/
+Prometheus-Volumes gelöscht (Caddy-Zertifikate behalten), dann wie im
+Runbook: `setup-coder.sh` (RC 0, **58 s**, behält die bereitgelegte
+`.env`, meldet „Noch kein Nutzerkonto"), `coder` stoppen,
+`dropdb`/`createdb`, `zcat | psql -v ON_ERROR_STOP=1` (**RC 0 in 2,3 s**),
+Stack hoch. Datenprobe **`1`**, **119/944** Tabellen/Zeilen,
+`owner` + `prebuilds` zurück da, `SELECT 1` und Coder-API grün.
+Zeitspanne von „Volumen weg" bis „alles verifiziert": **1 min 50 s**
+(ohne VM-Boot und Paketinstallation). **Nicht erfüllbar auf dem
+Test-Host:** der `/healthz`-TLS-Smoke (000, TLS-Alert), solange die
+Domain auf eine fremde IP zeigt und Caddy kein Zertifikat bekommt –
+ein grüner `/healthz` ist damit erst am echten Zielserver belegbar.
+**Weiter offen:** RTO inklusive VM-Boot/Paketinstallation (braucht eine
+frische VM) und Browser-Login am Dashboard (Passwort war bewusst nur
+hostlokal). Nie auf Produktion üben, nur auf isolierter Test-VM
+(T-080–T-083).
 Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 
 ## Was gesichert wird – und was nicht (P-024, ehrlich)
@@ -162,7 +176,9 @@ RTO-Zahl hier eintragen:
 | Datum | Coder-Version | Dump-Alter | RTO | Datenprobe = 1 | Login ok |
 |---|---|---|---|---|---|
 | 2026-09-30 | v2.36.6 (Test-Host) | 3 Min | 3,0 s (nur Dump-Import) | ja (1, im Probencontainer) | – (kein Stack-Neustart) |
-| _offen_ (volles Pfad-A-/Pfad-B-Prozedere auf frischer VM) | – | – | – | – | – |
+| 2026-09-30 | v2.36.6 (Test-Host) | 5 Std | 2,3 s (Major-Wechsel 15 → 18, live) | ja (1) | ja (API grün) |
+| 2026-10-01 | v2.36.6 (Test-Host, Pfad A komplett) | 10 Std | **1 min 50 s** (ohne VM-Boot: Setup 58 s, Import 2,3 s) | ja (1) | teilweise: `owner` + API grün, kein Browser-Login; `/healthz`-TLS wegen externem DNS 000 |
+| _offen_ (RTO inkl. VM-Boot und Paketinstallation) | – | – | – | – | – |
 
 Probe 2026-09-30, Durchführung: Sonde wie oben setzen, `backup.sh` laufen
 lassen, Dump per `zcat | psql -v ON_ERROR_STOP=1` in einen temporären
