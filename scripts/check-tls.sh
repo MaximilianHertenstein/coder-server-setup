@@ -9,7 +9,7 @@
 # Exit 1 und aktualisieren den Erfolgszeitpunkt nicht.
 set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-if ! COUNT=$(docker exec coder-caddy sh -c 'find /data/caddy/certificates -name "*.crt" -mtime -7 | wc -l'); then
+if ! COUNT=$(docker exec coder-caddy sh -c 'find /data/caddy/certificates -name "*.crt" -mtime -7 2>/dev/null | wc -l'); then
   echo "Fehler: Zertifikatsdateien konnten nicht gezaehlt werden; TLS-Metrik bleibt unveraendert." >&2
   logger -t coder-tls "FEHLER: Zertifikatsdateien konnten nicht gezaehlt werden" || true
   exit 1

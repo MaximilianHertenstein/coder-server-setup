@@ -9,8 +9,41 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-01 · Basisstand dieses Eintrags: `bdd5a86` auf `main`.
+Stand: 2026-10-01 · Basisstand dieses Eintrags: `e39d0d1` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-01 – Testhost-Lauf der Review-Runde: Rechte-Fix im A2-Validierer, check-tls still
+
+- **Live-Lauf (Test-Host `2.29.11.30`, keine Produktion, Stand `e39d0d1`
+  per rsync ohne `.git`):** erster Lauf bewusst RC 1 – `validate_prom_rules`
+  scheiterte mit `permission denied`, weil `mktemp` die Temp-Datei als
+  `600` anlegt, der `promtool`-Container aber als `nobody` läuft (Fund der
+  neuen A2-Validierung, fail-closed: Live-Datei blieb unangetastet).
+  **Fix:** `write_managed` hebt die Temp-Datei vor dem Validierer auf 644
+  (Endmodus folgt ohnehin per `chmod "${mode}"`); statischer Check in
+  `t-b2-007`. Danach drei Läufe RC 0 (je 46 s), `0 [FEHLER]`, nur der
+  bekannte healthz-WARN (DNS/Portweiterleitung fehlt extern weiterhin).
+- **Verifiziert am Host:** Metriken `coder_tls_issuances_7d` +
+  `coder_tls_check_last_success_timestamp_seconds` vorhanden, kein
+  `coder_tls_log_*` mehr; Prometheus lädt die **5** Alarmregeln; ufw genau
+  eine `22/tcp LIMIT`-Regel (v4/v6); `/etc/cron.d/` ohne `coder-bootcheck`,
+  Logrotate `coder-logs` ohne `coder-boot.log`; `backup.sh` RC 0,
+  `gzip -t` grün; die drei Wartungsskripte byte-identisch zu `scripts/`.
+  Veraltete Altstand-Dateien manuell entfernt (wie zuvor `ssh-harden.sh`):
+  `/opt/coder/{update,reset-passwords,boot-check}.sh`, `/opt/coder/domain`,
+  `/etc/cron.d/coder-bootcheck`.
+- **Zwei Feinfixes aus dem Lauf:** `check-tls.sh` unterdrückt den
+  `find`-Fehler für den noch nicht angelegten `certificates`-Ordner (auf
+  diesem Host normal, solange nie ein Zertifikat ausgestellt wurde – sonst
+  wöchentliches Rauschen im Log); Idempotenz-Hinweis: nach B10 erneuert
+  `install(1)` die mtime der drei Skripte bei jedem Lauf, der **Inhalt**
+  bleibt byte-identisch (Drift 0, Hashstore unverändert).
+- **Teststand (lokal, tatsächlich ausgeführt):** 10 Dateien, **267
+  `PASS`**, 0 `FAIL`; `bash -n` und `shellcheck -S warning` ohne Befund.
+  Offene Punkte unverändert aus dem Eintrag oben (DNS-API-Token, A9,
+  RTO/frische VM, Workspace-Homes).
 
 ---
 

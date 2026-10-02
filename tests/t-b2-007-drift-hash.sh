@@ -41,6 +41,13 @@ echo "INFO: write_managed=${N_MANAGED}"
 [ "${N_MANAGED}" -eq 13 ] && pass "alle 13 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 13)"
 grep -qF 'write_managed "${VERSIONS_FILE}"' "${SETUP}" && pass "versions.env nutzt ebenfalls write_managed" || fail "versions.env nutzt write_managed nicht"
 
+# A2-Live-Fix (2026-10-01): Temp ist per mktemp 600, promtool-Container läuft
+# als nobody – ohne chmod vor dem Validierer scheitert validate_prom_rules mit
+# permission denied (fail-closed, aber Lauf bricht ab).
+grep -qF 'chmod 644 -- "${MANAGED_TMP}"' "${SETUP}" \
+  && pass "Temp-Datei wird vor dem Validierer lesbar gemacht" \
+  || fail "chmod vor Validierer fehlt (mktemp 600 vs. nobody im promtool-Container)"
+
 nl_idx() { grep -nF "$1" "${SETUP}" | head -n1 | cut -d: -f1; }
 
 while IFS= read -r P; do

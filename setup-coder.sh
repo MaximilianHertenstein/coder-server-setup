@@ -243,6 +243,10 @@ write_managed() { # $1=Pfad $2=Modus $3=Drift-Label [$4=Validierer]; Inhalt via 
       ;;
   esac
   if [ -n "${validator}" ]; then
+    # mktemp legt 600 an; promtool laeuft im Container als nobody und darf die
+    # Temp-Datei dann nicht lesen (live gefunden 2026-10-01). Vor dem
+    # Validieren auf den spaeteren Endmodus heben, danach chmod "${mode}".
+    chmod 644 -- "${MANAGED_TMP}"
     if ! "${validator}" "${MANAGED_TMP}"; then
       echo "Fehler: Validierung fehlgeschlagen (${validator}): ${file} – Live-Datei bleibt unverändert, Lauf abgebrochen." >&2
       rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
