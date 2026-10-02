@@ -157,13 +157,12 @@ das Protokoll führen, nicht die Prüfung streichen.
 | Datenprobe ≠ `1` (0, >1, psql-Fehler) | leer, doppelt oder ohne Sonde gebackupt | Restore nicht anerkennen, Dump/Verfahren prüfen, Sonde vor dem nächsten Probe-Backup setzen |
 | Postgres nach `up -d` nicht `healthy` | Stack nicht hochgefahren | `docker logs coder-postgres`; Liveness zählt hier nichts, erst recht nicht ohne Datenprobe |
 | `/healthz` 200, aber Dashboard zeigt keine Bestandsdaten | falscher/leerer Inhalt | Prüfen, welcher Dump eingespielt wurde; Login-200 ist **keine** Bestätigung |
-| `.env` fehlt oder ist unvollständig | Zugangsdaten fehlen; ein SQL-Dump kann sie nicht liefern | Separat übertragene `.env`-Kopie verwenden, falls vorhanden; sonst Pfad B (Neuaufbau mit neuen Passwörtern). Eine lokale `.env.bak.*` hilft nur, wenn sie noch lesbar und separat verfügbar ist. |
+| `.env` fehlt oder ist unvollständig | Zugangsdaten fehlen; ein SQL-Dump kann sie nicht liefern | Separat übertragene `.env`-Kopie verwenden, falls vorhanden; sonst Pfad B (Neuaufbau mit neuen Passwörtern). |
 | Coder-Version neu als die des Dumps | Schema-Migration evtl. irreversibel | Nur auf gleiche/kleinere Version zurück; Major-Wechsel einzeln mit frischem Dump |
 | Kein/kein belastbares Backup vorhanden | kein Restore möglich | Offsite-Status prüfen ([README.md](README.md)); ehrlich als Datenverlust führen, nichts beschönigen |
 
-Wiederherstellungen im laufenden Betrieb (`reset-passwords.sh`,
-`reset-coder.sh`) sind **kein** Ersatz für diesen Ablauf – sie erzeugen
-keinen Datenstand aus einem Dump.
+Wiederherstellungen im laufenden Betrieb (`reset-coder.sh`) sind **kein**
+Ersatz für diesen Ablauf – sie erzeugen keinen Datenstand aus einem Dump.
 
 ## Coder-Migrationen / Workspace-Reste
 
@@ -201,10 +200,10 @@ gilt als bereit (sonst bricht der Import mitten in der Initialisierung ab).
 
 - [README.md](README.md) – Einstieg, Voraussetzungen, was nur auf Test-VM/Produktion zu prüfen ist
 - [OPERATIONS.md](OPERATIONS.md) – Backup-Steckbrief, Logs, Wartung
-- [SECURITY.md](SECURITY.md) – Secrets-Rotation (`.env`, `reset-passwords.sh`)
+- [SECURITY.md](SECURITY.md) – Secrets (`.env`, manuelle Grafana-Rotation)
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) – Abschnitt F (Restore-Fehlerbilder)
 - [CHANGELOG.md](CHANGELOG.md) – Stand dieser Datei und offene Punkte
 
 Diese Datei wird vom Setup nach `/opt/coder/RESTORE.md` kopiert
-(`B-008`), damit Verweise aus `update.sh` und `reset-coder.sh` auf dem
+(`B-008`), damit Verweise aus `setup-coder.sh` und `reset-coder.sh` auf dem
 Server auflösen. Quelle ist die Version im Repository.

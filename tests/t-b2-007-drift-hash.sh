@@ -1,7 +1,7 @@
 #!/bin/bash
 # T-026-Delta / B2-007: zentraler atomarer Schreibhelfer statt wiederholter
-# tee/chmod/hash-Sequenzen. Geprueft: alle 16 driftverwalteten Dateien nutzen
-# ihn, Drift kommt vor dem Austausch und der Hash danach; keine Schritt-10-Schleife.
+# tee/chmod/hash-Sequenzen. Geprueft: alle driftverwalteten Dateien nutzen
+# ihn, Drift kommt vor dem Austausch und der Hash danach; keine Schritt-8-Schleife.
 # Verhalten der ECHTEN note_drift-/remember_hash-Funktionen aus
 # setup-coder.sh (ausextrahiert, sudo-Shim, Hashstore in /tmp):
 #   (a) gruener Lauf -> keine WARN
@@ -24,25 +24,21 @@ trap 'rm -rf "${WORK}"' EXIT
 # --- 1. Struktur: verwaltete Dateien nutzen atomaren Schreibhelfer ----------
 EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/caddy/Caddyfile
-/opt/coder/prometheus/prometheus.yml
 /opt/coder/prometheus/rules/coder-alerts.yml
+/opt/coder/prometheus/prometheus.yml
+/opt/coder/grafana/provisioning/datasources/prometheus.yml
 /etc/fail2ban/jail.d/10-coder-sshd.local
 /etc/apt/apt.conf.d/52-coder-reboot
-/opt/coder/boot-check.sh
-/etc/cron.d/coder-bootcheck
 /opt/coder/check-tls.sh
 /etc/cron.d/coder-tlscheck
 /opt/coder/backup.sh
 /etc/cron.d/coder-backup
 /etc/logrotate.d/coder-backup
-/etc/logrotate.d/coder-logs
-/opt/coder/update.sh
-/opt/coder/reset-passwords.sh
-/opt/coder/reset-coder.sh"
+/etc/logrotate.d/coder-logs"
 
 N_MANAGED=$(grep -c '^write_managed "/' "${SETUP}")
 echo "INFO: write_managed=${N_MANAGED}"
-[ "${N_MANAGED}" -eq 19 ] && pass "alle 19 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 19)"
+[ "${N_MANAGED}" -eq 13 ] && pass "alle 13 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 13)"
 grep -qF 'write_managed "${VERSIONS_FILE}"' "${SETUP}" && pass "versions.env nutzt ebenfalls write_managed" || fail "versions.env nutzt write_managed nicht"
 
 nl_idx() { grep -nF "$1" "${SETUP}" | head -n1 | cut -d: -f1; }
@@ -191,15 +187,17 @@ grep -qF '[ -f /etc/fail2ban/jail.local ]; then' "${SETUP}" \
 grep -qF 'rm -f /etc/fail2ban/jail.local' "${SETUP}" \
   && fail "B7: vorgefundene jail.local wird noch entfernt (Operator-Datenverlust)" \
   || pass "B7: vorgefundene jail.local wird nicht entfernt"
+# B3/B13: forget_hash und die Hash-Vergleichs-Logik sind toter Code gewesen
+# (Jail-Bans liegen in fail2bans SQLite) und wurden entfernt.
 grep -qF 'forget_hash() {' "${SETUP}" \
-  && pass "B7: forget_hash vorhanden (kein Rest-Hash nach dem Loeschen)" \
-  || fail "B7: forget_hash fehlt"
+  && fail "B3: forget_hash ist noch im Setup (toter Code)" \
+  || pass "B3: kein forget_hash (toter Code entfernt)"
 grep -qF 'JAIL_CHANGED=1' "${SETUP}" \
   && fail "B7: JAIL_CHANGED-Flag ist noch im Setup (entfiel mit dem hash-guardierten Loeschen)" \
-  || pass "B7: kein JAIL_CHANGED-Flag (Reload rein hash-basiert, P-025)"
+  || pass "B7: kein JAIL_CHANGED-Flag"
 grep -qF '[ "${JAIL_BEFORE}" = "${JAIL_AFTER}" ]' "${SETUP}" \
-  && pass "B7: Reload-Entscheidung weiterhin hash-basiert (P-025)" \
-  || fail "B7: hash-basierte Reload-Entscheidung fehlt"
+  && fail "B13: hash-basierte Reload-Entscheidung ist noch im Setup (entfiel: Bans in SQLite)" \
+  || pass "B13: keine hash-basierte Reload-Entscheidung (enable --now + reload)"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-007: ALLE PRUEFUNGEN BESTANDEN"

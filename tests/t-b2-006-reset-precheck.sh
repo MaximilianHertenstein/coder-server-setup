@@ -24,10 +24,11 @@ cp "${REPO_ROOT}/scripts/reset-coder.sh" "${WORK}/reset-coder.sh" \
 LINES=$(wc -l < "${WORK}/reset-coder.sh")
 echo "INFO: scripts/reset-coder.sh = ${LINES} Zeilen"
 [ "${LINES}" -gt 50 ] || fail "reset-coder.sh zu kurz (nicht extrahierbar?)"
-if grep -qF 'scripts/reset-coder.sh' "${SETUP}"; then
-  pass "Setup installiert reset-coder.sh aus scripts/"
+# B10: das Setup kopiert alle scripts/*.sh (inkl. reset-coder.sh) per install.
+if grep -qF 'install -m 755 -t /opt/coder "${SETUP_DIR}"/scripts/*.sh' "${SETUP}"; then
+  pass "Setup installiert scripts/*.sh (inkl. reset-coder.sh) aus scripts/"
 else
-  fail "Setup installiert scripts/reset-coder.sh nicht"
+  fail "Setup installiert scripts/*.sh nicht"
 fi
 
 line_of() { grep -nF -- "$1" "${WORK}/reset-coder.sh" | head -n1 | cut -d: -f1; }

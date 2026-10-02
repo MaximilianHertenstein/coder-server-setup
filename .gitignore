@@ -1,23 +1,2 @@
-# Secrets / runtime configuration
-.env
-*.env
-
-# Backups
-backups/
-*.sql
-*.sql.gz
-
-# Logs
-*.log
-
-# Local/editor files
-.vscode/
-.idea/
-.DS_Store
-
-# Session-Exports
-session-*.md
-
-# Temporary files
-*.tmp
-*.swp
+# Betreiberwerte mit Admin-Adressen/Domain – niemals ins Repo:
+setup.conf

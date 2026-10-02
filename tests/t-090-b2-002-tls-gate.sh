@@ -1,12 +1,10 @@
 #!/bin/bash
-# T-090 / B2-002: TLS-SNI / Update-Gate / Boot-Gate.
+# T-090 / B2-002: TLS-SNI der Setup-Healthz-Proben (Schritt 8).
 # Beweist per echtem TLS-Handshake (kein awk-Only), dass:
-#  1. gesundes Update-Gate -> 200 / GRUEN (SNI-korrekte --resolve-Probe)
-#  2. gestoppter Coder -> ROT
-#  3. gesunder Boot -> BOOT-GATE GRUEN
-#  4. kranker Boot -> BOOT-GATE ROT
-#  5. TLS-SNI ist die Domain (nicht 127.0.0.1 / nicht leer)
-#  6. die Gate-Probe loest keinen 127.0.0.1-On-Demand-Versuch aus
+#  1. gesunde --resolve-Probe -> 200 / GRUEN (SNI-korrekt)
+#  2. gestoppter Server -> ROT
+#  3. TLS-SNI ist die Domain (nicht 127.0.0.1 / nicht leer)
+#  4. die Probe loest keinen 127.0.0.1-On-Demand-Versuch aus
 # Nur /tmp, keine Produktion, keine Secrets.
 set -euo pipefail
 
@@ -16,68 +14,44 @@ fail() { echo "FAIL: $1"; FAIL=1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETUP="${REPO_ROOT}/setup-coder.sh"
-BOOTGATE="${REPO_ROOT}/scripts/boot-check.sh"
-UPDGATE="${REPO_ROOT}/scripts/update.sh"
 DOMAIN="gate.test.local"
 
-# ---------- STATIK: Produktionszeilen in setup-coder.sh + Gate-Skripten ----
-if grep -qF 'scripts/boot-check.sh' "${SETUP}" && grep -qF 'scripts/update.sh' "${SETUP}"; then
-  pass "Setup installiert boot-check.sh und update.sh aus scripts/"
-else
-  fail "Setup installiert die Gate-Skripte nicht aus scripts/"
-fi
-# Boot-Gate: --resolve DOMAIN:443:127.0.0.1 + https://DOMAIN/healthz + max-time 10
-if grep -qF -- '--resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/healthz"' "${BOOTGATE}" \
-  && grep -qF -- 'curl -sS --max-time 10 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:443:127.0.0.1"' "${BOOTGATE}"; then
-  pass "Boot-Gate prüft TLS-Vertrauen und SNI (--resolve DOMAIN:443:127.0.0.1, max-time 10)"
-else
-  fail "Boot-Gate nicht SNI-korrekt"
-fi
-
-# Update-Gate: --resolve GATE_DOMAIN:443:127.0.0.1 + https://GATE_DOMAIN/healthz + max-time 60
-if grep -qF -- '--resolve "${GATE_DOMAIN}:443:127.0.0.1" "https://${GATE_DOMAIN}/healthz"' "${UPDGATE}" \
-  && grep -qF -- 'curl -sS --max-time 60 -o /dev/null -w "%{http_code}" --resolve "${GATE_DOMAIN}:443:127.0.0.1"' "${UPDGATE}"; then
-  pass "Update-Gate prüft TLS-Vertrauen und SNI (--resolve GATE_DOMAIN:443:127.0.0.1, max-time 60)"
-else
-  fail "Update-Gate nicht SNI-korrekt"
-fi
-
-if grep -qF 'curl -sk --max-time 10' "${SETUP}" "${BOOTGATE}" "${UPDGATE}" \
-  || grep -qF 'curl -sk --max-time 60' "${SETUP}" "${BOOTGATE}" "${UPDGATE}"; then
+# ---------- STATIK: Produktionszeilen in setup-coder.sh --------------------
+if grep -qF 'curl -sk --max-time 10' "${SETUP}" \
+  || grep -qF 'curl -sk --max-time 60' "${SETUP}"; then
   fail "Produktions-Smoke ignoriert TLS-Zertifikatsfehler weiterhin"
 else
   pass "Produktions-Smokes verlangen vertrauenswürdiges TLS-Zertifikat"
 fi
 
 # Nirgends SNI=127.0.0.1: kein https://127.0.0.1/healthz mehr
-if grep -qF -- 'https://127.0.0.1/healthz' "${SETUP}" "${BOOTGATE}" "${UPDGATE}"; then
+if grep -qF -- 'https://127.0.0.1/healthz' "${SETUP}"; then
   fail "SNI=127.0.0.1 noch vorhanden (https://127.0.0.1/healthz)"
 else
   pass "kein https://127.0.0.1/healthz mehr (kein SNI=127.0.0.1)"
 fi
 
 # Kein Host-Header-Trick gegen 127.0.0.1 mehr
-if grep -qF -- '-H "Host: ${DOMAIN}" "https://127.0.0.1' "${SETUP}" "${BOOTGATE}" "${UPDGATE}" \
-  || grep -qF -- '-H "Host: ${GATE_DOMAIN}" "https://127.0.0.1' "${SETUP}" "${BOOTGATE}" "${UPDGATE}"; then
+if grep -qF -- '-H "Host: ${DOMAIN}" "https://127.0.0.1' "${SETUP}"; then
   fail "Host-Header gegen 127.0.0.1 noch vorhanden"
 else
   pass "kein Host-Header gegen 127.0.0.1 mehr"
 fi
 
-# Schritt 10 (A7): getrennte lokale und oeffentliche Probe. Lokal MIT
+# Schritt 8 (A7): getrennte lokale und oeffentliche Probe. Lokal MIT
 # --resolve (127.0.0.1, unabhaengig von DNS/Hairpin) + Retry, oeffentlich
 # OHNE --resolve (echter DNS-Weg, ein Versuch). Beide Pfade muessen existieren.
 if grep -qF -- '--resolve "${DOMAIN_CODER}:443:127.0.0.1" "https://${DOMAIN_CODER}/healthz"' "${SETUP}" \
   && grep -qF -- '--max-time 10' "${SETUP}" \
   && grep -qF -- 'while [ "${_try}" -lt 6 ]' "${SETUP}"; then
-  pass "Schritt 10 A7: lokaler Pfad mit --resolve und Retry (6x max-time 10)"
+  pass "Schritt 8 A7: lokaler Pfad mit --resolve und Retry (6x max-time 10)"
 else
-  fail "Schritt 10: lokaler Retry-Pfad mit --resolve fehlt"
+  fail "Schritt 8: lokaler Retry-Pfad mit --resolve fehlt"
 fi
 if grep -qF 'PUB_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://${DOMAIN_CODER}/healthz"' "${SETUP}"; then
-  pass "Schritt 10 A7: oeffentlicher Pfad ohne --resolve (1 Versuch, echter DNS-Weg)"
+  pass "Schritt 8 A7: oeffentlicher Pfad ohne --resolve (1 Versuch, echter DNS-Weg)"
 else
-  fail "Schritt 10: oeffentlicher Pfad ohne --resolve fehlt"
+  fail "Schritt 8: oeffentlicher Pfad ohne --resolve fehlt"
 fi
 
 # Boot-Poll-Schleife erhalten (30x, bestehende Semantik)
@@ -160,23 +134,23 @@ fi
 # Frisches SNI-Log nur fuer die neuen Proben (On-Demand-Nachweis).
 : > "${WORK}/sni.log"
 
-# L-NEU-UPDATE (Test 1): --resolve-Mechanik wie Update-Gate -> 200 / GRUEN.
+# L-NEU-LOKAL (Test 1): --resolve-Mechanik wie die lokale Setup-Probe -> 200 / GRUEN.
 # Port ist Testport statt 443; --resolve-Semantik (SNI+Host=Domain, lokal) identisch.
 NEW_CODE="$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:${PORT}:127.0.0.1" "https://${DOMAIN}:${PORT}/healthz" 2>/dev/null || true)"
 [ -n "${NEW_CODE}" ] || NEW_CODE="000"
 if [ "${NEW_CODE}" = "200" ]; then
-  pass "Update-Gate gesund -> 200 / GRUEN (code=${NEW_CODE})"
+  pass "lokale Probe gesund -> 200 / GRUEN (code=${NEW_CODE})"
 else
-  fail "Update-Gate gesund liefert ${NEW_CODE} statt 200"
+  fail "lokale Probe gesund liefert ${NEW_CODE} statt 200"
 fi
 
-# L-NEU-BOOT (Test 3): gleiche Mechanik wie Boot-Gate (max-time 10, Loop-Einzelprobe) -> 200.
+# L-NEU-BOOT (Test 3): gleiche Mechanik wie die Setup-Boot-Poll-Einzelprobe (max-time 10) -> 200.
 BOOT_CODE="$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:${PORT}:127.0.0.1" "https://${DOMAIN}:${PORT}/healthz" 2>/dev/null || true)"
 [ -n "${BOOT_CODE}" ] || BOOT_CODE="000"
 if [ "${BOOT_CODE}" = "200" ]; then
-  pass "Boot-Gate gesund -> BOOT-GATE GRUEN (code=${BOOT_CODE})"
+  pass "Boot-Poll-Einzelprobe gesund -> GRUEN (code=${BOOT_CODE})"
 else
-  fail "Boot-Gate gesund liefert ${BOOT_CODE} statt 200"
+  fail "Boot-Poll-Einzelprobe gesund liefert ${BOOT_CODE} statt 200"
 fi
 
 # Test 5: SNI muss Domain sein.
@@ -186,11 +160,11 @@ else
   fail "TLS-SNI ist nicht Domain (Log: $(tr '\n' ' ' < "${WORK}/sni.log"))"
 fi
 
-# Test 6: kein 127.0.0.1-SNI durch die neuen Gate-Proben (kein On-Demand-Versuch).
+# Test 6: kein 127.0.0.1-SNI durch die neuen Proben (kein On-Demand-Versuch).
 if grep -qxF "127.0.0.1" "${WORK}/sni.log"; then
-  fail "127.0.0.1-SNI durch Gate-Probe (On-Demand-Versuch)"
+  fail "127.0.0.1-SNI durch Probe (On-Demand-Versuch)"
 else
-  pass "kein 127.0.0.1-SNI durch Gate-Proben (Log: $(tr '\n' ' ' < "${WORK}/sni.log"))"
+  pass "kein 127.0.0.1-SNI durch Proben (Log: $(tr '\n' ' ' < "${WORK}/sni.log"))"
 fi
 
 # OpenSSL-Gegenprobe: Domain-SNI liefert Zertifikat, IP-SNI wird abgewiesen (Alert 112).
@@ -209,23 +183,23 @@ else
   fail "openssl IP-SNI nicht abgewiesen"
 fi
 
-# Tests 2+4: kranker Zustand (Server gestoppt) -> ROT fuer Update- und Boot-Gate.
+# Tests 2+4: kranker Zustand (Server gestoppt) -> ROT fuer lokale Probe und Boot-Poll.
 kill "${SRV_PID}" 2>/dev/null || true
 SRV_PID=""
 sleep 0.5
 DEAD_CODE="$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:${PORT}:127.0.0.1" "https://${DOMAIN}:${PORT}/healthz" 2>/dev/null || true)"
 [ -n "${DEAD_CODE}" ] || DEAD_CODE="000"
 if [ "${DEAD_CODE}" != "200" ]; then
-  pass "Update-Gate krank -> ROT (code=${DEAD_CODE})"
+  pass "lokale Probe krank -> ROT (code=${DEAD_CODE})"
 else
-  fail "Update-Gate krank liefert 200"
+  fail "lokale Probe krank liefert 200"
 fi
 DEAD_BOOT="$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" --resolve "${DOMAIN}:${PORT}:127.0.0.1" "https://${DOMAIN}:${PORT}/healthz" 2>/dev/null || true)"
 [ -n "${DEAD_BOOT}" ] || DEAD_BOOT="000"
 if [ "${DEAD_BOOT}" != "200" ]; then
-  pass "Boot-Gate krank -> BOOT-GATE ROT (code=${DEAD_BOOT})"
+  pass "Boot-Poll-Einzelprobe krank -> ROT (code=${DEAD_BOOT})"
 else
-  fail "Boot-Gate krank liefert 200"
+  fail "Boot-Poll-Einzelprobe krank liefert 200"
 fi
 
 if [ "${FAIL}" -eq 0 ]; then

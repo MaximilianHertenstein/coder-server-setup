@@ -1,15 +1,16 @@
 #!/bin/bash
 # Tägliches Postgres-Backup (F-005/F-008/F-009, mit P-013/P-017-Korrekturen).
-# Aufruf: /opt/coder/backup.sh (direkt, per Cron oder aus update.sh).
+# Aufruf: /opt/coder/backup.sh (direkt, per Cron, aus dem Setup-Pre-Upgrade-
+# bzw. Test-Lauf oder aus reset-coder.sh).
 # Gleichzeitige Läufe werden per flock serialisiert: der zweite Lauf WARTET
 # bis zu 300 s und fertigt danach ein eigenes Backup an, statt die Datei des
 # ersten per ">" zu trunkieren (F-009). Läuft der Vorgänger länger, gibt es
 # Exit 75 (EX_TEMPFAIL) statt des alten Exit 0.
-# A3: Exit 0 war der Fehler – update.sh, reset-passwords.sh und
-# reset-coder.sh behandelten "übersprungen" als Erfolg und zogen ihr Update/
-# ihren Reset trotz fehlendem Backup weiter durch. Alle drei Aufrufer
-# behandeln ≠0 bereits korrekt (set -e bzw. BACKUP_OK=false), daher ist die
-# Codeänderung hier lokal und die Caller bleiben unverändert.
+# A3: Exit 0 war der Fehler – "übersprungen" wurde als Erfolg gewertet und
+# ein Update/Reset lief trotz fehlendem Backup weiter. Heute liefern alle
+# Ausstiege (Lock-Timeout, Wartungs-Lock, Postgres nicht bereit) ≠0; die
+# Aufrufer (Setup, reset-coder.sh) brechen bei ≠0 mit set -e bzw. eigener
+# Prüfung korrekt ab.
 # Der gemeinsame Lock unten verhindert, dass ein eigenständiges Backup mit
 # Update, Passwortwechsel oder Reset überlappt. pg_dump selbst liefert zudem
 # einen konsistenten Snapshot.
@@ -40,7 +41,7 @@ if [ "${CODER_MAINTENANCE_LOCK_HELD:-}" != "1" ]; then
   export CODER_MAINTENANCE_LOCK_HELD=1
 fi
 
-# Zusätzlicher Selbst-Lock (.backup.lock, B-001): schützt Cron-, update.sh-
+# Zusätzlicher Selbst-Lock (.backup.lock, B-001): schützt Cron-, Setup-
 # Pre-Backup- und manuelle Läufe gemeinsam. Der Wartungs-Lock oben verhindert
 # zusätzlich Kollisionen mit verändernden Abläufen. Die Cron-Zeile enthält bewusst
 # KEIN äußeres flock auf derselben Datei (würde den inneren Lauf bis zum
@@ -56,7 +57,7 @@ if ! flock -w 300 9; then
     logger -t coder-backup "Lock-Timeout nach 300 s, KEIN gültiges Backup vorhanden" || true
   fi
   # 75 = EX_TEMPFAIL: kein Erfolg, kein Datenverlust – aber die Aufrufer
-  # (update.sh/reset-passwords.sh/reset-coder.sh) sollen EXPLIZIT abbrechen.
+  # (Setup, reset-coder.sh) sollen EXPLIZIT abbrechen.
   exit 75
 fi
 

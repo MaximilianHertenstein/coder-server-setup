@@ -1,0 +1,20 @@
+# Persistente Betreiberwerte für setup-coder.sh.
+# Kopie anlegen mit:  cp setup.conf.example setup.conf  (setup.conf ist gitignored)
+#
+# Vorrang: Umgebungsvariable (aktueller Lauf) > setup.conf > eingebauter Default.
+# Gelesen werden NUR diese vier Schlüssel; Syntax: SCHLUESSEL=Wert, Kommentare
+# mit #, keine Anführungszeichen, kein führendes Leerzeichen nach dem "=".
+#
+# Domain des Coder-Servers (Default: coder.ghse-unterricht.de):
+#DOMAIN_CODER=coder.ghse-unterricht.de
+#
+# Kontakt-Adresse für Let's Encrypt (Default: hert@ghse.de):
+#ACME_EMAIL=name@beispiel.de
+#
+# Eigene ACME-CA-URL, falls je erforderlich (Default: leer = Let's Encrypt):
+#ACME_CA=
+#
+# Adressen/Netze, die fail2ban NIE sperren darf (geteilte Schul-NAT:
+# ein Tippfehler sperrt sonst die gemeinsame Quell-IP). Nur Admin-Plätze
+# eintragen, nicht das ganze Schülernetz. Default: 127.0.0.1/8 ::1
+#FAIL2BAN_IGNORE_IP=127.0.0.1/8 ::1

@@ -27,7 +27,8 @@ ACME_EMAIL="admin@example.test"
 ACME_CA=""
 
 # --- 1. Heredoc extrahieren und rendern -------------------------------------
-L_START="$(grep -nF 'write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" <<EOF' "${SETUP}" | cut -d: -f1 || true)"
+# A2: die Write-Zeile traegt optional den Validierer validate_caddyfile vor <<EOF.
+L_START="$(grep -nF 'write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile"' "${SETUP}" | cut -d: -f1 || true)"
 if [ -n "${L_START}" ]; then
   L_END="$(awk -v s="${L_START}" 'NR>s && $0=="EOF" {print NR; exit}' "${SETUP}" || true)"
 else

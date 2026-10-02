@@ -9,12 +9,80 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-01 · Basisstand dieses Eintrags: `bc05da2` auf `main`.
+Stand: 2026-10-01 · Basisstand dieses Eintrags: `bdd5a86` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
 
-## 2026-10-01 – Extraktion live verifiziert, Exec-Bit von setup-coder.sh repariert
+## 2026-10-01 – Review-Runde A1–A12/B1–B21: Setup-Prüfungen gestärkt, tote Wartungsskripte entfernt, Doku synchron
+
+- **Umfang:** Umsetzung der externen Review-Liste (Bewertung je Punkt,
+  Umsetzung oder dokumentierte Ablehnung). Satz „Basisstand bis zur
+  expliziten Freigabe" blieb gilt: alles lokal committet, kein Push, kein
+  Eingriff auf Produktion.
+- **Umgesetzt (Setup/Code):** A2 – `write_managed` validiert die Temp-Datei
+  vor dem `mv` (`validate_compose|caddyfile|prom_rules|prom_config`),
+  `docker compose pull` (retry 3) direkt nach dem Compose-Schreiben in
+  Schritt 2, Post-Start-Validierungen entfallen (Caddy: nur noch `reload`).
+  A4 – Erstpasswort interaktiv per `read -rs` abfragen (TTY + Variable leer;
+  niemals als Argument). A5 – `setup.conf` mit Parser vor den Defaults,
+  Allowlist (`DOMAIN_CODER|ACME_EMAIL|ACME_CA|FAIL2BAN_IGNORE_IP`),
+  Vorrang Env > setup.conf > Default, `setup.conf.example`, `.gitignore`.
+  A6 – `scripts/check-tls.sh` komplett neu: zählt `*.crt` mit `mtime -7`
+  im `caddy_data`-Volume statt `docker logs`, exportiert
+  `coder_tls_issuances_7d` + `coder_tls_check_last_success_timestamp_seconds`
+  atomar; Alert `TlsLogTruncated` und Metriken `coder_tls_log_*` entfallen
+  (Regelwerk: 5 statt 6). A7 – `.env` per `install`/`chown`/`chmod`,
+  Kommentarkorrekturen (80/443, Backup 01:00, `${VERSION_CODENAME}`,
+  Passwort-Hinweis als `echo` statt leerem `else`), A7c als Kommentarfehler
+  korrigiert. A8 – `CODER_PROXY_TRUSTED_HEADERS`/`_ORIGINS` (172.16.0.0/12,
+  127.0.0.1/8) gesetzt. A10 – `sshd`-Binary- und `sshd -T`-Port-Check im
+  Preflight vor Schritt 1. B3 – `forget_hash` und hashbasierte
+  Reload-Entscheidung entfernt; B9 – `iproute2` und drittes
+  `apt-get update` entfallen; B10/B21 – Skript-Copy als eine
+  `install -m 755 -t /opt/coder`-Zeile (Schritt 7), Test-Backup nur ohne
+  vorhandenen Dump; B11 – ufw-Pfad neu: alte `allow 22/tcp`-Weltregeln
+  entfernen, Quellregeln bleiben unangetastet, Abschluss mit
+  `ufw limit 22/tcp` (Entscheidung Q1: Quellbeschränkung bleibt allein der
+  Netzvorgabe überlassen); B12c – Docker-Origin-Check entfernt; B13 –
+  `systemctl enable --now fail2ban` + reload-retry, ein einziger
+  Abschluss-Check (Bans liegen in SQLite, kein Jail-Restart nötig); B16 –
+  Bash-n-Prüfung eingebaut; Schritt-Nummerierung 10 → 8 (`[1/8]`…`[8/8]`).
+- **Entfernt (Q4 „alle vier"):** B5 `scripts/update.sh`, B7
+  `scripts/reset-passwords.sh`, B8 `scripts/boot-check.sh`, B19
+  `ssh-harden.sh` samt `tests/t-b2-010-boot-gate-health.sh` und
+  `/opt/coder/domain`-Schreibblock; Cron `coder-bootcheck`,
+  `@reboot`-Gate und Logrotate-Zeile `coder-boot.log` entfallen. Ersatz in
+  der Doku: Update = Pin-Änderung + erneuter Setup-Lauf (OPERATIONS §7),
+  Grafana-Rotation manuell (OPERATIONS §7), SSH-Nachhärtung als
+  10-Zeilen-Drop-In `00-coder-hardening.conf` (SECURITY §1), Wiederanlauf
+  nach Reboot per `docker ps`/`/healthz`.
+- **Abgelehnt (mit Grund):** A1 (Limit 50/Zertifikats-Woche bleibt,
+  Warnung ab 20; DNS-01 = offener Punkt mit Owner + DNS-API-Token), A3,
+  A11, A12, B1, B3-Kern (Drift-System bleibt), B4, B6, B12a/b, B14-SighUP
+  und Hash-Subpunkt, B15, B16a, B17, B18, B20, D-Monitoring (B5:
+  Client-IPs bleiben aus dem Audit).
+- **Doku:** README (Schritte-Tabelle 8 Zeilen, Setup.conf, Testszahlen,
+  offene Punkte: DNS-API-Token- Anfrage und A9-Hairpin-Test mit Owner),
+  OPERATIONS (§1/§2 Dateiliste, §3 setup.conf, §5/§6 Metriken und Logs,
+  §7 Update/Rotation/Reboot, §8 Lock, §9 Cron, §10 Tests, §11 Abnahme),
+  SECURITY (§1 Drop-In statt Skript, §2 Rotation, §3/§7–§9 dateibasierte
+  Zählung, D-TLS/D-SSH-Zeilen), TROUBLESHOOTING (§0, A3, A4, A9, B3, B4,
+  C1, C3, C4, D, F, G2), RESTORE (Verweise).
+- **Teststand (lokal, 2026-10-01, tatsächlich ausgeführt):** 10 Dateien in
+  `tests/`, 266 `PASS`, 0 `FAIL`, alle Exit 0; `bash -n setup-coder.sh
+  scripts/*.sh tests/*.sh` ohne Befund; `shellcheck -S warning` derselben
+  Dateien ohne Befund. Neu geschrieben: `t-b2-003` (Setup-Guards +
+  A4-Live-Test), `t-b2-004` (B11-Regelpfad mit Fake-ufw),
+  `t-b2-005` (dateibasierte TLS-Zählung, kein `docker logs`-Code);
+  angepasst: `t-090`, `t-b2-006`, `t-b2-007`, `t-b1`; gelöscht:
+  `t-b2-010`. Kein VM-/Produktionslauf in dieser Runde.
+- **Offene Punkte:** DNS-API-Token für DNS-01 beim Netzwerkadmin anfragen
+  (Betreiber, OPERATIONS §11 Zeile 6); A9-Test (Test-Workspace +
+  Port-Forwarding vom Schulnetz aus, OPERATIONS §11 Abnahme); RTO inkl.
+  VM-Boot und `/healthz` unter echtem DNS (braucht frische VM/DNS);
+  Workspace-Homes: Verlust deklarieren oder eigene Volume-Sicherung
+  (RESTORE.md).
 
 - **Live-Prüfung der Skript-Extraktion (Test-Host `2.29.11.30`, keine
   Produktion):** Stand `bc05da2` per rsync eingespielt. Re-Run RC 0 in

@@ -6,8 +6,10 @@
 # Aufruf als root (ohne root bricht das Skript vor jeder Änderung ab):
 #   chmod +x setup-coder.sh
 #   sudo ./setup-coder.sh
-# Umgebungsvariablen gehören hinter das sudo (siehe OPERATIONS.md):
-#   sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh
+# Persistente Werte (Domain, ACME-Mail, fail2ban-Admin-IP) in setup.conf
+# ablegen (Vorlage: setup.conf.example, gitignored) – die überlebt Re-Runs.
+# Für einen Lauf gilt weiterhin: sudo env DOMAIN_CODER=… ./setup-coder.sh
+# (Umgebung schlägt setup.conf, setup.conf schlägt den Default).
 #
 # Mehrfach ausführbar (idempotent): bei Abbruch, fehlendem DNS oder fehlender
 # Portweiterleitung einfach erneut laufen lassen; fehlendes DNS meldet der
@@ -37,7 +39,8 @@ SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # das sudo: sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh
 if [ "$(id -u)" -ne 0 ]; then
   echo "Fehler: dieses Setup muss als root laufen – Aufruf: sudo ./setup-coder.sh" >&2
-  echo "Umgebungsvariablen gehören nach das sudo, sonst greifen die Defaults:" >&2
+  echo "Betreiberwerte dauerhaft in setup.conf eintragen (Vorlage: setup.conf.example);" >&2
+  echo " für einen Lauf gehören Variablen hinter das sudo, sonst greifen die Defaults:" >&2
   echo "  sudo env DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh" >&2
   exit 1
 fi
@@ -83,17 +86,28 @@ fi
 export CODER_MAINTENANCE_LOCK_HELD=1
 trap setup_cleanup EXIT
 
-# Wo das Skript selbst liegt – JETZT merken, vor jedem cd. Schritt 2 geht nach
-# /opt/coder; würde der Runbook-Check in Schritt 6 seinen Pfad erst dort aus
-# "dirname $0" (relativ, also ".") berechnen, suchte er RESTORE.md in
-# /opt/coder und meldete ihn jedes Mal als fehlend, obwohl er daneben liegt.
-SCRIPT_SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
-
 # Alle Werte lassen sich beim Aufruf per Umgebungsvariable überschreiben,
 # ohne diese Datei zu ändern, z.B.:
 #   DOMAIN_CODER=andere-domain.de ./setup-coder.sh
-# ":=" setzt den Default nur, wenn die Variable noch nicht (von außen) gesetzt
-# wurde.
+# A5: Persistente Betreiberwerte aus setup.conf (neben dem Skript, gitignored).
+# Ohne sie würde ein späterer Re-Run ohne "sudo env ..." die Defaults zurück-
+# setzen – z.B. die Admin-IP aus fail2ban ignorip. Vorrang:
+#   Umgebungsvariable (aktueller Lauf) > setup.conf > eingebauter Default.
+# Nur die vier freigegebenen Schlüssel werden gelesen, alles andere (auch
+# Syntaxfehler) überschreibt nichts und bricht den Lauf nicht ab.
+if [ -f "${SETUP_DIR}/setup.conf" ]; then
+  while IFS='=' read -r _sk _sv || [ -n "${_sk}" ]; do
+    case "${_sk}" in ''|\#*) continue ;; esac
+    case "${_sk}" in
+      DOMAIN_CODER)       [ -n "${DOMAIN_CODER+x}" ] || DOMAIN_CODER="${_sv}" ;;
+      ACME_EMAIL)         [ -n "${ACME_EMAIL+x}" ] || ACME_EMAIL="${_sv}" ;;
+      ACME_CA)            [ -n "${ACME_CA+x}" ] || ACME_CA="${_sv}" ;;
+      FAIL2BAN_IGNORE_IP) [ -n "${FAIL2BAN_IGNORE_IP+x}" ] || FAIL2BAN_IGNORE_IP="${_sv}" ;;
+    esac
+  done < "${SETUP_DIR}/setup.conf"
+fi
+# ":=" setzt den Default nur, wenn die Variable noch nicht (von außen oder
+# über setup.conf) gesetzt wurde.
 : "${DOMAIN_CODER:=coder.ghse-unterricht.de}"
 : "${ACME_EMAIL:=hert@ghse.de}"
 # Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt, CADDY bewusst nur
@@ -197,16 +211,6 @@ remember_hash() {
   mv "${HASHSTORE}.tmp" "${HASHSTORE}"
   chmod 600 "${HASHSTORE}"
 }
-# B7: Gegenstück, wenn das Skript eine Datei selbst wieder entfernt (alte
-# jail.local). Ohne diesen Aufruf bliebe der Hash der gelöschten Datei im
-# Store und der Folgelauf meldete Operator-Drift für eine eigene Residuen.
-forget_hash() {
-  local file="$1"
-  [ -f "${HASHSTORE}" ] || return 0
-  awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | tee "${HASHSTORE}.tmp" > /dev/null || true
-  mv "${HASHSTORE}.tmp" "${HASHSTORE}"
-  chmod 600 "${HASHSTORE}"
-}
 
 # Atomar eine vom Setup verwaltete Datei schreiben. Die temporäre Datei liegt
 # im Zielverzeichnis, damit mv dieselbe Dateisystem-Grenze nicht überschreitet.
@@ -214,8 +218,12 @@ forget_hash() {
 # unnötige Reloads und schützt laufende Leser. Modus und Hash werden trotzdem
 # nachgezogen. MANAGED_TMP wird vom EXIT-Cleanup entfernt, falls der Lauf vor
 # dem mv abbricht.
-write_managed() { # $1=Pfad $2=Modus $3=Drift-Label; Inhalt via stdin
-  local file="$1" mode="$2" label="$3" dir base
+# A2: Optionaler Validierer ($4, Funktionsname) läuft auf der TEMP-Datei, VOR
+# dem Austausch der Live-Datei. Bei Fehlschlag bleibt die vorhandene Datei
+# unangetastet und der Lauf bricht ab – eine ungültige Konfiguration landet
+# damit nie auf der Platte und könnte den nächsten Reboot nicht überleben.
+write_managed() { # $1=Pfad $2=Modus $3=Drift-Label [$4=Validierer]; Inhalt via stdin
+  local file="$1" mode="$2" label="$3" validator="${4:-}" dir base
   dir="${file%/*}"
   base="${file##*/}"
   MANAGED_TMP=$(mktemp "${dir}/.${base}.tmp.XXXXXX")
@@ -234,6 +242,14 @@ write_managed() { # $1=Pfad $2=Modus $3=Drift-Label; Inhalt via stdin
       fi
       ;;
   esac
+  if [ -n "${validator}" ]; then
+    if ! "${validator}" "${MANAGED_TMP}"; then
+      echo "Fehler: Validierung fehlgeschlagen (${validator}): ${file} – Live-Datei bleibt unverändert, Lauf abgebrochen." >&2
+      rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
+      MANAGED_TMP=""
+      return 1
+    fi
+  fi
   chmod "${mode}" "${MANAGED_TMP}"
   if [ "${label}" != "-" ]; then
     note_drift "${file}" "${label}"
@@ -269,13 +285,61 @@ retry3() {
   done
 }
 
+# A2: Validierer für write_managed – prüfen die TEMP-Datei (Pfad $1), bevor die
+# Live-Datei ausgetauscht wird. Die caddy-/promtool-Präfixe brauchen die
+# Images, deshalb wird vor dem Schreiben dieser Dateien gepullt (siehe unten).
+# caddy:2.10 hat KEINEN ENTRYPOINT (nur CMD ["caddy","run",...]) – ohne
+# --entrypoint würde "validate" selbst als Binary ausgeführt und scheitern
+# mit 'executable file not found in $PATH'.
+validate_compose() {
+  docker compose -f "$1" config --quiet
+}
+validate_caddyfile() {
+  docker run --rm --entrypoint caddy -v /opt/coder/caddy:/etc/caddy:ro "caddy:${CADDY_VERSION}" \
+    validate --config "/etc/caddy/$(basename "$1")" --adapter caddyfile
+}
+validate_prom_rules() {
+  docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" \
+    check rules "/etc/prometheus/rules/$(basename "$1")"
+}
+validate_prom_config() {
+  docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" \
+    check config "/etc/prometheus/$(basename "$1")"
+}
+
+# A10: Alle SSH-Vorbedingungen HIER, vor Docker-Installation und Stack-Start.
+# Die Firewall-Regel unten ist fest auf "22/tcp"; lauscht sshd auf einem
+# anderen Port, würde "ufw enable" den eigenen Zugang abschneiden – deshalb
+# hart abbrechen, bevor irgendetwas installiert oder verändert wird
+# (Zugriff dann nur noch über Konsolenzugang des Hosts).
+if ! command -v sshd > /dev/null 2>&1; then
+  echo "Fehler: sshd nicht gefunden – openssh-server fehlt; ohne SSH-Zugang würde die Firewall-Änderung den Host absperren." >&2
+  echo "openssh-server installieren (apt install openssh-server), dann Setup erneut." >&2
+  exit 1
+fi
+if ! SSHD_EFFECTIVE_CONFIG="$(sshd -T 2>/dev/null)"; then
+  echo "Fehler: sshd-Konfiguration konnte nicht gelesen werden – Abbruch vor jeder Serveränderung." >&2
+  exit 1
+fi
+SSHD_PORTS="$(printf '%s\n' "${SSHD_EFFECTIVE_CONFIG}" | awk '/^port /{print $2}' | sort -u | xargs echo 2>/dev/null || true)"
+if [ -z "${SSHD_PORTS}" ]; then
+  echo "Fehler: sshd -T lieferte keinen Port – Abbruch vor jeder Serveränderung." >&2
+  exit 1
+fi
+if [ "${SSHD_PORTS}" != "22" ]; then
+  echo "Fehler: sshd lauscht auf Port '${SSHD_PORTS}', dieses Skript erlaubt aber nur 22/tcp." >&2
+  echo "Abbruch vor jeder Serveränderung – sonst würde 'ufw enable' den SSH-Zugang schneiden." >&2
+  echo "Port in setup-coder.sh anpassen (Suchbegriff: 'ufw limit 22/tcp') und erneut ausführen." >&2
+  exit 1
+fi
+
 echo "############################################################"
-echo "# [1/10] Docker Engine installieren"
+echo "# [1/8] Docker Engine installieren"
 echo "############################################################"
 # C1: Alle Cron-Zeiten dieses Skripts (Backup 01:00, Reboot 03:00, TLS-Check
-# Mo 06:30) gelten in LOCALTIME. Neue VMs laufen oft auf UTC, dann schlägt das
-# Backup um 03:00 Berlin an (Sommerzeit 04:00) und der Reboot mitten in der
-# Nacht. Explizit setzen statt raten; idempotenter No-Op, wenn schon Berlin.
+# Mo 06:30) gelten in LOCALTIME. Neue VMs laufen oft auf UTC, dann läuft das
+# Backup um 03:00 statt 01:00 Berlin und der Reboot mitten in der Nacht.
+# Explizit setzen statt raten; idempotenter No-Op, wenn schon Berlin.
 if command -v timedatectl >/dev/null 2>&1; then
   _tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
   if [ "${_tz}" != "Europe/Berlin" ]; then
@@ -297,7 +361,7 @@ apt_install() {
     -o Dpkg::Options::=--force-confold "$@"
 }
 retry3 apt-get update
-apt_install ca-certificates curl gnupg openssl cron logrotate iproute2
+apt_install ca-certificates curl gnupg openssl cron logrotate
 install -m 0755 -d /etc/apt/keyrings
 # --batch --yes: existiert die Datei bereits (jeder zweite Lauf), fragt gpg
 # beim Überschreiben per /dev/tty nach – ohne TTY (ssh ohne -t, nohup) kommt
@@ -318,7 +382,7 @@ fi
 
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  ${VERSION_CODENAME} stable" | \
   tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 retry3 apt-get update
@@ -381,8 +445,8 @@ fi
 # pipefail würde einen fehlenden Group-Eintrag sonst als stillen Abbruch ohne
 # Meldung beenden (cut läuft trotzdem, Pipeline-Status != 0) – hier laut.
 DOCKER_GID=$(getent group docker | cut -d: -f3 || true)
-if [ -z "${DOCKER_GID}" ]; then
-  echo "Fehler: Gruppe 'docker' nicht gefunden – Docker-Installation prüfen (groupadd docker)." >&2
+if ! [[ "${DOCKER_GID:-}" =~ ^[0-9]+$ ]]; then
+  echo "Fehler: docker-GID nicht ermittelt oder keine Zahl (getent group docker lieferte '${DOCKER_GID:-leer}'). .env wird nicht angefasst." >&2
   exit 1
 fi
 
@@ -391,7 +455,7 @@ fi
 # sudo usermod -aG docker "$USER"
 
 echo "############################################################"
-echo "# [2/10] Verzeichnis und Konfigurationsdateien anlegen"
+echo "# [2/8] Verzeichnis und Konfigurationsdateien anlegen"
 echo "############################################################"
 mkdir -p /opt/coder/backups
 chmod 700 /opt/coder/backups
@@ -399,16 +463,11 @@ cd /opt/coder
 
 # Geheimnisse nur beim ersten Lauf erzeugen, damit ein erneutes Ausführen
 # des Skripts nicht die bestehende Datenbank-Anmeldung zerstört.
-# F-006 (mit P-010/P-011): atomar schreiben ohne 644-Fenster, vorhandene
+# F-006 (mit P-011): atomar über Temp-Datei schreiben, vorhandene
 # .env auf Vollständigkeit prüfen. Eine unvollständige .env wird NIEMALS
 # still neu gewürfelt (das würde die DB-Anmeldung zerstören) – stattdessen
-# Abbruch mit Reparaturanleitung. P-010: "umask 077" in dieser Shell wirkt
-# nicht durch "tee" hindurch (tee läuft mit root-umask),
-# daher "install -m 600" vor dem Schreiben.
-if ! [[ "${DOCKER_GID:-}" =~ ^[0-9]+$ ]]; then
-  echo "Fehler: docker-GID konnte nicht ermittelt werden (getent group docker lieferte '${DOCKER_GID:-leer}'). .env wird nicht angefasst." >&2
-  exit 1
-fi
+# Abbruch mit Reparaturanleitung. mktemp legt die Temp-Datei als 0600 an
+# (root-owned) – kein zusätzliches install/chown/chmod nötig.
 if [ ! -f /opt/coder/.env ]; then
   # A5/P-011: fehlt die .env NUR teilweise, bricht das Skript unten ab. Fehlt
   # sie ganz, würde dieser Zweig frische Passwörter würfeln, während
@@ -432,16 +491,10 @@ if [ ! -f /opt/coder/.env ]; then
   GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)
 
   ENV_TMP=$(mktemp /opt/coder/.env.tmp.XXXXXX)
-  # 600 VOR dem Schreiben festlegen: tee kürzt nur, erzeugt nicht neu,
-  # der Modus bleibt also 600 – kein 644-Fenster (P-010).
-  install -m 600 /dev/null "$ENV_TMP"
-  chown root:root "$ENV_TMP"
   tee "$ENV_TMP" > /dev/null <<EOF
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
 EOF
-  chown root:root "$ENV_TMP"
-  chmod 600 "$ENV_TMP"
   mv "$ENV_TMP" /opt/coder/.env
   ENV_TMP=""
 
@@ -463,9 +516,10 @@ elif grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
     exit 1
   fi
   # B-014/B2-003: Hex-Validierung bleibt fail-closed (auch im Setup-Re-Run),
-  # Nicht-Hex-Werte brechen die Postgres-Connection-URL. reset-passwords.sh
-  # würfelt nur noch GRAFANA_ADMIN_PASSWORD neu; POSTGRES_PASSWORD muss
-  # manuell in DB und .env abgeglichen werden (TROUBLESHOOTING.md A4).
+  # Nicht-Hex-Werte brechen die Postgres-Connection-URL. Das
+  # GRAFANA_ADMIN_PASSWORD wird manuell in .env neu gesetzt (danach Grafana
+  # neu starten); POSTGRES_PASSWORD muss manuell in DB und .env abgeglichen
+  # werden (TROUBLESHOOTING.md A4).
   if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
     || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
     echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter." >&2
@@ -491,7 +545,7 @@ fi
 # Verzeichnisses würde die laufenden Container als fremd behandeln und einen
 # zweiten Stack nebenan aufbauen. Gleichzeitig ist der Name damit unabhängig
 # davon, von wo aus compose aufgerufen wird.
-write_managed "/opt/coder/docker-compose.yml" 644 "docker-compose.yml" <<EOF
+write_managed "/opt/coder/docker-compose.yml" 644 "docker-compose.yml" validate_compose <<EOF
 name: coder
 
 services:
@@ -545,6 +599,12 @@ services:
       # Build aktuell standardmäßig tut (Review 1.8: keine unbelegten
       # Editions-Behauptungen im Kommentar).
       - CODER_TELEMETRY_ENABLE=false
+      # A8: Coder sitzt hinter Caddy und sieht ohne diese Werte nur die
+      # Container-IP des Proxys – Audit-Log und IP-Rate-Limits würden überall
+      # dieselbe Adresse zeigen. Vertrauen nur Docker-Netz (172.16.0.0/12,
+      # Compose-Default-Subnetze) und Loopback; Header nur X-Forwarded-For.
+      - CODER_PROXY_TRUSTED_HEADERS=X-Forwarded-For
+      - CODER_PROXY_TRUSTED_ORIGINS=172.16.0.0/12,127.0.0.1/8
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
@@ -623,7 +683,8 @@ services:
     restart: unless-stopped
     environment:
       # Wirkt nur beim allerersten Start (leere grafana_data). Passwort danach
-      # ändern: sudo /opt/coder/reset-passwords.sh
+      # in /opt/coder/.env (GRAFANA_ADMIN_PASSWORD) ändern und Grafana neu
+      # starten (siehe OPERATIONS.md).
       - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
       # Kein GF_SERVER_ROOT_URL nötig – Zugriff läuft per SSH-Tunnel auf
       # 127.0.0.1:3001, nicht über eine eigene Domain.
@@ -651,6 +712,17 @@ volumes:
   grafana_data:
 EOF
 
+# A2/B-013: Bilder JETZT ziehen, bevor die Container-Dateien geschrieben
+# werden – die Validierer für Caddyfile/Prometheus brauchen die Images, und
+# ein fehlender/falscher Tag (z.B. coder/coder:2.36.6 ohne "v") soll vor
+# jedem weiteren Schritt klar scheitern. Daemon-Check gehört hierher, weil
+# "pull" der erste Docker-Aufruf nach der Installation ist.
+if ! docker info > /dev/null 2>&1; then
+  echo "Fehler: Docker-Daemon antwortet nicht (docker info). Erst Daemon heilen, dann Setup erneut." >&2
+  exit 1
+fi
+retry3 docker compose pull
+
 # Caddyfile – echtes, öffentlich vertrauenswürdiges Let's-Encrypt-Zertifikat,
 # inklusive Wildcard-Subdomain für Coder-Workspace-Apps (Port-Forwarding,
 # code-server-Vorschau etc. laufen über eigene Subdomains).
@@ -674,8 +746,9 @@ EOF
 #     Namen; für Namen IM Muster kann er es weiterhin auslösen – das Muster
 #     ist ein grober Filter, kein Budget-Schutz (P-005, Dokumentation in
 #     SECURITY.md). Wochenbudget 50/Woche pro registrierter Domain bleibt bis
-#     D-TLS (DNS-01-Wildcard ohne On-Demand) das Thema. Erkennung: Caddy-Log
-#     auf "obtaining certificate" / check-tls.sh beobachten.
+#     D-TLS (DNS-01-Wildcard ohne On-Demand) das Thema. Erkennung: Metrik
+#     coder_tls_issuances_7d aus check-tls.sh (Zertifikatsdateien im
+#     caddy_data, Warnung ab 20/7 Tage, Limit 50/Woche).
 #
 # Muster (Quelle: Coder-Quellcode coderd/workspaceapps/appurl/appurl.go,
 # Format "{PORT/APP_SLUG}[--{AGENT_NAME}]--{WORKSPACE_NAME}--{USERNAME}":
@@ -707,18 +780,9 @@ fi
 # Caddyfile unter /opt/coder/caddy, weil die compose-Datei das Verzeichnis
 # statt der Einzeldatei bindet.
 CADDY_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
-# A2: Domain einmalig ablegen. boot-check.sh und update.sh haben sie vorher
-# per awk aus der Caddyfile gezogen und dabei auf die @askOK-Matcherzeile
-# gegriffen (enthält "*" und "{2,}", Zeile beginnt mit Leerzeichen -> $1 leer):
-# Ergebnis "Apex nicht parsbar" und übersprungener TLS-Smoke. Datei ist ein
-# reines Artefakt dieses Skripts, wird bei jedem Lauf neu geschrieben – kein
-# Drift-Check nötig.
-write_managed "/opt/coder/domain" 644 - <<EOF
-${DOMAIN_CODER}
-EOF
 # write_managed legt Verzeichnisse nicht an (Vorbild: rules/grafana unten).
 install -d -m 0755 /opt/coder/caddy
-write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" <<EOF
+write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" validate_caddyfile <<EOF
 {
 ${CADDY_ACME_CA}
     email ${ACME_EMAIL}
@@ -762,32 +826,18 @@ GRAFANA_PROV_BEFORE=$(sha256sum /opt/coder/grafana/provisioning/datasources/prom
 PROM_CFG_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-prometheus 2>/dev/null || echo false)
 GRAFANA_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-grafana 2>/dev/null || echo false)
 
-# prometheus.yml (komplettes Verzeichnis gemountet, siehe compose)
-install -d -m 0755 /opt/coder/prometheus
-write_managed "/opt/coder/prometheus/prometheus.yml" 644 "prometheus.yml" <<'EOF'
-global:
-  scrape_interval: 15s
-
-rule_files:
-  - /etc/prometheus/rules/*.yml
-
-scrape_configs:
-  - job_name: 'coder'
-    static_configs:
-      - targets: ['coder:2112']
-  - job_name: 'node'
-    static_configs:
-      - targets: ['node-exporter:9100']
-EOF
-
+# A2: Erst die Alarmregeln schreiben (eigener Validierer), dann
+# prometheus.yml – der Config-Validierer lädt die rule_files mit und sieht
+# so die frisch geschriebenen Regeln.
 # C3: Alarmregeln (einzige Alarmkanäle ohne Alertmanager: Prometheus-eigenen
-# /alerts + Grafana). Drei Regeln, alle mit messbarer Grundlage:
-#   1. Coder-Target down  2. Root-Partition <10% frei  3. letztes Backup >25h.
+# /alerts + Grafana). Fünf Regeln, alle mit messbarer Grundlage:
+#   1. Coder-Target down  2. Root-Partition <10% frei  3. letztes Backup >25h
+#   4. TLS-Zertifikatsbudget (20/Zertifikate je 7 Tage)  5. TLS-Metrik veraltet
 # Kein "absent()"-Zweig für Regel 3: fehlende Metrik = seit Aufsetzen noch
 # kein Backup gelaufen, das meldet ohnehin das erste erfolgreiche Laufdatum;
 # ehrlicher als ein Alarm direkt nach der Installation.
 install -d -m 0755 /opt/coder/prometheus/rules
-write_managed "/opt/coder/prometheus/rules/coder-alerts.yml" 644 - <<'EOF'
+write_managed "/opt/coder/prometheus/rules/coder-alerts.yml" 644 - validate_prom_rules <<'EOF'
 groups:
   - name: coder
     rules:
@@ -821,24 +871,34 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Über 20 Zertifikats-Ausstellungen in 7 Tagen"
-          description: "Untergrenze aus den noch vorhandenen Caddy-Logs; Rotation kann Eintraege der letzten 7 Tage bereits verworfen haben. Wert: /opt/coder/node-textfile/coder_tls.prom"
+          summary: "Über 20 neue/erneuerte Zertifikate in 7 Tagen"
+          description: "Zählung aus den Zertifikatsdateien im caddy_data-Volume (7 Tage), Let's-Encrypt-Limit 50/Woche pro Domain. Wert: /opt/coder/node-textfile/coder_tls.prom"
       - alert: TlsCheckStale
         expr: absent(coder_tls_check_last_success_timestamp_seconds) or time() - coder_tls_check_last_success_timestamp_seconds > 691200
         for: 30m
         labels:
           severity: warning
         annotations:
-          summary: "TLS-Ausstellungscheck fehlt oder ist älter als 8 Tage"
-          description: "Cron, Caddy-Logs oder Textfile-Metrik pruefen; bei veralteter Metrik ist der 7-Tage-Zaehler nicht aussagekraeftig."
-      - alert: TlsLogTruncated
-        expr: coder_tls_log_truncated == 1
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Caddy-Logpuffer reicht nicht bis 7 Tage zurueck"
-          description: "Logrotation (10 MB x 3) hat Eintraege der letzten 7 Tage verworfen; coder_tls_issuances_7d ist deshalb nur eine Untergrenze. Wert: /opt/coder/node-textfile/coder_tls.prom"
+          summary: "TLS-Zertifikatscheck fehlt oder ist älter als 8 Tage"
+          description: "Cron (/etc/cron.d/coder-tlscheck) oder Textfile-Metrik pruefen; bei veralteter Metrik ist der 7-Tage-Zaehler nicht aussagekraeftig."
+EOF
+
+# prometheus.yml (komplettes Verzeichnis gemountet, siehe compose)
+install -d -m 0755 /opt/coder/prometheus
+write_managed "/opt/coder/prometheus/prometheus.yml" 644 "prometheus.yml" validate_prom_config <<'EOF'
+global:
+  scrape_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: 'coder'
+    static_configs:
+      - targets: ['coder:2112']
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
 EOF
 
 # C3: Datasource für Grafana provisioning statt manuelle UI-Konfigurations-
@@ -866,36 +926,18 @@ install -d -m 0755 /opt/coder/node-textfile
 GRAFANA_PROV_AFTER=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml | cut -d' ' -f1)
 
 echo "############################################################"
-echo "# [3/10] Docker-Stack starten"
+echo "# [3/8] Docker-Stack starten"
 echo "############################################################"
 cd /opt/coder
 
-# B-013-Preflights (lesend bis auf Daemon-Fail): toter Daemon und volle
-# Platte endeten bisher in set -e-Tod mit Roh-Fehlermeldung. Daemon-Fail ist
-# hart (früh + klar statt spät in Schritt 3); Platte WARN ab 1 GB (grober
-# Hinweis, kein Ersatz für D-Monitoring).
-if ! docker info > /dev/null 2>&1; then
-  echo "Fehler: Docker-Daemon antwortet nicht (docker info). Erst Daemon heilen, dann Setup erneut." >&2
-  exit 1
-fi
-
+# B-013: volle Platte endete sonst in set -e-Tod mit Roh-Fehlermeldung.
+# Platte WARN ab 1 GB (grober Hinweis, kein Ersatz für D-Monitoring); der
+# Daemon-Fail liegt vor dem Pull in Schritt 2.
 if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' '); then
   if [ "${_avail}" -lt 1073741824 ]; then
     warn "Wenig Platte unter /opt/coder (${_avail} < 1 GB, grober Hinweis) – Images/Backups brauchen Luft"
   fi
 fi
-
-# Validiert YAML-Syntax und Variablen-Interpolation, bevor überhaupt etwas
-# gestartet wird - ein Fehler hier ist deutlich klarer als ein kryptischer
-# Fehler mitten in "docker compose up".
-docker compose config --quiet
-
-# A6: erst alle Images ziehen, dann starten. Vor B-013 gab es hier kein Pull –
-# bei fehlendem/falschem Tag (z.B. coder/coder:2.36.6 ohne "v") scheiterte erst
-# "up -d" mitten im Lauf. Ein eigener Manifest-Preflight ist überflüssig:
-# "docker compose pull" nennt den fehlenden Tag im Fehlerfall ohnehin und
-# bricht vor jedem Container-Start ab.
-retry3 docker compose pull
 
 # 1.1/Review: KEIN Upgrade ohne frisches Backup. Schritt 3 zieht Bilder und
 # "up -d" kann eine Coder-DB-Schema-Migration ausführen – ohne Dump wäre danach
@@ -913,17 +955,8 @@ if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || ech
   fi
 fi
 
-# Erstlauf-Validierung mit genau den Images, die anschließend gestartet werden.
-# Caddy lädt Zertifikate erst zur Laufzeit; validate prüft die Caddyfile, ohne
-# den bestehenden Stack zu ändern. promtool prüft Konfiguration und Regeln.
-echo "Validiere Caddyfile, Prometheus-Konfiguration und Alarmregeln vor dem Start ..."
-# caddy:2.10 hat KEINEN ENTRYPOINT (nur CMD ["caddy","run",...]) – ohne
-# --entrypoint würde "validate" selbst als Binary ausgeführt und scheitert
-# mit 'executable file not found in $PATH'.
-docker run --rm --entrypoint caddy -v /opt/coder/caddy:/etc/caddy:ro "caddy:${CADDY_VERSION}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
-docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check config /etc/prometheus/prometheus.yml
-docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" check rules /etc/prometheus/rules/coder-alerts.yml
-
+# A2: Compose/Caddyfile/Prometheus wurden in Schritt 2 bereits validiert, BEVOR
+# sie die Live-Platte erreicht haben – hier wird nur noch gestartet.
 docker compose up -d
 
 # A7/A1: wirksam gewesene Versionen erst JETZT persistieren – genau ab dem
@@ -942,24 +975,20 @@ GRAFANA_VERSION=${GRAFANA_VERSION}
 NODE_EXPORTER_VERSION=${NODE_EXPORTER_VERSION}
 VERSIONSEOF
 
-# Review 2.6: validate + reload bei JEDEM Lauf, solange Caddy lief. Reload
-# geht über die Admin-API (verbindungserhaltend – P-025 verbietet nur
-# Restarts), ist bei unveränderter Datei ein No-Op und fängt damit auch
-# Abweichungen ab, die nicht über write_managed entstanden sind. Ohne
-# Hash-Vergleich: eine ungültige Datei meldet "caddy validate" vor dem
-# Neuladen, Caddy behält dann die laufende Konfiguration (kein Ausfall).
-# "restart" ist bewusst KEIN Fallback (C4). Erstlauf ohne laufendes Caddy
-# braucht kein Reload – "up -d" hat den Container gerade mit der Datei
-# gestartet.
+# A2/C4: Reload bei JEDEM Lauf, solange Caddy lief – die Datei ist beim
+# Schreiben bereits validiert (write_managed + validate_caddyfile), ein
+# erneutes validate vor dem Reload wäre derselbe Prüfpfad mit demselben
+# Ergebnis. Reload geht über die Admin-API (verbindungserhaltend – P-025
+# verbietet nur Restarts), ist bei unveränderter Datei ein No-Op. Schlägt
+# er fehl (z.B. Admin-API weg), behält Caddy automatisch die laufende
+# Konfiguration – "restart" ist bewusst KEIN Fallback (C4). Erstlauf ohne
+# laufendes Caddy braucht kein Reload – "up -d" hat den Container gerade
+# mit der Datei gestartet.
 if [ "${CADDY_WAS_RUNNING}" = "true" ]; then
-  if docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
-    if docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
-      ok "Caddy validate + reload OK (ohne Verbindungsabbruch) (C4)"
-    else
-      warn "caddy reload fehlgeschlagen – Caddy läuft weiter mit der ALTEN Konfiguration. Manuell prüfen: sudo docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
-    fi
+  if docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
+    ok "Caddy reload OK (ohne Verbindungsabbruch, gevaliderte Datei) (C4)"
   else
-    fail "Caddyfile ungültig (caddy validate rot) – Caddy behält die laufende Konfiguration, kein Ausfall. Fehler anzeigen mit: sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
+    warn "caddy reload fehlgeschlagen – Caddy läuft weiter mit der ALTEN Konfiguration. Manuell prüfen: sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
   fi
 else
   echo "Caddy lief vorher nicht (Erstlauf) – kein Reload nötig, up -d startet ihn mit der Datei."
@@ -989,97 +1018,47 @@ fi
 docker compose ps
 
 echo "############################################################"
-echo "# [4/10] Firewall (ufw) + SSH-Schutz einrichten"
+echo "# [4/8] Firewall (ufw) + SSH-Schutz einrichten"
 echo "############################################################"
 apt_install ufw fail2ban
 
-# B6: Die SSH-Regel unten ist fest auf "22/tcp". Lauscht sshd auf einem
-# anderen Port, würde "ufw enable" den eigenen Zugang abschneiden – deshalb
-# VOR der ersten Firewall-Änderung prüfen und hart abbrechen, statt sich
-# auszusperren (Zugriff dann nur noch über Konsolenzugang des Hosts).
-if ! SSHD_EFFECTIVE_CONFIG="$(sshd -T 2>/dev/null)"; then
-  fail "sshd-Konfiguration konnte nicht gelesen werden – Abbruch vor jeder Firewall-Änderung."
-  exit 1
-fi
-SSHD_PORTS="$(printf '%s\n' "${SSHD_EFFECTIVE_CONFIG}" | awk '/^port /{print $2}' | sort -u | xargs echo 2>/dev/null || true)"
-if [ -z "${SSHD_PORTS}" ]; then
-  fail "sshd -T lieferte keinen Port – Abbruch vor jeder Firewall-Änderung."
-  exit 1
-fi
-if [ "${SSHD_PORTS}" != "22" ]; then
-  echo "Fehler: sshd lauscht auf Port '${SSHD_PORTS}', dieses Skript erlaubt aber nur 22/tcp." >&2
-  echo "Abbruch vor jeder Firewall-Änderung – sonst würde 'ufw enable' den SSH-Zugang schneiden." >&2
-  echo "Port in setup-coder.sh anpassen (Suchbegriff: 'ufw limit 22/tcp') und erneut ausführen." >&2
-  exit 1
-fi
-
-# Review 0.1/2.4 (D-SSH): schmaler fester Regelpfad statt Pfad-A/B/C-Analyse.
-# Geblieben sind die Sicherheitsinvarianten:
+# Der sshd-Port-Check steht im Preflight (vor Schritt 1) – A10: Vorbedingungen
+# gehören vor die Installation, nicht erst vor der ersten Firewall-Änderung.
+#
+# B11/D-SSH: kein Quellbeschränkungs-Pfad. Die Netzgrenze (SSH nur aus dem
+# Schulnetz) liegt am Router, nicht an dieser Firewall; fail2ban ist der
+# Brute-Force-Schutz. Geblieben sind die Sicherheitsinvarianten:
 #   - Ohne lesbaren ufw-Status wird NICHTS geaendert (Abbruch).
-#   - Gespeicherte SSH-Quellregeln bei inaktiver ufw -> Abbruch vor enable.
-#   - Eine vorgefundene quellbeschraenkte SSH-Regel wird nicht aufgeweicht:
-#     keine weltweite limit-Regel daneben, keine Quellregel wird geloescht.
 #   - Weltweite allow-Regeln (die limit wirkungslos machen wuerden) werden
 #     entfernt und der Erfolg VERIFIZIERT, bevor mit limit weitergemacht wird.
 if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then
   fail "ufw-Status nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
 fi
-if ! UFW_ADDED_OUT="$(ufw show added 2>/dev/null)"; then
-  fail "gespeicherte ufw-Regeln nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
-  exit 1
-fi
-# Detektor (POSIX grep -E):22-Regeln aller Schreibweisen, danach minus
-# "Anywhere" = Quellbeschraenkung. "show added" deckt zusaetzlich den
-# inaktiven Fall ab (dort zeigt "ufw status" keine Regeln).
-UFW_SSH_ALL="$(printf '%s\n' "${UFW_OUT}" \
-  | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' || true)"
-UFW_RESTRICTED="$(printf '%s\n' "${UFW_SSH_ALL}" \
-  | grep -Ev '[[:space:]]Anywhere([[:space:]\(]|$)' || true)"
-UFW_ADDED_RESTRICTED="$(printf '%s\n' "${UFW_ADDED_OUT}" \
-  | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)|from[[:space:]]+[^[:space:]]+[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+22([^0-9]|$)' \
-  | grep -Ei '[[:space:]]from[[:space:]]+' \
-  | grep -Eiv '[[:space:]]from[[:space:]]+(any|0\.0\.0\.0/0|::/0)([[:space:]]|$)|Anywhere' || true)"
-UFW_RESTRICTED_LINE=""
 if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
-  if [ -n "${UFW_ADDED_RESTRICTED}" ]; then
-    fail "ufw ist inaktiv, enthält aber gespeicherte SSH-Quellregeln; Abbruch vor jeder ufw-Regel-/Policy-Änderung."
-    printf 'Gespeicherte Regel(n):\n%s\n' "${UFW_ADDED_RESTRICTED}" >&2
-    echo "Die Firewall bleibt unverändert. Beschränkung bewusst prüfen, UFW danach selbst aktivieren; Setup erneut ausführen." >&2
-    exit 1
-  fi
   warn "ufw ist inaktiv (Status: inactive) – Firewall wird jetzt eingerichtet"
-elif [ -n "${UFW_RESTRICTED}" ]; then
-  UFW_RESTRICTED_LINE="$(printf '%s\n' "${UFW_RESTRICTED}" | head -n 1)"
 fi
 
-# Regelanwendung (Review 0.1/2.4): einfache feste Folge. Reihenfolge erst
-# Policy, dann SSH-Regeln; "limit" ist idempotent ("Skipping adding existing
-# rule"), deletes auf nicht vorhandene Regeln scheitern still (|| true).
+# Regelanwendung: einfache feste Folge. Reihenfolge erst Policy, dann
+# SSH-Regeln; "limit" ist idempotent ("Skipping adding existing rule"),
+# deletes auf nicht vorhandene Regeln scheitern still (|| true).
 ufw default deny incoming
 ufw default allow outgoing
-if [ -n "${UFW_RESTRICTED}" ]; then
-  warn "quellbeschränkte SSH-Regel bleibt unangetastet: ${UFW_RESTRICTED_LINE} – keine weltweite 'limit 22/tcp'-Regel gesetzt"
-  if grep -Ei 'Anywhere' <<< "${UFW_SSH_ALL}" > /dev/null 2>&1; then
-    warn "weltweite SSH-Regel steht NEBEN der Beschränkung, ufw wertet beide (die Quelle greift deshalb nicht) – manuell auflösen: sudo ufw status numbered"
-  fi
-else
-  # Nur die drei weltweiten Schreibweisen einer allow-Regel; Quellregeln
-  # ("allow from …") sind davon strukturell nicht betroffen.
-  ufw --force delete allow 22/tcp  > /dev/null 2>&1 || true
-  ufw --force delete allow 22      > /dev/null 2>&1 || true
-  ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
-  UFW_LEFTOVER="$(ufw status numbered 2>/dev/null || true)"
-  UFW_LEFTOVER="$(printf '%s\n' "${UFW_LEFTOVER}" \
-    | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)' \
-    | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' \
-    | grep -Ei '[[:space:]]ALLOW([[:space:]]|$)' || true)"
-  if [ -n "${UFW_LEFTOVER}" ]; then
-    fail "weltweite 'allow'-SSH-Regel steht nach dem Löschen noch (${UFW_LEFTOVER}) – manuell prüfen: sudo ufw status numbered"
-    exit 1
-  fi
-  ufw limit 22/tcp
+# Nur die drei weltweiten Schreibweisen einer allow-Regel; Quellregeln
+# ("allow from …") sind davon strukturell nicht betroffen.
+ufw --force delete allow 22/tcp  > /dev/null 2>&1 || true
+ufw --force delete allow 22      > /dev/null 2>&1 || true
+ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
+UFW_LEFTOVER="$(ufw status numbered 2>/dev/null || true)"
+UFW_LEFTOVER="$(printf '%s\n' "${UFW_LEFTOVER}" \
+  | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)' \
+  | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' \
+  | grep -Ei '[[:space:]]ALLOW([[:space:]]|$)' || true)"
+if [ -n "${UFW_LEFTOVER}" ]; then
+  fail "weltweite 'allow'-SSH-Regel steht nach dem Löschen noch (${UFW_LEFTOVER}) – manuell prüfen: sudo ufw status numbered"
+  exit 1
 fi
+ufw limit 22/tcp
 
 # backend=systemd explizit setzen: Debians fail2ban-Paket hat python3-systemd
 # als harte Abhängigkeit (steht so auf der offiziellen Debian-Paketseite),
@@ -1096,18 +1075,15 @@ fi
 # NICHT. Deshalb WARN, solange jail.local existiert, statt sie still
 # anzutasten (die alte hash-guardierte Entfernung entfiel mit Review 2.3:
 # ohne Produktion gibt es keine setup-eigene Alt-Datei mehr).
-# P-025: Hash VOR dem Schreiben merken (Vergleich weiter unten entscheidet
-# zwischen reload/restart/start – blinder restart verwirft aktive Bans).
 JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"
-JAIL_BEFORE=$(sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
 if [ -f /etc/fail2ban/jail.local ]; then
   warn "Vorgefunden: /etc/fail2ban/jail.local – unser Drop-In ${JAIL_DROPIN} hat laut Lese-Reihenfolge Vorrang, dort geschriebene Jails greifen nicht. Eigene Werte in den Drop-In übernehmen und jail.local entfernen."
 fi
 mkdir -p /etc/fail2ban/jail.d
 # Review 0.3: bantime.increment verlängert Wiederholungssperren, ignoreip
 # schützt Admin-Adressen vor der geteilten Schul-NAT (sonst sperrt ein
-# Tippfehler die gemeinsame Quell-IP). Werte per FAIL2BAN_IGNORE_IP setzen:
-#   sudo env FAIL2BAN_IGNORE_IP='127.0.0.1/8 ::1 <Admin-IP>' ./setup-coder.sh
+# Tippfehler die gemeinsame Quell-IP). Werte dauerhaft in setup.conf
+# eintragen (Schlüssel FAIL2BAN_IGNORE_IP, siehe setup.conf.example).
 write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<EOF
 [sshd]
 enabled  = true
@@ -1119,38 +1095,33 @@ bantime  = 1h
 bantime.increment = true
 ignoreip = ${FAIL2BAN_IGNORE_IP}
 EOF
-# P-025: "restart" bei jedem Lauf verwirft aktive Bans (Angreifer per Re-Run
-# entbannt). Daher: nur bei geänderter Datei neu laden (reload statt restart,
-# mit restart als Fallback), sonst nur sicherstellen, dass der Dienst läuft
-# (start ist No-Op, wenn aktiv – kein Ban-Verlust).
-systemctl enable fail2ban
-JAIL_AFTER=$(sha256sum "${JAIL_DROPIN}" 2>/dev/null | cut -d' ' -f1 || true)
-if systemctl is-active --quiet fail2ban && [ "${JAIL_BEFORE}" = "${JAIL_AFTER}" ]; then
-  echo "fail2ban läuft bereits mit unveränderter ${JAIL_DROPIN} – kein Reload (Bans bleiben erhalten, P-025)."
-elif systemctl is-active --quiet fail2ban; then
-  systemctl reload fail2ban || systemctl restart fail2ban
-else
-  systemctl start fail2ban
+# B13/A7e: hart starten, dann reloaden – die alte Annahme "restart verwirft
+# aktive Bans" war falsch: fail2ban stellt Bans beim (Neu-)Start aus seiner
+# SQLite-DB (Debian-Default dbfile aktiv) wieder her. Nach "enable --now"
+# braucht der Client einen Moment, deshalb wird der Reload bis 15 s wiederholt.
+systemctl enable --now fail2ban
+F2B_RELOADED=false
+for _ in $(seq 1 15); do
+  if fail2ban-client reload > /dev/null 2>&1; then
+    F2B_RELOADED=true
+    break
+  fi
+  sleep 1
+done
+if [ "${F2B_RELOADED}" = "false" ]; then
+  fail "fail2ban-Client antwortet nach 15 s nicht – prüfen mit: sudo fail2ban-client ping"
+  exit 1
 fi
 
-# Hinweis: Docker trägt für per "ports:" veröffentlichte Container-Ports
-# (hier 80/443 von Caddy) eigene iptables-Regeln ein, die ufw dabei
-# üblicherweise umgehen – diese beiden Regeln sind also vor allem
-# Dokumentation, kein zusätzlicher Schutz (B-007: "ufw status grün" heißt für
-# künftige Container-Ports NICHT "geschützt"). Bindungsregel (Review-Check bei
-# jedem Compose-Change): neue "ports:"-Einträge NUR als "127.0.0.1:<port>:<port>"
-# binden; öffentliche Ports sind die Ausnahme und bleiben Caddy (80/443)
-# vorbehalten. DOCKER-USER ja/nein erst per D-Firewall-Entscheidung nach
-# Dual-Stack-Test (T-060) – kein Einbau ohne Nachweis.
-# Der eigentliche Schutz für 80/443
-# ist, dass dort ohnehin der öffentliche Coder-Zugang laufen soll. Bei
-# Prometheus/Grafana kommt der Schutz stattdessen daher, dass deren Ports nur
-# an 127.0.0.1 gebunden sind (siehe docker-compose.yml) – das wirkt unabhängig
-# von ufw/Docker-iptables. Für SSH gilt das NICHT: sshd ist ein normaler
-# Host-Dienst, kein Docker-Container, ufw/fail2ban greifen hier also wirklich.
-# B-007/IPv6: ufw wendet dieselbe Policy auf v4+v6 an, solange IPV6=yes in
-# /etc/default/ufw (Debian-Default). Pfad deklariert: Dual-Stack mit gleicher
-# Policy; bei "IPV6=no" gilt nur v4 (dann WARN unten). Kein stilles Umschalten.
+# B-007/A7b: Docker trägt für "ports:"-veröffentlichte Container-Ports
+# (80/443 von Caddy) eigene iptables-Regeln ein, die ufw für Zugriffe von
+# AUSSEN umgehen – dort bringen diese Regeln nichts. Für Zugriffe vom
+# Docker-Netz auf die Host-IP (z.B. Workspace-Agent -> CODER_ACCESS_URL) und
+# für IPv6 laufen sie aber über INPUT/docker-proxy und werden gebraucht,
+# deshalb bleiben sie stehen. Bindungsregel: neue "ports:"-Einträge NUR als
+# "127.0.0.1:<port>:<port>" – öffentliche Ports bleiben Caddy (80/443)
+# vorbehalten, Prometheus/Grafana sind nur an 127.0.0.1 gebunden. SSH gilt
+# nicht als Docker-Port: sshd ist ein Host-Dienst, ufw/fail2ban greifen hier.
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 443/udp
@@ -1168,64 +1139,28 @@ if grep -q "Status: active" <<< "${UFW_STATUS}"; then
 else
   fail "ufw ist NICHT aktiv"
 fi
-# A1: Pfad-abhängig prüfen. Ohne vorgefundene Beschränkung muss die weltweite
-# Rate-Limit-Regel existieren. Mit Beschränkung (Pfad B) darf KEINE weltweite
-# 22-Regel daneben stehen – ufw wertet beide parallel, die Quell-Beschränkung
-# wäre dann wirkungslos (bei "ALLOW" sogar ohne Rate-Limit).
+# B11: prüfen, dass die weltweite Rate-Limit-Regel nach enable wirkt – eine
+# daneben stehende weltweite ALLOW würde sie stumm aufheben (ist oben vor dem
+# set bereits entfernt und verifiziert worden).
 UFW_SSH_LINES="$(grep -E '(22/tcp|OpenSSH)[[:space:]]+(LIMIT|ALLOW)' <<< "${UFW_STATUS}" || true)"
-if [ -n "${UFW_RESTRICTED}" ]; then
-  if grep -q 'ALLOW' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
-    fail "weltweite 'allow'-SSH-Regel steht neben der Quell-Beschränkung – jede IP könnte ohne Beschränkung auf SSH zugreifen; prüfen mit: sudo ufw status"
-  elif grep -q 'LIMIT' <<< "${UFW_SSH_LINES}" && grep -q 'Anywhere' <<< "${UFW_SSH_LINES}"; then
-    fail "weltweite 'limit'-SSH-Regel steht neben der Quell-Beschränkung – die Beschränkung greift dann nicht; prüfen mit: sudo ufw status"
-  else
-    ok "SSH quellbeschränkt: keine weltweite 22-Regel daneben, Beschränkung greift"
-  fi
-elif grep -q "22/tcp.*LIMIT" <<< "${UFW_SSH_LINES}"; then
+if grep -q "22/tcp.*LIMIT" <<< "${UFW_SSH_LINES}"; then
   ok "SSH ist offen, aber per ufw rate-limitiert (22/tcp LIMIT)"
 else
   fail "SSH-Rate-Limit-Regel fehlt in ufw – prüfen mit: sudo ufw status"
 fi
-if systemctl is-active --quiet fail2ban; then
-  ok "fail2ban läuft"
+# B13: ein einziger Check statt is-active/ping/Total-failed – "status sshd"
+# liefert nur Exit 0, wenn Dienst UND Jail antworten (der Reload-Retry oben
+# hat dem Client schon Zeit zum Hochfahren gegeben).
+if fail2ban-client status sshd > /dev/null 2>&1; then
+  ok "fail2ban-Jail 'sshd' antwortet (fail2ban-client status sshd Exit 0)"
 else
-  fail "fail2ban läuft NICHT"
-fi
-# A4: Beim ersten Start kann systemd bereits "active" melden, bevor der
-# fail2ban-Socket antwortet. Bis zu 15 s auf den Client warten, ehe das Jail
-# als Fehler gemeldet wird.
-F2B_READY=false
-for _ in $(seq 1 15); do
-  if fail2ban-client ping > /dev/null 2>&1; then
-    F2B_READY=true
-    break
-  fi
-  sleep 1
-done
-if [ "${F2B_READY}" = "true" ] && fail2ban-client status sshd > /dev/null 2>&1; then
-  ok "fail2ban-Jail 'sshd' ist aktiv"
-else
-  fail "fail2ban-Client oder Jail 'sshd' antwortet nach 15 s nicht – prüfen mit: sudo fail2ban-client status"
-fi
-# A6: Der alte Check ("fail2ban-client get sshd logpath" || "journalctl -n1")
-# war immer grün – beides liefert ohne Bezug zum Jail Exit 0, der Zustand des
-# Filters wurde nie geprüft. Jetzt: das Jail muss "Total failed" als Zahl
-# führen, d. h. der Filter zählt wirklich Fehlversuche. Dass der Debian-13-
-# Filter auch die Session-Prozesse sieht, ist ausgeliefert und 2026-09-29
-# gemessen: journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd +
-# _COMM=sshd-session, 63/63 Fehlversuche hatten _COMM=sshd-session.
-F2B_STATUS="$(fail2ban-client status sshd 2>/dev/null || true)"
-F2B_FAILED="$(printf '%s\n' "${F2B_STATUS}" | awk -F: '/Total failed/ {gsub(/[ \t]/,"",$2); print $2; exit}')"
-if [ -n "${F2B_FAILED}" ] && [ "${F2B_FAILED}" -eq "${F2B_FAILED}" ] 2>/dev/null; then
-  ok "fail2ban zählt SSH-Fehlversuche (Total failed: ${F2B_FAILED})"
-else
-  fail "fail2ban-Jail 'sshd' zählt keine Fehlversuche – prüfen mit: sudo fail2ban-client status sshd"
+  fail "fail2ban-Client oder Jail 'sshd' antwortet nicht – prüfen mit: sudo fail2ban-client status"
 fi
 if grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && \
    grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
   ok "SSH-Passwort-Login ist deaktiviert (nur noch Keys erlaubt)"
 else
-  ok "SSH-Passwort-Login ist aktiv – bewusste Entscheidung (D-SSH); ufw-Rate-Limit und fail2ban sperren Wiederholer"
+  echo "HINWEIS: SSH-Passwort-Login ist aktiv – bewusste Entscheidung (D-SSH); ufw-Rate-Limit und fail2ban sperren Wiederholer"
 fi
 # Review 0.3a: root per Passwort von ueberall waere ein Upgrade-Pfad jeden
 # Brute-Forces – der Debian-Default prohibit-password bleibt gefordert.
@@ -1253,9 +1188,8 @@ else
 fi
 
 echo "############################################################"
-echo "# [5/10] Automatische Sicherheitsupdates einrichten"
+echo "# [5/8] Automatische Sicherheitsupdates einrichten"
 echo "############################################################"
-retry3 apt-get update
 apt_install unattended-upgrades
 
 # Nicht-interaktive Aktivierung statt "dpkg-reconfigure -plow" (Dialog).
@@ -1269,19 +1203,12 @@ write_managed "/etc/apt/apt.conf.d/52-coder-reboot" 644 "52-coder-reboot" <<'EOF
 // Automatischer Neustart bei Kernel-Updates, nachts um 03:00 Uhr.
 // B-011/D-Reboot-Fenster: 03:00 ist Default, kein abgestimmtes Betriebsfenster.
 // Vor Produktionsfreigabe mit Schulbetrieb abstimmen + im Wartungsplan
-// hinterlegen (laufende Workspaces/Sessions werden abgerissen). Boot-Gesundheit
-// prüft /opt/coder/boot-check.sh (lesend, @reboot, kein Eingriff).
+// hinterlegen (laufende Workspaces/Sessions werden abgerissen).
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "03:00";
 EOF
 
 APT_UU_CONFIG="$(apt-config dump 2>/dev/null || true)"
-if grep -Fq 'o=Docker' <<< "${APT_UU_CONFIG}"; then
-  warn "Die wirksame APT-Konfiguration enthält weiterhin eine Docker-Origin für unattended-upgrades; prüfen mit: grep -rn 'o=Docker' /etc/apt/apt.conf.d/"
-else
-  ok "Docker-Origin ist nicht für unattended-upgrades freigegeben"
-fi
-
 if systemctl is-active --quiet unattended-upgrades; then
   ok "unattended-upgrades-Dienst läuft"
 else
@@ -1299,39 +1226,16 @@ else
   fail "Reboot-Konfiguration (52-coder-reboot) fehlt"
 fi
 
-# B-011: lesendes Boot-Gate (kein Eingriff, nur Logging). Docker startet nach
-# Reboot alle Container gleichzeitig per Daemon-Restart (depends_on gilt nur für
-# Compose-CLI) – Coder kann gegen unbereites Postgres crash-loopen. Dieses
-# Gate wartet gestaffelt bis zu 120 s auf Postgres, weitere 120 s auf alle
-# Container und bis zu 10 Minuten auf /healthz via TLS (je curl max. 10 s plus
-# 10 s Abstand). Gesamtlaufzeit im Fehlerfall: knapp 14 Minuten. Ergebnis nach
-# /var/log/coder-boot.log (+ logger). Auslösung per @reboot-Cron.
-write_managed "/opt/coder/boot-check.sh" 755 "boot-check.sh" < "${SETUP_DIR}/scripts/boot-check.sh"
-write_managed "/etc/cron.d/coder-bootcheck" 644 "coder-bootcheck-Cron" <<'EOF'
-@reboot root /opt/coder/boot-check.sh
-EOF
-if [ -x /opt/coder/boot-check.sh ] && bash -n /opt/coder/boot-check.sh \
-  && grep -qxF '@reboot root /opt/coder/boot-check.sh' /etc/cron.d/coder-bootcheck; then
-  ok "Lesendes Boot-Gate installiert (/opt/coder/boot-check.sh, @reboot)"
-else
-  fail "Boot-Gate fehlt (/opt/coder/boot-check.sh oder /etc/cron.d/coder-bootcheck)"
-fi
-
-# B-005-Erkennung: On-Demand-TLS-Ausstellungen zählen (lesend, kein Alertmanager).
-# "obtaining certificate" im noch verfuegbaren Caddy-Log ist eine Untergrenze:
-# Docker-Logrotation kann Eintraege aus den letzten 7 Tagen bereits verworfen
-# haben. Die Erfolgszeit wird separat exportiert, damit ein ausgefallener oder
-# verpasster Cronlauf als TlsCheckStale sichtbar wird.
+# A6/B-005: On-Demand-TLS-Ausstellungen zaehlen (lesend, kein Alertmanager).
+# check-tls.sh zaehlt im caddy_data geaenderte *.crt der letzten 7 Tage
+# (robust gegen Container-Recreate; docker logs waere zurueckgesetzt) und
+# schreibt coder_tls_issuances_7d. Die Erfolgszeit wird separat exportiert,
+# damit ein ausgefallener oder verpasster Cronlauf als TlsCheckStale
+# sichtbar wird.
 write_managed "/opt/coder/check-tls.sh" 755 "check-tls.sh" < "${SETUP_DIR}/scripts/check-tls.sh"
 write_managed "/etc/cron.d/coder-tlscheck" 644 "coder-tlscheck-Cron" <<'EOF'
 30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1
 EOF
-if [ -x /opt/coder/check-tls.sh ] && bash -n /opt/coder/check-tls.sh \
-  && grep -qxF '30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1' /etc/cron.d/coder-tlscheck; then
-  ok "TLS-Erkennung installiert (/opt/coder/check-tls.sh, wöchentlich Mo 06:30)"
-else
-  fail "TLS-Erkennung fehlt (/opt/coder/check-tls.sh oder /etc/cron.d/coder-tlscheck)"
-fi
 # TlsCheckStale würde sonst ab dem ersten Scrape feuern: die Metrik
 # coder_tls_check_last_success_timestamp_seconds existiert erst nach dem
 # ersten Cron-Lauf (Mo 06:30), und absent() meldet den Check als veraltet.
@@ -1342,7 +1246,7 @@ else
 fi
 
 echo "############################################################"
-echo "# [6/10] Tägliches Datenbank-Backup einrichten"
+echo "# [6/8] Tägliches Datenbank-Backup einrichten"
 echo "############################################################"
 write_managed "/opt/coder/backup.sh" 755 "backup.sh" < "${SETUP_DIR}/scripts/backup.sh"
 
@@ -1377,12 +1281,11 @@ write_managed "/etc/logrotate.d/coder-backup" 644 "coder-backup-logrotate" <<'EO
 }
 EOF
 
-# C4: die beiden anderen Logdateien des Stacks liefen bisher ohne Rotation und
-# wuchsen unbegrenzt (coder-boot.log wächst bei jedem Reboot, coder-tls.log
-# pro Woche). Eigene Datei statt Anhängen an coder-backup, weil deren Inhalt
-# nach Server-Konvention Backup-spezifisch bleibt.
+# C4: die Logdatei des TLS-Checks lief bisher ohne Rotation und wuchs unbegrenzt
+# (wöchentlicher Lauf). Eigene Datei statt Anhängen an coder-backup, weil deren
+# Inhalt nach Server-Konvention Backup-spezifisch bleibt. coder-boot.log entfiel
+# mit B8 (boot-check.sh).
 write_managed "/etc/logrotate.d/coder-logs" 644 "coder-logs-logrotate" <<'EOF'
-/var/log/coder-boot.log
 /var/log/coder-tls.log {
     weekly
     rotate 8
@@ -1393,11 +1296,6 @@ write_managed "/etc/logrotate.d/coder-logs" 644 "coder-logs-logrotate" <<'EOF'
 }
 EOF
 
-if [ -f /etc/cron.d/coder-backup ] && grep -qF "/opt/coder/backup.sh" /etc/cron.d/coder-backup; then
-  ok "Täglicher Backup-Cronjob ist eingetragen (01:00 Uhr, /etc/cron.d/coder-backup)"
-else
-  fail "Backup-Cronjob (/etc/cron.d/coder-backup) fehlt oder unvollständig"
-fi
 if systemctl is-active --quiet cron; then
   ok "Cron-Daemon läuft (sonst liefe nie ein Backup)"
 else
@@ -1409,35 +1307,39 @@ else
   fail "Logrotate-Konfiguration ist ungültig – prüfen mit: sudo logrotate -d /etc/logrotate.conf"
 fi
 
-echo "Teste Backup einmal direkt..."
-# Zusätzliche Absicherung: "condition: service_healthy" in der
-# docker-compose.yml sorgt zwar schon dafür, dass "docker compose up -d" in
-# Schritt 3 auf einen gesunden Postgres wartet, bevor es zurückkehrt - falls
-# das auf einer sehr langsamen Platte trotzdem einmal nicht reicht, wartet
-# diese Schleife hier zusätzlich bis zu 60 Sekunden, statt einen falschen
-# Alarm zu melden.
-for _ in $(seq 1 30); do
-  [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
-  sleep 2
-done
-if env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
-  LATEST_BACKUP=$(ls -t /opt/coder/backups/coder_*.sql.gz 2>/dev/null | head -n1 || true)
-  if [ -n "${LATEST_BACKUP:-}" ]; then
-    ok "Testlauf erfolgreich, Backup-Datei angelegt: ${LATEST_BACKUP}"
-  else
-    fail "backup.sh lief ohne Fehler, aber es wurde keine Backup-Datei gefunden"
-  fi
+# B21: Testlauf nur, solange noch KEIN Backup existiert – bei Re-Run lief das
+# Pre-Upgrade-Backup (Schritt 3) bereits, ein zweiter Voll-Dump pro Lauf ist
+# überflüssig. Erstmaliger Aufbau testet also, jeder spätere Lauf nicht.
+if ls /opt/coder/backups/coder_*.sql.gz > /dev/null 2>&1; then
+  echo "Vorhandene Backups unter /opt/coder/backups – Backup-Testlauf übersprungen."
 else
-  fail "Testlauf von backup.sh ist fehlgeschlagen (z. B. weil Postgres noch nicht bereit war)"
+  echo "Teste Backup einmal direkt..."
+  # Zusätzliche Absicherung: "condition: service_healthy" in der
+  # docker-compose.yml sorgt zwar schon dafür, dass "docker compose up -d" in
+  # Schritt 3 auf einen gesunden Postgres wartet, bevor es zurückkehrt - falls
+  # das auf einer sehr langsamen Platte trotzdem einmal nicht reicht, wartet
+  # diese Schleife hier zusätzlich bis zu 60 Sekunden, statt einen falschen
+  # Alarm zu melden.
+  for _ in $(seq 1 30); do
+    [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
+    sleep 2
+  done
+  if env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
+    LATEST_BACKUP=$(ls -t /opt/coder/backups/coder_*.sql.gz 2>/dev/null | head -n1 || true)
+    if [ -n "${LATEST_BACKUP:-}" ]; then
+      ok "Testlauf erfolgreich, Backup-Datei angelegt: ${LATEST_BACKUP}"
+    else
+      fail "backup.sh lief ohne Fehler, aber es wurde keine Backup-Datei gefunden"
+    fi
+  else
+    fail "Testlauf von backup.sh ist fehlgeschlagen (z. B. weil Postgres noch nicht bereit war)"
+  fi
 fi
 
-# B-008: Runbook auf dem Server ablegen, damit Verweise aus update.sh und
-# reset-coder.sh ("/opt/coder" auf dem Server) dort auflösen. Kein Dangling:
-# liegt RESTORE.md neben dem Setup, wird es kopiert; sonst WARN (kein Fail).
-# SCRIPT_SRC_DIR wurde oben vor dem cd nach /opt/coder berechnet, hier nicht
-# neu berechnen – relativ zu /opt/coder fände sie RESTORE.md nie.
-if [ -f "${SCRIPT_SRC_DIR}/RESTORE.md" ]; then
-  cp -a "${SCRIPT_SRC_DIR}/RESTORE.md" /opt/coder/RESTORE.md
+# B-008: Runbook auf dem Server ablegen, damit Verweise ("/opt/coder" auf dem
+# Server) dort auflösen. SETUP_DIR ist vor dem cd nach /opt/coder berechnet.
+if [ -f "${SETUP_DIR}/RESTORE.md" ]; then
+  cp -a "${SETUP_DIR}/RESTORE.md" /opt/coder/RESTORE.md
   chmod 644 /opt/coder/RESTORE.md
   ok "Runbook nach /opt/coder/RESTORE.md abgelegt"
 else
@@ -1445,48 +1347,20 @@ else
 fi
 
 echo "############################################################"
-echo "# [7/10] Update-Skript bereitstellen (manuell, KEIN Cronjob)"
+echo "# [7/8] Skripte nach /opt/coder kopieren"
 echo "############################################################"
-write_managed "/opt/coder/update.sh" 755 "update.sh" < "${SETUP_DIR}/scripts/update.sh"
-
-if [ -x /opt/coder/update.sh ] && bash -n /opt/coder/update.sh; then
-  ok "update.sh ist vorhanden und ausführbar – manuell starten mit: sudo /opt/coder/update.sh"
-else
-  fail "update.sh fehlt oder ist nicht ausführbar"
-fi
-
-echo "Aktuelle Crontab:"
-crontab -l 2>/dev/null || echo "(keine Einträge - Backup läuft über /etc/cron.d/coder-backup, nicht über die Crontab)"
+# B10: eine Zeile statt pro Datei write_managed + Existenz-Gate – write_managed
+# und set -e brechen bei Problemen ohnehin ab, und die Skripte werden erst
+# jetzt gebraucht, wenn sie aufgerufen werden. Mode 755 wie bisher.
+install -m 755 -t /opt/coder "${SETUP_DIR}"/scripts/*.sh
 
 echo "############################################################"
-echo "# [8/10] Passwort-Reset-Skript bereitstellen"
-echo "############################################################"
-write_managed "/opt/coder/reset-passwords.sh" 755 "reset-passwords.sh" < "${SETUP_DIR}/scripts/reset-passwords.sh"
-
-if [ -x /opt/coder/reset-passwords.sh ] && bash -n /opt/coder/reset-passwords.sh; then
-  ok "reset-passwords.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-passwords.sh"
-else
-  fail "reset-passwords.sh fehlt oder ist nicht ausführbar"
-fi
-
-echo "############################################################"
-echo "# [9/10] Komplett-Reset-Skript bereitstellen"
-echo "############################################################"
-write_managed "/opt/coder/reset-coder.sh" 755 "reset-coder.sh" < "${SETUP_DIR}/scripts/reset-coder.sh"
-
-if [ -x /opt/coder/reset-coder.sh ] && bash -n /opt/coder/reset-coder.sh; then
-  ok "reset-coder.sh ist vorhanden und ausführbar – Aufruf: sudo /opt/coder/reset-coder.sh"
-else
-  fail "reset-coder.sh fehlt oder ist nicht ausführbar"
-fi
-
-echo "############################################################"
-echo "# [10/10] Abschlusscheck & Zusammenfassung"
+echo "# [8/8] Abschlusscheck & Zusammenfassung"
 echo "############################################################"
 
 # B-012/B2-007: Der Schritt-10-Block, der hier alle 15 Hashes auf einmal
 # nachgezogen hat, ist entfernt. remember_hash steht jetzt an jeder Schreib-
-# stelle direkt nach erfolgreichem tee/chmod – ein Abbruch vor Schritt 10
+# stelle direkt nach erfolgreichem tee/chmod – ein Abbruch vor Schritt 8
 # hinterlässt damit keine veralteten Hashes mehr, die im nächsten Lauf eine
 # Fehl-Warnung ("Operator-Drift") für setup-eigene Residuen auslösen.
 # Residueller, dokumentierter Restpfad: Kill genau zwischen Schreiben und
@@ -1592,9 +1466,20 @@ HUMAN_USERS="$(docker exec coder-postgres psql -U coder -d coder -tAc \
   "SELECT count(*) FROM users AS u WHERE NOT COALESCE((to_jsonb(u)->>'is_system')::boolean,false) AND NOT COALESCE((to_jsonb(u)->>'is_service_account')::boolean,false) AND NOT COALESCE((to_jsonb(u)->>'deleted')::boolean,false)" 2>/dev/null || true)"
 # B1: optional die Erstanlage DURCH DAS SETUP, solange kein Konto existiert –
 # sonst würde der erste zufällige Aufrufer der Anmeldeseite Owner. Nur aktiv,
-# wenn der Betreiber alle drei Variablen setzt (sonst unverändertes Verhalten).
-# Passwort läuft per stdin in den Container, nie als docker-exec-Argument
-# (dasselbe Prinzip wie der ALTER-USER unten: nichts in "ps" sichtbar).
+# wenn der Betreiber E-Mail und Benutzername setzt (sonst unverändertes
+# Verhalten). A4: das Passwort kommt NIEMALS auf die Kommandozeile (sonst
+# läge es in bash_history, sudo-Log und ps): ohne gesetzte Variable wird es
+# hier interaktiv abgefragt (read -rs), Übergabe in den Container läuft
+# weiterhin per stdin (derselbe Weg wie der ALTER-USER unten).
+if [ "${HUMAN_USERS}" = "0" ] \
+  && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
+  && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
+  && [ -z "${CODER_FIRST_USER_PASSWORD:-}" ] \
+  && [ -t 0 ]; then
+  read -rs -p "Erstkonto: Passwort für '${CODER_FIRST_USER_USERNAME}' eingeben (leer lassen = im Browser anlegen): " \
+    CODER_FIRST_USER_PASSWORD || CODER_FIRST_USER_PASSWORD=""
+  echo ""
+fi
 if [ "${HUMAN_USERS}" = "0" ] \
   && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
   && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
@@ -1645,10 +1530,7 @@ echo ""
 echo "Coder-URL (sobald DNS + Portweiterleitung stehen): https://${DOMAIN_CODER}"
 echo "Workspace-Apps/Port-Forwarding brauchen zusätzlich den Wildcard-DNS-Eintrag"
 echo "*.${DOMAIN_CODER} -> öffentliche Server-IP (siehe Kopf des Skripts)."
-echo "update.sh zieht die konfigurierten Image-Tags und prüft den Stack:"
-echo "sudo /opt/coder/update.sh"
-echo "Neue Releases kommen dabei nur hinter beweglichen Tags (Caddy/Postgres)."
-echo "Exakt gepinnte Images aktualisieren: Pin in setup-coder.sh ändern und"
+echo "Neue Releases: Pin in setup-coder.sh (Versions-Variablen) ändern und"
 echo "das Setup erneut ausführen. Docker-Engine-Updates sind separat und manuell."
 echo "Grafana weiterhin nur per SSH-Tunnel: 127.0.0.1:3001"
 

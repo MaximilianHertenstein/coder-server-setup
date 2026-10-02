@@ -18,7 +18,6 @@ sudo docker logs coder-postgres --tail=50
 sudo docker logs coder-caddy --tail=50
 sudo docker compose -f /opt/coder/docker-compose.yml config --quiet
 tail -50 /var/log/coder-backup.log
-grep 'BOOT-GATE' /var/log/coder-boot.log | tail
 ```
 
 Zusammenfassung eines früheren Setup-Laufs steht am Ende dessen Ausgabe
@@ -51,7 +50,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 |---|---|
 | **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else next; print name ": " (substr($0, index($0, "=") + 1) != "" ? "vorhanden" : "leer") }' /opt/coder/.env`, `sudo stat -c '%a %U:%G %n' /opt/coder/.env` – zeigt keine Secret-Werte |
 | **Erwartete Ursache** | Hand-Edit oder abgebrochener Lauf hat Schlüssel entfernt/geleert. |
-| **Sichere Behebung** | Fehlende Schlüssel von Hand ergänzen, vorhandene Werte behalten (Reparaturtext des Setups), danach Setup erneut ausführen. `reset-passwords.sh` setzt nur `GRAFANA_ADMIN_PASSWORD` und vervollständigt keine fehlenden Schlüssel. Bei fehlender `.env` oder Totalverlust: vollständige `.env` wiederherstellen bzw. Restore nach Runbook. |
+| **Sichere Behebung** | Fehlende Schlüssel von Hand ergänzen, vorhandene Werte behalten (Reparaturtext des Setups), danach Setup erneut ausführen. Eine Passwort-Rotation (OPERATIONS §7) setzt nur `GRAFANA_ADMIN_PASSWORD` und vervollständigt keine fehlenden Schlüssel. Bei fehlender `.env` oder Totalverlust: vollständige `.env` wiederherstellen bzw. Restore nach Runbook. |
 
 ### A4. `/opt/coder/.env enthält Nicht-Hex-Passwörter`
 
@@ -59,7 +58,7 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 |---|---|
 | **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else next; value=substr($0, index($0, "=") + 1); print name ": " (value ~ /^[0-9a-f]+$/ ? "hex" : "nicht-hex") }' /opt/coder/.env` – zeigt keine Secret-Werte |
 | **Erwartete Ursache** | Legacy-Wert mit Sonderzeichen aus einer älteren Installation. |
-| **Sichere Behebung** | Zuerst die betroffene Zeile bestimmen (Diagnose oben). **GRAFANA_ADMIN_PASSWORD betroffen:** `sudo /opt/coder/reset-passwords.sh` ausführen (Backup vorweg, atomare `.env`-Aktualisierung), danach Setup erneut. **POSTGRES_PASSWORD betroffen:** Rezept darunter ausführen, danach Setup erneut. |
+| **Sichere Behebung** | Zuerst die betroffene Zeile bestimmen (Diagnose oben). **GRAFANA_ADMIN_PASSWORD betroffen:** nach OPERATIONS §7 neu setzen (Backup vorweg, stdin-Reset in Grafana, `.env`-Zeile atomar nachziehen), danach Setup erneut. **POSTGRES_PASSWORD betroffen:** Rezept darunter ausführen, danach Setup erneut. |
 
 `POSTGRES_PASSWORD` neu setzen – Reihenfolge DB → `.env` → Coder, damit ein
 Abbruch immer den alten, konsistenten Zustand lässt (F-010); ein Tausch in
@@ -112,9 +111,9 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | Letzte Ausgabe lesen; bei `reset-passwords.sh` nennt das Skript die Phase (`Grafana-Reset`, `.env-Tausch`, …) und den Zustand. |
-| **Erwartete Ursache** | Teilzustand: je Phase sind Grafana und `.env` unterschiedlich weit. |
-| **Sichere Behebung** | `sudo /opt/coder/reset-passwords.sh` erneut ausführen; es würfelt ein neues Grafana-Passwort und synchronisiert die `.env`. Bleibt Grafana defekt, Container-Logs und die konkrete `Grafana-Reset`-Meldung prüfen. Kein Secret als Befehlsargument, Ticket- oder Logtext weitergeben. |
+| **Diagnose** | Letzte Ausgabe lesen; das Setup nennt die fehlgeschlagene Prüfung/Datei. Jede Datei wird atomar geschrieben (Temp validieren, dann `mv`) – eine abgebrochene Validierung lässt die Live-Datei unangetastet. |
+| **Erwartete Ursache** | SSH-Abbruch, Reboot oder ein Preflight-/Validierungsfehler mitten im Lauf. |
+| **Sichere Behebung** | Setup erneut ausführen (idempotent, setzt am nächsten fehlenden Punkt ein). Bei einer abgebrochenen Passwort-Rotation (Grafana schon neu, `.env` noch alt): OPERATIONS §7 nochmals durchlaufen. Kein Secret als Befehlsargument, Ticket- oder Logtext weitergeben. |
 
 ### A10. `Fehler: /etc/docker/daemon.json existiert, enthält aber kein Log-Limit (max-size/max-file)`
 
@@ -148,7 +147,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; `sudo /opt/coder/check-tls.sh`; `/var/log/coder-tls.log`; Fenster/Verlust: `curl -s http://127.0.0.1:9100/metrics \| grep '^coder_tls_log'` (Regel `TlsLogTruncated` = Zählung nur eine Untergrenze) |
+| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; `sudo /opt/coder/check-tls.sh`; `/var/log/coder-tls.log`; letzter Check: `curl -s http://127.0.0.1:9100/metrics \| grep coder_tls_check_last_success` |
 | **Erwartete Ursache** | On-Demand-TLS: Zertifikat wird erst bei Bedarf ausgestellt. Bei Erschöpfung des Wochenbudgets (50/Domain, geteilt) schlägt die Ausstellung fehl. |
 | **Sichere Behebung** | Abwarten und erneut prüfen; Ausstellungen bis zur Entscheidung D-TLS beobachten (`curl -s http://127.0.0.1:9100/metrics \| grep '^coder_tls_issuances'` bzw. `sudo /opt/coder/check-tls.sh`, Regel `TlsIssuanceBudgetHigh` ab >20/7 d). Budget-DoS-Muster: steigende Zählung + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
 
@@ -157,8 +156,8 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 | | |
 |---|---|
 | **Diagnose** | `sudo fail2ban-client status sshd` (eigene IP gebannt?), `sudo ufw status numbered`, `sudo journalctl -u ssh -n 50` |
-| **Erwartete Ursache** | fail2ban-Ban nach 5 Fehlversuchen (1 h), ufw-Regel geändert, oder nach `ssh-harden.sh` ohne funktionierenden Key. |
-| **Sichere Behebung** | Über Zweit-Zugang (Konsole/Proxmox/iDRAC): `sudo fail2ban-client set sshd unbanip <ip>`. Bei einem Fehler während `ssh-harden.sh` stellt das Skript seine vorherige Konfiguration automatisch wieder her. Nach erfolgreicher Härtung: Rollback wie in [SECURITY.md](SECURITY.md) Abschnitt 1 (`rm` des Drop-Ins + `reload`). Den Helfer nur mit getestetem Nicht-root-Key-Login und Zweit-Zugang ausführen. |
+| **Erwartete Ursache** | fail2ban-Ban nach 5 Fehlversuchen (1 h), ufw-Regel geändert, oder nach dem SSH-Härtungs-Drop-In (SECURITY Abschnitt 1) ohne funktionierenden Key. |
+| **Sichere Behebung** | Über Zweit-Zugang (Konsole/Proxmox/iDRAC): `sudo fail2ban-client set sshd unbanip <ip>`. Ohne funktionierenden Key-Zugang das Härtungs-Drop-In entfernen: Rollback wie in [SECURITY.md](SECURITY.md) Abschnitt 1 (`rm` + `sshd -t` + `reload`). Das Drop-In nur nach getestetem Key-Login und Zweit-Zugang anlegen. |
 
 ### B5. Workspace-Subdomain bekommt kein Zertifikat (ask meldet 404 / Connection refused)
 
@@ -172,7 +171,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | Beide Pfade wie in Schritt 10 getrennt testen: lokal `curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' --resolve coder.…:443:127.0.0.1 https://coder.…/healthz`, öffentlich ohne `--resolve` (echter DNS-Weg), zusätzlich von einem externen Netz (Handy-Hotspot) derselben URL. `getent hosts coder.…` zeigt die öffentliche IP. |
+| **Diagnose** | Beide Pfade wie in Schritt 8 getrennt testen: lokal `curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' --resolve coder.…:443:127.0.0.1 https://coder.…/healthz`, öffentlich ohne `--resolve` (echter DNS-Weg), zusätzlich von einem externen Netz (Handy-Hotspot) derselben URL. `getent hosts coder.…` zeigt die öffentliche IP. |
 | **Erwartete Ursache** | NAT-Hairpin/Loopback: der Router im Schulnetz erlaubt es LAN-Clients nicht, die eigene öffentliche IP anzusprechen (Verbindung hängt/`000`), während der lokale `--resolve`-Pfad und echte externe Clients einwandfrei laufen. |
 | **Sichere Behebung** | Ergebnis außerhalb des Schulnetzes verifizieren (Hotspot/externes Netz): dort 200 = Betrieb in Ordnung, Hairpin ist nur ein Testeffekt. Hairpin-NAT am Router aktivieren, falls vorhanden und gewünscht; sonst LAN-Tests über den lokalen Pfad dokumentieren und den öffentlichen Pfad nur extern prüfen. **Nicht** Caddy/TLS umkonfigurieren – die Ursache liegt am NAT, nicht am Stack. |
 
@@ -186,7 +185,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo docker ps -a`, `sudo docker logs <name> --tail=100`, `sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres` |
 | **Erwartete Ursache** | Postgres nicht healthy → Coder startet nicht (Bedingung `service_healthy`); nach Reboot starten alle parallel und Coder kann gegen unbereites Postgres crash-loopen. |
-| **Sichere Behebung** | `cd /opt/coder && sudo docker compose up -d` (winkelt den Stack an), bei Postgres `sudo docker logs coder-postgres` lesen. Nach Reboot das Boot-Gate auswerten: `grep 'BOOT-GATE' /var/log/coder-boot.log \| tail`. Das Gate selbst greift nicht ein – es meldet nur. |
+| **Sichere Behebung** | `cd /opt/coder && sudo docker compose up -d` (winkelt den Stack an), bei Postgres `sudo docker logs coder-postgres` lesen. Nach Reboot den Wiederanlauf prüfen: `sudo docker ps`, Postgres `healthy`, `/healthz` 200. |
 
 ### C2. `[FEHLER] Coder-Container GroupAdd enthält docker-GID … NICHT`
 
@@ -201,16 +200,16 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 | | |
 |---|---|
 | **Diagnose** | `sudo sha256sum /opt/coder/caddy/Caddyfile`, `sudo docker ps --filter name=coder-caddy` |
-| **Erwartete Ursache** | Compose merkt sich Änderungen an eingebundenen Dateien nicht; das Setup lädt die Konfiguration nur bei geändertem Hash **und** grünem `caddy validate` per `reload` neu (kein `restart`: der bräche bestehende Verbindungen). |
+| **Erwartete Ursache** | Compose merkt sich Änderungen an eingebundenen Dateien nicht; das Setup lädt die Konfiguration nur bei geändertem Inhalt per `reload` neu (validiert wurde bereits beim Schreiben; kein `restart`: der bräche bestehende Verbindungen). |
 | **Sichere Behebung** | Zuerst validieren, dann laden: `docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` und danach dasselbe mit `caddy reload`. Schlägt `validate` fehl, behält Caddy die alte Konfiguration – dann erst den Fehler suchen. Besser: Änderung in `setup-coder.sh` vornehmen und das Setup erneut ausführen – sonst meldet der Folgelauf Drift (Abschnitt G). |
 
-### C4. Nach Reboot: `BOOT-GATE ROT`
+### C4. Nach Reboot: Container fehlen oder Postgres nicht `healthy`
 
 | | |
 |---|---|
-| **Diagnose** | `tail -50 /var/log/coder-boot.log`, `sudo journalctl -t coder-boot -n 50`, `sudo docker ps -a` |
-| **Erwartete Ursache** | Container nicht gestartet, Postgres nicht `healthy` (bis 120 s), Container noch nicht alle gestartet (weitere bis 120 s) oder `/healthz` nicht 200 (TLS-Smoke bis zu 10 Minuten, On-Demand-Erstverzögerung einkalkuliert). Gesamtlaufzeit im Fehlerfall knapp 14 Minuten. |
-| **Sichere Behebung** | Wie C1. Danach `sudo /opt/coder/boot-check.sh` manuell erneut ausführen – der Log-Eintrag wird laufbezogen ausgewertet, nicht kumulativ. |
+| **Diagnose** | `sudo docker ps -a`, `sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres`, `sudo docker logs coder-postgres --tail=50`, `sudo journalctl -u docker -n 50 --no-pager` |
+| **Erwartete Ursache** | Docker startet nach dem Netzwerk; Postgres braucht bis `healthy`, Coder hält sich an `depends_on: service_healthy`, `/healthz` braucht bei On-Demand-Erstausstellung ggf. Minuten. |
+| **Sichere Behebung** | Wie C1 (`docker compose up -d` winkelt den Stack an), danach `docker ps` und `/healthz` prüfen. Das frühere lesende Boot-Gate (`boot-check.sh`, `/var/log/coder-boot.log`) entfällt seit B8. |
 
 ### C5. Prometheus zeigt 0 Alarmregeln / Grafana ohne Datasource
 
@@ -296,9 +295,9 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | Ausgabe von `sudo /opt/coder/update.sh`; `sudo docker ps`; `sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres`; `sudo docker logs coder-caddy --tail=50` |
+| **Diagnose** | Ausgabe des Setup-Laufs (Pre-Upgrade-Backup, `pull`, `up -d`); `sudo docker ps`; `sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres`; `sudo docker logs coder-caddy --tail=50` |
 | **Erwartete Ursache** | Pull fehlgeschlagen (Netz/Registry, max. 3 Versuche), Container down, Postgres nicht healthy, `/healthz` ≠ 200 (TLS-Smoke). |
-| **Sichere Behebung** | Ursache beheben, `update.sh` erneut. Rückweg: exakt gepinnte Version in `setup-coder.sh` setzen und Setup erneut ausführen; alte Images sind bis zu manuellem `docker image prune` erhalten. Coder-Major-Updates nur mit verifiziertem Dump ([RESTORE.md](RESTORE.md)), nicht zusammen mit einem DB-Update. |
+| **Sichere Behebung** | Ursache beheben, Setup erneut ausführen. Rückweg: exakt gepinnte Version in `setup-coder.sh` setzen und Setup erneut ausführen; alte Images sind bis zu manuellem `docker image prune` erhalten. Coder-Major-Updates nur mit verifiziertem Dump ([RESTORE.md](RESTORE.md)), nicht zusammen mit einem DB-Update. |
 
 ### E5. `reset-coder.sh` bricht ab: `Volume … wird noch von Container(n) benutzt`
 
@@ -358,7 +357,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo awk -F= '$1 == "GRAFANA_ADMIN_PASSWORD" { found = (substr($0, index($0, "=") + 1) != ""); exit } END { if (found) print "Grafana-Passwort ist gesetzt"; else print "Grafana-Passwort fehlt" }' /opt/coder/.env` – zeigt den Secret-Wert nicht an |
 | **Erwartete Ursache** | Das Passwort gilt nur beim allerersten Start; ein Restore/Datenbanktausch ändert es nicht automatisch. |
-| **Sichere Behebung** | `sudo /opt/coder/reset-passwords.sh` und den neuen Wert notieren. Nicht das alte Passwort im Klartext suchen oder in Logs posten. |
+| **Sichere Behebung** | Nach OPERATIONS §7 neu setzen und den neuen Wert im Passwort-Manager notieren. Nicht das alte Passwort im Klartext suchen oder in Logs posten. |
 
 ---
 
@@ -378,7 +377,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo sshd -T \| grep -iE '^(passwordauthentication\|kbdinteractiveauthentication\|permitrootlogin)'` |
 | **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv; der Abschlusscheck meldet ihn als `OK` (Setup-Versionen vor 2026-10-01 warnten hier). Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
-| **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Warnung ist nur dann beabsichtigt, wenn `permitrootlogin yes` steht (muss auf `prohibit-password`). Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann `ssh-harden.sh` bewusst ausgeführt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
+| **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Warnung ist nur dann beabsichtigt, wenn `permitrootlogin yes` steht (muss auf `prohibit-password`). Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann das Drop-In aus [SECURITY.md](SECURITY.md) Abschnitt 1 bewusst angelegt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
 
 ### G3. Warnung: `ufw-IPv6-Pfad unklar (kein IPV6=yes …)`
 

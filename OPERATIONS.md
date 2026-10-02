@@ -13,7 +13,7 @@ Verweise: Wiederherstellung → [RESTORE.md](RESTORE.md), Sicherheit →
 
 | Wo | Was |
 |---|---|
-| Repository | Quelltext: `setup-coder.sh`, `ssh-harden.sh`, `scripts/`, `RESTORE.md`, `templates/allowlist.md`, `tests/`, `ai-review/` |
+| Repository | Quelltext: `setup-coder.sh`, `setup.conf.example`, `scripts/`, `RESTORE.md`, `templates/allowlist.md`, `tests/`, `ai-review/` |
 | `/opt/coder/` auf dem Server | Alles Erzeugte: Stack-Konfiguration, `.env`, Wartungsskripte, Backups, Hashstore |
 | `/etc/cron.d/`, `/etc/logrotate.d/`, `/etc/fail2ban/`, `/etc/apt/apt.conf.d/` | vom Setup erzeugte Systemdateien |
 
@@ -31,26 +31,21 @@ Setup-Version sie ersetzt (siehe Abschnitt 7).
 | `/opt/coder/docker-compose.yml` | Stack-Definition, Logs, Ports, Volumes | ja |
 | `/opt/coder/caddy/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard (Verzeichnis `caddy/` wird vollständig gemountet) | ja |
 | `/opt/coder/prometheus/prometheus.yml` | Scrape-Jobs `coder`, `node`, Einbindung `rule_files` (Verzeichnis `prometheus/` wird vollständig gemountet) | ja |
-| `/opt/coder/prometheus/rules/coder-alerts.yml` | sechs Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20, TLS-Check veraltet, TLS-Logfenster gekürzt) | nein |
+| `/opt/coder/prometheus/rules/coder-alerts.yml` | fünf Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20, TLS-Check veraltet) | nein |
 | `/opt/coder/grafana/provisioning/datasources/prometheus.yml` | Datasource `Prometheus` wird automatisch angelegt | nein |
 | `/opt/coder/node-textfile/coder_backup.prom` | Zeitstempel des letzten erfolgreichen Backups (vom Setup angelegt, vom Lauf beschrieben) | nein |
-| `/opt/coder/node-textfile/coder_tls.prom` | Untergrenze der TLS-Ausstellungen der letzten 7 Tage, Zeitstempel des letzten erfolgreichen Checks, vorhandene Loghistorie (`coder_tls_log_window_seconds`) und Rotation-Verlust (`coder_tls_log_truncated`) | nein |
-| `/opt/coder/domain` | Apex-Domain, Quelle für TLS-Smoke und Update-Gate (644) – wird bei jedem Lauf aus `DOMAIN_CODER` überschrieben, daher bewusst ohne Hashstore | nein |
+| `/opt/coder/node-textfile/coder_tls.prom` | TLS-Ausstellungen der letzten 7 Tage (aus den Zertifikatsdateien im `caddy_data`-Volume) und Zeitstempel des letzten erfolgreichen Checks | nein |
 | `/opt/coder/versions.env` | wirksam gewesene Versionen der fünf Images (644) | nein |
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
-| `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Setup, Backup, Update, Passwortwechsel und Reset (600, root) | nein |
-| `/opt/coder/update.sh` | manuelles Update mit Pre-Backup und Health-Gate | ja |
-| `/opt/coder/reset-passwords.sh` | Passwort-Rotation Grafana-Admin | ja |
+| `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Setup, Backup und Reset (600, root) | nein |
 | `/opt/coder/reset-coder.sh` | Komplett-Reset des Coder-Stacks | ja |
-| `/opt/coder/boot-check.sh` | lesendes Boot-Gate nach Reboot | ja |
 | `/opt/coder/check-tls.sh` | zählt Let's-Encrypt-Ausstellungen (7 Tage) | ja |
 | `/opt/coder/RESTORE.md` | Runbook-Kopie (Quelle liegt im Repository) | nein |
-| `/opt/coder/.generated-hashes` | sha256 der 16 generierten Dateien (600, root) | – |
+| `/opt/coder/.generated-hashes` | sha256 der 11 drift-überwachten Dateien (600, root) | – |
 | `/etc/cron.d/coder-backup` | Cron: täglich 01:00 | ja |
 | `/etc/cron.d/coder-tlscheck` | Cron: Montag 06:30 | ja |
-| `/etc/cron.d/coder-bootcheck` | Cron: `@reboot` | ja |
 | `/etc/logrotate.d/coder-backup` | Rotation `/var/log/coder-backup.log` | ja |
-| `/etc/logrotate.d/coder-logs` | Rotation `/var/log/coder-boot.log` und `/var/log/coder-tls.log` (wöchentlich, 8×) | ja |
+| `/etc/logrotate.d/coder-logs` | Rotation `/var/log/coder-tls.log` (wöchentlich, 8×) | ja |
 | `/etc/fail2ban/jail.d/10-coder-sshd.local` | Drop-In: Jail `sshd` (backend systemd) | ja |
 | `/etc/apt/apt.conf.d/52-coder-reboot` | automatischer Reboot 03:00 | ja |
 | `/etc/docker/daemon.json` | Log-Limit json-file 10 MB × 3 (nur beim Fehlen geschrieben) | nein |
@@ -64,21 +59,27 @@ Temp-Datei und `mv` – über einen Einzeldatei-Mount sähe der laufende Contain
 bis zum nächsten Recreate die alte Fassung, während Hash- und Preflight-Prüfen
 die neue bestätigen. Verzeichnis-Mounts zeigen auf den jeweils aktuellen Inode.
 
-Nicht im Repository, nur auf dem Server: alle Backups, `.env`-Sicherungen
-(`.env.bak.*`, genau eine Generation), Logs.
+Nicht im Repository, nur auf dem Server: alle Backups und Logs.
 
 ## 3. Konfigurationsvariablen
 
-Überschreibbar per Umgebungsvariable beim Aufruf, ohne Datei zu ändern
-(Werte gehören hinter das sudo – `sudo` leitet fremde Variablen nicht
-durch: `sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh`):
-`DOMAIN_CODER`, `ACME_EMAIL`, `CODER_VERSION`, `CADDY_VERSION`,
-`PROMETHEUS_VERSION`, `GRAFANA_VERSION`, `NODE_EXPORTER_VERSION`, dazu
-`CODER_ALLOW_DOWNGRADE` (nur `yes`, erlaubt ein bewusstes Zurücksetzen einer
-Image-Version) und `ACME_CA` (eigener ACME-Endpunkt, z. B.
-Let's-Encrypt-Staging; leer = Caddys Standard).
-Defaults und Pin-Regeln: [README.md](README.md), Abschnitt „Wichtigste
-Konfiguration".
+Defaults stehen im Kopf von `setup-coder.sh`. Überschreibungen laufen in
+dieser Reihenfolge (Vorrang von links):
+
+1. Umgebungsvariable beim Aufruf – gehört hinter das sudo (`sudo` leitet
+   fremde Variablen nicht durch):
+   `sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh`
+2. `setup.conf` neben `setup-coder.sh` (Vorlage: `setup.conf.example`,
+   gitignored, nie ins Repository): Zeilen `SCHLÜSSEL=Wert` für
+   `DOMAIN_CODER`, `ACME_EMAIL`, `ACME_CA` (eigener ACME-Endpunkt, z. B.
+   Let's-Encrypt-Staging; leer = Caddys Standard) und `FAIL2BAN_IGNORE_IP`
+3. der Default im Skript
+
+Versions-Pins (`CODER_VERSION`, `CADDY_VERSION`, `PROMETHEUS_VERSION`,
+`GRAFANA_VERSION`, `NODE_EXPORTER_VERSION`) und `CODER_ALLOW_DOWNGRADE`
+(nur `yes`, erlaubt ein bewusstes Zurücksetzen einer Image-Version) laufen
+weiterhin nur über Umgebungsvariablen. Sonstiges und Pin-Regeln:
+[README.md](README.md), Abschnitt „Wichtigste Konfiguration".
 
 **Secrets-Verfahren**
 
@@ -89,9 +90,8 @@ Konfiguration".
   bricht ab und nennt die Reparatur.
 - Passwörter müssen hex sein (`[0-9a-f]`); sonst bricht das Setup ab und
   nennt die Reparatur (TROUBLESHOOTING.md A4).
-- Rotation: `sudo /opt/coder/reset-passwords.sh` (zieht zuerst ein
-  Backup und legt `.env.bak.<Zeitstempel>` an). Passwort bei Bedarf gezielt
-  abrufen:
+- Rotation (Grafana-Admin): kein Skript mehr, manuell nach Abschnitt 7
+  „Passwörter rotieren". Passwort bei Bedarf gezielt abrufen:
 
   `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`
 - Nie in Tickets, Chats, Logs oder das Repository kopieren.
@@ -113,18 +113,20 @@ sudo docker compose down --remove-orphans     # Container + Netz entfernen, Volu
 
 Reihenfolge beim Stack: `postgres` muss `healthy` sein, bevor `coder`
 startet (`depends_on: condition: service_healthy`). Nach einem Reboot
-startet Docker die Container direkt – das gilt als Grund, warum
-`boot-check.sh` existiert.
+startet Docker die Container selbst; den Wiederanlauf prüft man danach per
+`docker ps` und `/healthz` (Abschnitt 5).
 
-Vor `docker compose up -d` zieht das Setup die Images und validiert mit den
-gezogenen Versionen die Caddyfile sowie Prometheus-Konfiguration und
-Alarmregeln. Bei einem Fehler startet es den Stack nicht. Diese Prüfung
-validiert die Dateien, aber stellt keine TLS-Zertifikate aus.
+Das Setup validiert Compose, Caddyfile und Prometheus-Konfiguration samt
+Regeln bereits beim Schreiben (Temp-Datei validieren, dann atomar ersetzen);
+bei einem Fehler bricht der Lauf ab und die Live-Datei bleibt unangetastet.
+Die Images zieht es in Schritt 2 (`docker compose pull`), der Stack startet
+in Schritt 3. Diese Prüfung validiert die Dateien, aber stellt keine
+TLS-Zertifikate aus.
 
 Caddy-Hinweis: Docker-Compose erkennt Änderungen an der eingebundenen
 `Caddyfile` nicht automatisch. Das Setup lädt die Konfiguration nur neu,
-wenn sich die Datei geändert hat **und** `caddy validate` grün ist –
-ohne `restart`, damit bestehende Verbindungen nicht abreißen. Bei eigener
+wenn sich die Datei geändert hat (validiert wurde bereits beim Schreiben)
+– ohne `restart`, damit bestehende Verbindungen nicht abreißen. Bei eigener
 Änderung also zuerst prüfen, dann neu laden:
 
 ```bash
@@ -141,7 +143,7 @@ dieser Datei neu (`sudo docker restart coder-grafana`).
 
 ## 5. Checks (Gesundheit prüfen)
 
-Schritt 10 des Setups meldet `[OK]`/`[WARNUNG]`/`[FEHLER]` für: die sechs
+Schritt 8 des Setups meldet `[OK]`/`[WARNUNG]`/`[FEHLER]` für: die sechs
 Container, den Docker-Socket-Zugriff (GroupAdd/docker-GID),
 `https://<domain>/healthz` (HTTP 200) und den Wildcard-DNS. Einen
 belegten Port meldet `docker compose up` mit klarer Portangabe (Diagnose:
@@ -199,17 +201,14 @@ docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=evil.gh
 cat /opt/coder/node-textfile/coder_backup.prom
 curl -s http://127.0.0.1:9100/metrics | grep '^coder_backup'
 
-# TLS-Ausstellungen (Untergrenze wegen Container-Logrotation)
+# TLS-Ausstellungen der letzten 7 Tage (aus den Zertifikatsdateien im
+# caddy_data-Volume, kein Container-Logfenster nötig)
 curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_issuances'
-
-# Logfenster in Sekunden (604800 = volle 7 Tage) und Rotation-Verlust
-# (1 = Log reicht nicht bis 7 Tage zurück, Zählung ist nur eine Untergrenze)
-curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_log'
 
 # Zeitpunkt des letzten erfolgreichen TLS-Checks; fehlt/älter als 8 Tage = Alarm
 curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_check_last_success_timestamp_seconds'
 
-# Alarmregeln geladen (6 Stück)?
+# Alarmregeln geladen (5 Stück)?
 curl -s http://127.0.0.1:9090/api/v1/rules | grep -o '"name":"[A-Za-z]*"' | sort -u
 
 # Prüfen, ob irgendwo eine Docker-Origin für unattended-upgrades konfiguriert ist
@@ -238,9 +237,9 @@ Wöchentlicher TLS-Stand (liefert Zahl + `logger`-Eintrag):
 sudo /opt/coder/check-tls.sh      # Log: /var/log/coder-tls.log
 ```
 
-Alles davon zusammen in einem Lauf: `sudo ./setup-coder.sh` – Schritt 10
+Alles davon zusammen in einem Lauf: `sudo ./setup-coder.sh` – Schritt 8
 meldet jeden Punkt einzeln als `[OK]`/`[WARNUNG]`/`[FEHLER]`. Zusätzlich
-meldet Schritt 10 den Nutzerstand (B2): solange kein menschliches Konto
+meldet Schritt 8 den Nutzerstand (B2): solange kein menschliches Konto
 existiert, weist er darauf hin, dass der erste Anmeldende Owner wird.
 
 ### Empfohlene Routine
@@ -249,7 +248,7 @@ existiert, weist er darauf hin, dass der erste Anmeldende Owner wird.
 |---|---|---|
 | täglich | Backup vorhanden und aktuell | `ls -t /opt/coder/backups/coder_*.sql.gz \| head -n1` |
 | täglich | Backup-Metrik aktuell (Prometheus `BackupStale`) | `cat /opt/coder/node-textfile/coder_backup.prom` |
-| täglich | Boot-Gate nach Reboot gelesen | `grep 'BOOT-GATE' /var/log/coder-boot.log \| tail` |
+| nach Reboot | Container wieder da und gesund | `sudo docker ps`, Postgres `healthy`, `/healthz` 200 |
 | wöchentlich | TLS-Ausstellungen | `sudo /opt/coder/check-tls.sh` |
 | wöchentlich | fail2ban-Bans, ufw-Status | `sudo fail2ban-client status sshd`, `sudo ufw status` |
 | vor Coder-Update | Backup grün | `gzip -t $(ls -t /opt/coder/backups/coder_*.sql.gz \| head -n1)` |
@@ -260,7 +259,6 @@ existiert, weist er darauf hin, dass der erste Anmeldende Owner wird.
 | Log | Inhalt | Rotation |
 |---|---|---|
 | `/var/log/coder-backup.log` | Ausgabe des Backup-Crons | weekly, 8, compress |
-| `/var/log/coder-boot.log` | Boot-Gate je Reboot (`BOOT-GATE GRÜN/ROT`) | weekly, 8, compress |
 | `/var/log/coder-tls.log` | TLS-Ausstellungen je Woche | weekly, 8, compress |
 | Container-Logs | `json-file`, 10 MB × 3 pro Container | intern begrenzt |
 | `journalctl -u fail2ban`, `-u ssh`, `-u cron`, `-u unattended-upgrades` | Systemdienste | Debian-Defaults |
@@ -272,7 +270,7 @@ sudo journalctl -u fail2ban -n 50 --no-pager
 logger -t coder-backup -p user.info "..."     # wie die Skripte selbst loggen
 ```
 
-Die drei Setup-Logs werden über `/etc/logrotate.d/coder-backup` und
+Die beiden Setup-Logs werden über `/etc/logrotate.d/coder-backup` und
 `/etc/logrotate.d/coder-logs` wöchentlich rotiert; acht komprimierte
 Generationen bleiben erhalten.
 
@@ -287,18 +285,17 @@ Generationen bleiben erhalten.
   # danach im Browser: http://127.0.0.1:3001  (Benutzer: admin)
   ```
 
-- Das Grafana-Admin-Passwort gilt nur beim allerersten Start; danach
-  `sudo /opt/coder/reset-passwords.sh`. Bei Bedarf aus der geschützten `.env`
-  abrufen: `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`.
+- Das Grafana-Admin-Passwort gilt nur beim allerersten Start; danach nur
+  manuell drehen (Abschnitt 7 „Passwörter rotieren"). Bei Bedarf aus der
+  geschützten `.env` abrufen:
+  `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`.
 - Die Datasource `Prometheus` wird beim Setup automatisch provisioniert
   (`/opt/coder/grafana/provisioning/datasources/`) – kein Eintragen im UI.
-- **Sechs Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
+- **Fünf Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
   Coder-Target down, Root-Partition <10 % frei, letztes Backup älter als
-  25 Stunden, TLS-Ausstellungen >20/7 Tage, ein fehlender oder mehr als
-  8 Tage alter TLS-Check sowie ein gekürztes Caddy-Logfenster
-  (`TlsLogTruncated`: die Zählung ist dann nur eine Untergrenze). Sie sind
-  einsehbar unter
-  `http://127.0.0.1:9090/alerts` bzw. in Grafana.
+  25 Stunden, TLS-Ausstellungen >20/7 Tage (Let's-Encrypt-Limit 50/Woche)
+  sowie ein fehlender oder mehr als 8 Tage alter TLS-Check. Sie sind
+  einsehbar unter `http://127.0.0.1:9090/alerts` bzw. in Grafana.
 - Es gibt **keinen Benachrichtigungskanal** (kein Alertmanager, keine
   Mail/Telegram/Webhook): die Regeln klingeln nirgends, sie zeigen nur
   etwas, wer hinsieht. Metriken sind sichtbar, wer sie ansieht.
@@ -306,19 +303,23 @@ Generationen bleiben erhalten.
 ## 7. Wartung
 
 Ein erneuter Lauf von `setup-coder.sh` nimmt denselben Laufzeit-Lock wie
-Backup, Update, Passwortwechsel und Reset. Die anderen Wartungsskripte warten
-bis zu 300 Sekunden; danach brechen sie ohne Änderung mit Exit 75 ab.
+Backup und Reset. Die anderen Wartungsskripte warten bis zu 300 Sekunden;
+danach brechen sie ohne Änderung mit Exit 75 ab.
 
 ### Update (bewusst manuell)
 
+Update = gewünschte Pin-Änderung in `setup-coder.sh` (optional) und
+erneuter Lauf aus dem aktuellen Repo-Stand:
+
 ```bash
-sudo /opt/coder/update.sh
+cd <repo> && git log -1 --oneline    # Stand notieren
+sudo ./setup-coder.sh
 ```
 
-Ablauf im Skript: Pre-Backup (`backup.sh`) → `docker compose pull`
-(max. 3 Versuche) → `docker compose up -d --remove-orphans` → Health-Gate
+Ablauf: Pre-Upgrade-Backup, sobald sich Bilder ändern → `docker compose
+pull` (max. 3 Versuche) → `docker compose up -d` → Abschlusscheck
 (alle Container laufen, Postgres healthy, `/healthz` 200 über Caddy-TLS).
-Bei rotem Gate: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
+Bei rotem Abschlusscheck: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
 
 - **Kein Auto-Prune**: alte Images bleiben als Rollback-Basis erhalten,
   Aufräumen nur manuell (`sudo docker image prune`) und bewusst.
@@ -326,10 +327,6 @@ Bei rotem Gate: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
   durch Setzen des Pins in `setup-coder.sh` + erneuten Setup-Lauf ändern oder
   zurückrollen. `CADDY_VERSION` (Minor) und `postgres:18-alpine` holen beim
   `pull` ggf. ein neueres Bild hinter demselben Tag.
-- `update.sh` zieht die aktuellen Image-Inhalte der generierten Compose-Tags.
-  Neue Releases kommen dabei nur für die beweglichen Tags `caddy:2.10` und
-  `postgres:18-alpine` automatisch an. Für die exakt gepinnten Images muss
-  der Pin in `setup-coder.sh` geändert und Setup erneut ausgeführt werden.
 - PostgreSQL läuft auf `postgres:18-alpine` (Major-Tag, holt 18.x-Patches
   über `pull`; aktuell 18.6, Stand 2026-09-30). Achtung, geprüft am
   Test-Host: ab Major 18 mountet das Image das Volume unter
@@ -343,7 +340,7 @@ Bei rotem Gate: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
   Datenprobe. Upstream-Support für 18 endet im November 2030.
   [PostgreSQL-Versionierung](https://www.postgresql.org/support/versioning/)
 - Docker Engine und Compose-Plugin werden weder durch `unattended-upgrades`
-  noch durch `update.sh` aktualisiert. Dafür in einem abgestimmten
+  noch durch das Setup aktualisiert. Dafür in einem abgestimmten
   Wartungsfenster manuell ausführen:
 
   ```bash
@@ -358,17 +355,28 @@ Bei rotem Gate: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
   machen. Nur mit verifiziertem Dump, einzeln fahren – nie zusammen mit
   einem DB-Update.
 
-### Passwörter rotieren
+### Passwörter rotieren (Grafana-Admin)
 
-```bash
-sudo /opt/coder/reset-passwords.sh
-```
+Kein Rotationsskript mehr (B7); manuell in dieser Reihenfolge:
 
-Reihenfolge im Skript: Vorab-Backup → `.env`-Sicherung (eine Generation)
-→ Grafana-Reset → atomarer `.env`-Tausch. `POSTGRES_PASSWORD` wird nicht
-verändert (Nicht-Hex-Reparatur dort: TROUBLESHOOTING.md A4). Bei Abbruch
-nennt das Skript die Phase und den Weg zurück; erneutes Ausführen heilt
-in der Regel.
+1. Backup ziehen: `sudo /opt/coder/backup.sh`
+2. Neues Passwort erzeugen und per stdin in Grafana setzen (niemals als
+   Argument – sonst steht es kurz in `ps aux`):
+
+   ```bash
+   read -rs -p 'Neues Grafana-Passwort: ' NEU; echo
+   printf '%s\n' "$NEU" | sudo docker exec -i coder-grafana \
+     grafana cli --homepath /usr/share/grafana admin reset-admin-password --password-from-stdin
+   ```
+
+3. Dasselbe Einmal-Passwort in `/opt/coder/.env` unter
+   `GRAFANA_ADMIN_PASSWORD=` eintragen (600 bleibt; atomar über Temp-Datei
+   und `mv`, nicht `sed -i`) und im Passwort-Manager sichern.
+   `GF_SECURITY_ADMIN_PASSWORD` wirkt nur beim allerersten Grafana-Start –
+   die `.env` ist die abrufbare Kopie:
+   `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`
+4. `POSTGRES_PASSWORD` bleibt unverändert (Nicht-Hex-Reparatur:
+   TROUBLESHOOTING.md A4).
 
 **C2 – Folge des geänderten `.env`:** Beim nächsten vollständigen
 `docker compose up -d` wird **Grafana** neu erstellt (Env-Hash) – kurzer
@@ -383,12 +391,13 @@ plant den nächsten Stack-Lauf (Update) entsprechend.
   Schulbetrieb abgestimmt**; laufende Workspaces/Sessions werden
   abgerissen. Die Zeitzone steht auf `Europe/Berlin` (Setup setzt sie
   idempotent, C1), damit 03:00 wirklich 03:00 MEZ/MESZ sind.
-- Nach jedem Reboot schreibt `boot-check.sh` (per `@reboot`) nach
-  `/var/log/coder-boot.log` und ins Journal: Container-Status, Postgres
-  `healthy` (bis 120 s), alle Container (weitere bis 120 s) und `/healthz` 200
-  (TLS-Smoke bis zu 10 Minuten). Gesamtlaufzeit im Fehlerfall knapp 14 Minuten.
-  Das Gate ist **lesend** – es ändert nichts am Stack, es meldet nur.
-- Manuell: `sudo reboot`, danach den Log prüfen.
+- Nach einem Reboot startet Docker die Container selbst; danach prüfen:
+  `sudo docker ps`, Postgres `healthy`
+  (`sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres`) und
+  `curl -s -o /dev/null -w '%{http_code}\n' https://coder.ghse-unterricht.de/healthz`
+  (muss 200 sein). Ein lesendes Boot-Gate (`boot-check.sh`) gibt es nicht
+  mehr (B8).
+- Manuell: `sudo reboot`, danach die drei Checks oben ausführen.
 
 ### Komplett-Reset
 
@@ -445,13 +454,12 @@ Prüfen, ob der Hashstore stimmt: `sudo cat /opt/coder/.generated-hashes`.
 | Offsite | **nicht eingerichtet** |
 | Metrik | nach jedem Erfolg `node-textfile/coder_backup.prom` (644, atomar) → `coder_backup_last_success_timestamp_seconds`; Fehlschlag des Metrik-Schreibens verwandelt ein gutes Backup nicht in einen Cron-Fehler |
 
-Zusätzlich ziehen `update.sh` und `reset-passwords.sh` vor dem Eingriff
-ein Backup; `reset-coder.sh` ebenfalls (Abbruch ohne Backup, außer
-`--force`).
+Zusätzlich zieht ein Setup-Lauf vor einem Upgrade (geänderte Bilder) ein
+Backup; `reset-coder.sh` ebenfalls (Abbruch ohne Backup, außer `--force`).
 
-Backup, Update, Passwortwechsel und Reset teilen `/opt/coder/.maintenance.lock`.
-Dadurch kann ein Backup nicht mitten in einer Passwortrotation oder einem
-Reset laufen. Ein paralleler Lauf wartet bis zu fünf Minuten auf den Lock und
+Backup, Setup-Läufe und Reset teilen `/opt/coder/.maintenance.lock`.
+Dadurch kann ein Backup nicht mitten in einem Setup-Lauf oder Reset
+laufen. Ein paralleler Lauf wartet bis zu fünf Minuten auf den Lock und
 bricht danach mit Exit 75 ab. `reset-coder.sh` hält ihn auch während der
 Bestätigungsabfrage; bei langem Warten auf den Betreiber können andere
 Wartungsbefehle deshalb nach fünf Minuten abbrechen und später erneut gestartet
@@ -477,10 +485,9 @@ tail -20 /var/log/coder-backup.log
 |---|---|---|
 | Datenbank-Backup | täglich 01:00 | `/etc/cron.d/coder-backup` |
 | TLS-Ausstellungen zählen | Montag 06:30 | `/etc/cron.d/coder-tlscheck` |
-| Boot-Gate | `@reboot` | `/etc/cron.d/coder-bootcheck` |
 | Log-Rotation Backup-Log | wöchentlich | `/etc/logrotate.d/coder-backup` |
 | Debian-Paketupdates + Reboot 03:00 (ohne Docker Engine) | Debian-Default | unattended-upgrades, `52-coder-reboot` |
-| Coder-Update | **nie automatisch** | `update.sh` wird manuell aufgerufen |
+| Coder-/Stack-Update | **nie automatisch** | manueller Setup-Lauf (Abschnitt 7) |
 | Docker-Engine-/Compose-Update | **nie automatisch** | manuelles APT-Upgrade in einem Wartungsfenster |
 
 Prüfen: `systemctl is-active cron`, `ls -l /etc/cron.d/`,
@@ -489,12 +496,12 @@ Prüfen: `systemctl is-active cron`, `ls -l /etc/cron.d/`,
 ## 10. Tests
 
 ```bash
-bash -n setup-coder.sh ssh-harden.sh scripts/*.sh
-shellcheck -S warning setup-coder.sh ssh-harden.sh scripts/*.sh
+bash -n setup-coder.sh scripts/*.sh tests/*.sh
+shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-10-01: alle 11 Dateien in `tests/` Exit 0, 329 `PASS`,
+Stand 2026-10-01: alle 10 Dateien in `tests/` Exit 0, 266 `PASS`,
 0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
 ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.
@@ -603,12 +610,14 @@ zum Server.
    ```bash
    sudo env CODER_FIRST_USER_EMAIL='maximilian.hertenstein@ghse.de' \
             CODER_FIRST_USER_USERNAME='maximilian' \
-            CODER_FIRST_USER_PASSWORD='<starkes, eigenes Passwort>' \
             CODER_FIRST_USER_FULL_NAME='Maximilian Hertenstein' \
             ./setup-coder.sh
    ```
 
-   oder unmittelbar danach selbst anmelden. Danach ein **zweites**
+   Das Passwort fragt das Skript dabei interaktiv ab (A4, `read -rs`);
+   in nicht-interaktiven Läufen muss `CODER_FIRST_USER_PASSWORD='…'`
+   gesetzt sein (hinter dem sudo, nie in Logs/Tickets).
+   Alternativ: unmittelbar danach selbst im Browser anmelden. Danach ein **zweites**
    Owner-Konto anlegen, damit die Administration nicht an einem Zugang
    hängt (siehe [SECURITY.md](SECURITY.md)).
 5. **Abnahme mit den Checks aus [Abschnitt 5](#5-checks-gesundheit-prüfen):**
@@ -620,10 +629,15 @@ zum Server.
    sudo docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=8080--main--ws--user.coder.ghse-unterricht.de'   # ok
    ```
 
-6. **Danach:** `ssh-harden.sh` ist mit D-SSH (2026-09-30) **nicht** Teil der
-   Inbetriebnahme – nur auf gesonderten Wunsch, mit getestetem Key-Login und
-   Zweit-Zugang (siehe [SECURITY.md](SECURITY.md)). `RESTORE.md`-Restore-
-   Probe einmalig durchspielen.
+   Zusätzlich (A9) einen Test-Workspace anlegen und dessen App-URL
+   **vom Schulnetz-Client** aus öffnen: der Workspace-Agent baut die
+   Verbindung selbst auf (Hairpin-NAT), das prüft Port-Forwarding und
+   Wildcard-DNS gemeinsam.
+
+6. **Danach:** SSH-Nachhärtung nur auf gesonderten Wunsch per Drop-In-
+   Snippet aus [SECURITY.md](SECURITY.md) §1 (D-SSH), mit getestetem
+   Key-Login und Zweit-Zugang. `RESTORE.md`-Restore-Probe einmalig
+   durchspielen.
 
 Nicht Teil der Inbetriebnahme, aber betriebsrelevant: die Wildcard-Zertifikate
 laufen über On-Demand-TLS mit dem gemeinsamen Let's-Encrypt-Budget der Domain

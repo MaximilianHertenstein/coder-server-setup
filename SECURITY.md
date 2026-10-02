@@ -1,8 +1,8 @@
 # SECURITY.md – Härtung, Grenzen, Entscheidungen
 
-Stand: 2026-09-29. Diese Datei beschreibt den **tatsächlichen** Stand aus
-`setup-coder.sh` und `ssh-harden.sh` – inklusive dessen, was bewusst noch
-nicht gemacht ist. Provisorien sind als solche markiert.
+Stand: 2026-10-01. Diese Datei beschreibt den **tatsächlichen** Stand aus
+`setup-coder.sh` – inklusive dessen, was bewusst noch nicht gemacht ist.
+Provisorien sind als solche markiert.
 
 Grundmodell: Coder-Workspace-Nutzer gelten als **nicht vertrauenswürdig**.
 Der kritischste Punkt des Stacks ist der Docker-Socket im
@@ -20,10 +20,9 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
   es** (Entscheidung D-SSH, 2026-09-30). SSH ist laut Netzvorgabe **nur aus dem
   Schulnetz** erreichbar; diese äußere Beschränkung liegt in der
   Netzwerkinfrastruktur, nicht in diesem Setup. ufw rate-limitiert Port 22
-  zusätzlich, fail2ban sperrt wiederholte Fehlversuche. `ssh-harden.sh`
-  wird weder vom Setup noch als Standard-Schritt ausgeführt – es bleibt eine
-  manuelle Option, für die beide Bestätigungsflags und ein erkannter
-  Schlüssel verlangt werden.
+  zusätzlich, fail2ban sperrt wiederholte Fehlversuche. Das Setup ändert
+  die SSH-Konfiguration nicht; eine optionale Nachhärtung ist unten als
+  manuelles Drop-In-Snippet dokumentiert (nicht Standard, D-SSH).
 - **Test-Host (Hetzner `2.29.11.30`):** Login **nur per Key** – es existiert
   kein Konto mit Passwort in `/etc/shadow`, ein Passwort-Login schlägt bei
   jedem Konto fehl. Port 22 ist auf dieser separaten Test-VM von überall
@@ -32,7 +31,7 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
   (eingebautes Rate-Limiting von ufw) und fail2ban als zweite Linie.
 - Passwort-Login ist **nicht** deaktiviert – mit D-SSH (2026-09-30) ist das
   der gewollte Dauerzustand, nicht nur der Zustand der ersten
-  Inbetriebnahme. Das Setup führt `ssh-harden.sh` nicht aus; der
+  Inbetriebnahme. Das Setup führt keine SSH-Härtung aus; der
   Abschlusscheck meldet den Zustand bei jedem Lauf als `OK`
   (G2 in [TROUBLESHOOTING.md](TROUBLESHOOTING.md) beschreibt ihn
   weiterhin; gewarnt wird nur bei `permitrootlogin yes`).
@@ -66,38 +65,34 @@ sudo sshd -T | grep -iE '^(passwordauthentication|kbdinteractiveauthentication|p
 sudo journalctl -u ssh -n 50 --no-pager
 ```
 
-**Härtungspfad (`ssh-harden.sh`, vorbereitet, nicht automatisch)**
+**Optionale Nachhärtung (Doku-Snippet, kein Skript)**
 
-Das Skript schreibt als Drop-In `/etc/ssh/sshd_config.d/60-coder-hardening.conf`:
+Mit D-SSH (2026-09-30) **nicht** Standard; B19 hat das alte
+`ssh-harden.sh` entfernt. Vorher: Zweit-Zugang (Konsole/Proxmox/iDRAC)
+bereithalten und Key-Login aus einem zweiten Fenster testen. Dann Drop-In
+mit **vorangestelltem** Namen anlegen (lädt vor der Debian-Standarddatei):
 
-```
+```bash
+sudo tee /etc/ssh/sshd_config.d/00-coder-hardening.conf >/dev/null <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
+EOF
+sudo sshd -t && sudo systemctl reload ssh
 ```
 
-Sicherheitsvorkehrungen im Skript selbst:
+Vor dem Abmelden den Key-Login aus einer zweiten Sitzung verifizieren.
+Ein fehlgeschlagener Test wird nicht automatisch zurückgerollt – Rückweg
+manuell:
 
-1. Beide Flags müssen gesetzt sein
-   (`--i-have-key-access --i-have-second-access`) – sie bestätigen ein
-   **getestetes** Key-Login und einen Zweit-Zugang (Konsole/Proxmox/iDRAC).
-2. Root-Aufruf und reine Root-Key-Dateien reichen nicht: das Skript verlangt
-   einen nicht-root Sudo-Benutzer und eine nicht-leere Datei aus dessen
-   effektivem `AuthorizedKeysFile`. Die beiden Flags bestätigen weiterhin,
-   dass genau dieser Key-Login und ein Zweit-Zugang tatsächlich getestet sind.
-3. Vorhandene Drop-In-Dateien werden gesichert. Schlägt `sshd -t`, das Reload
-   oder die Prüfung der **effektiven** Config (`sshd -T`) fehl, stellt das
-   Skript die vorherige Datei wieder her (oder entfernt das neue Drop-In) und
-   lädt die vorherige SSH-Konfiguration erneut.
-4. Bei erfolgreicher Härtung bleibt der manuelle Rückweg:
-   `sudo rm /etc/ssh/sshd_config.d/60-coder-hardening.conf && sudo systemctl reload ssh`.
+```bash
+sudo rm /etc/ssh/sshd_config.d/00-coder-hardening.conf
+sudo sshd -t && sudo systemctl reload ssh
+```
 
-**Wenn die Härtung doch gewünscht wird** – mit D-SSH (2026-09-30) ist sie
-**nicht** Standard: Zweit-Zugang testen, Key-Login aus einem zweiten Fenster
-verifizieren, Termin + Eigentümer festhalten. Dauerzustand bis dahin:
-starkes Passwort, fail2ban-Beobachtung, ufw-`limit`, reduzierte Zugriffs-
-wege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
-(Tropfen-/Rollback-Verhalten ist hier nicht belegt).
+Dauerzustand bis dahin: starkes Passwort, fail2ban-Beobachtung,
+ufw-`limit`, Netzbegrenzung auf das Schulnetz (D-SSH, 2026-09-30).
+Die Nachhärtung selbst ist eine VM-/Produktionshandlung.
 
 ## 2. Secrets
 
@@ -111,15 +106,14 @@ wege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
   gewürfelt (das würde die DB-Anmeldung zerstören) – das Setup bricht ab
   und nennt die Reparatur.
 - Nicht-Hex-Werte in der `.env` führen zum Abbruch mit der Reparatur aus
-  TROUBLESHOOTING.md A4: `GRAFANA_ADMIN_PASSWORD` über
-  `sudo /opt/coder/reset-passwords.sh` neu würfeln, `POSTGRES_PASSWORD`
-  manuell in DB und `.env` abgleichen.
+  TROUBLESHOOTING.md A4: `GRAFANA_ADMIN_PASSWORD` nach OPERATIONS §7 neu
+  setzen, `POSTGRES_PASSWORD` manuell in DB und `.env` abgleichen.
 - Newline/NUL in `.env`-Werten wird hart abgewiesen, nicht still getrimmt.
-- Rotation: `reset-passwords.sh` zieht zuerst ein Backup und sichert die alte
-  `.env` (genau eine Generation). Das neue Grafana-Hex-Passwort geht über
-  STDIN an `grafana cli`, nie als `docker exec`-Argument; der `.env`-Tausch
-  ist atomar (Temp+mv). `POSTGRES_PASSWORD` bleibt unangetastet – keine
-  DB-Änderung, kein Coder-/Postgres-Neustart.
+- Rotation (Grafana, manuell ohne Skript): Ablauf in OPERATIONS §7 –
+  erst `backup.sh`, dann neues Hex-Passwort per STDIN an `grafana cli`
+  (nie als `docker exec`-Argument), `.env`-Zeile danach atomar nachziehen
+  (Temp+mv) und im Passwort-Manager sichern. `POSTGRES_PASSWORD` bleibt
+  unangetastet – keine DB-Änderung, kein Coder-/Postgres-Neustart.
 - Repository-Hygiene: `.gitignore` schließt `.env`, `*.env`, `*.sql`,
   `*.sql.gz`, `*.log`, `backups/` aus. Kein Secret liegt im Repository.
 - Beim Erstlauf und bei Rotation werden die Passwörter in der geschützten
@@ -130,7 +124,6 @@ wege. Die Härtung selbst ist eine **VM-/Produktionshandlung**
 
 ```bash
 sudo stat -c '%a %U:%G %n' /opt/coder/.env /opt/coder/backups
-sudo ls -la /opt/coder/.env.bak.* 2>/dev/null      # genau eine Generation
 git status --porcelain | grep -i env               # muss leer sein
 ```
 
@@ -185,27 +178,27 @@ Coder-Subdomänen-Muster entspricht, sonst `404`:
   künftig mit IServ auf dem zentralen Netzwerkserver läuft (Lage laut
   Betreiber offen). Bis dahin gilt: Budget über `check-tls.sh` beobachten.
 
-**Erkennung**: `check-tls.sh` zählt `obtaining certificate` im Caddy-Log
-der letzten 7 Tage, schreibt nach `/var/log/coder-tls.log` und ins
-Journal; läuft montags 06:30. Exit-Code ist immer 0 (reine Diagnose).
+**Erkennung**: `check-tls.sh` zählt die Zertifikatsdateien im
+`caddy_data`-Volume, die in den letzten 7 Tagen verändert wurden
+(`find … -name '*.crt' -mtime -7` im Container), und schreibt die
+Metriken `coder_tls_issuances_7d` sowie
+`coder_tls_check_last_success_timestamp_seconds` atomar nach
+`node-textfile/` (log per `logger` und `/var/log/coder-tls.log`).
+Läuft montags 06:30; Exit-Code ist immer 0 (reine Diagnose).
 
-**Grenze dieser Erkennung**: Die Container-Logs sind auf 10 MB × 3 Dateien
-gedeckelt; das 7-Tage-Fenster passt bei hohem Logvolumen nicht hinein,
-Älteres ist rotiert und geht in der Zählung verloren. `check-tls.sh` misst
-deshalb die vorhandene Loghistorie: als `coder_tls_log_window_seconds`
-(604800 = volle 7 Tage) in der Metrikdatei, und wenn das Fenster kürzer
-ist, obwohl der Container älter als 7 Tage ist, zusätzlich als
-`WARNUNG … die Zahl ist eine Untergrenze`, als `coder_tls_log_truncated 1`
-und damit als Regel `TlsLogTruncated`. Die Zählung selbst bleibt eine
-Untergrenze, kein Vollzählwerk; die Beobachtung darüber ist seit
-2026-09-30 der übernommene Teil von D-TLS (`TlsLogTruncated`). Ein
-Zählwerk unabhängig von der Logaufbewahrung (Delta-Stand oder eigenes
-Caddy-Log-Volume) bleibt der noch offene Teil dieser Entscheidung.
+**Grenze dieser Erkennung**: Gezählt wird, was die Datei innerhalb von
+7 Tagen angefasst hat – eine vorzeitige Erneuerung zählt mit, eine
+Ausstellung vor mehr als 7 Tagen nicht. Container-Logrotation spielt
+keine Rolle mehr; die frühere Logfenster-Lücke (Regel `TlsLogTruncated`,
+Metriken `coder_tls_log_*`) ist mit A6 am 2026-10-01 entfallen. Das
+Wochenbudget meldet `TlsIssuanceBudgetHigh` ab 20 Ausstellungen (Limit
+50/Domain), einen fehlenden/alten Check `TlsCheckStale`.
 
 ```bash
-grep -E '^IPV6=' /etc/default/ufw; sudo docker logs coder-caddy --since 168h 2>&1 | grep -c "obtaining certificate"
-sudo docker logs coder-caddy --tail=100 | grep -iE 'obtaining|error|acme'
-sudo /opt/coder/check-tls.sh
+sudo /opt/coder/check-tls.sh                       # Metrik neu schreiben
+cat /opt/coder/node-textfile/coder_tls.prom
+sudo journalctl -t coder-tls -n 20 --no-pager
+sudo docker logs coder-caddy --tail=100 | grep -iE 'error|acme'
 ```
 
 ## 4. Firewall
@@ -308,11 +301,10 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   in einem geplanten Wartungsfenster manuell aktualisiert. Beim Upgrade von
   älteren Setup-Ständen entfernt das Setup die alte Docker-Origin-Datei nur,
   wenn sie noch dem gespeicherten Hash entspricht.
-- Es gibt **Alarmregeln, aber kein Alerting**: sechs Prometheus-Regeln
+- Es gibt **Alarmregeln, aber kein Alerting**: fünf Prometheus-Regeln
   (Coder-Target down, Root-Partition <10 % frei, letztes Backup >25 h,
-  TLS-Ausstellungen >20/7 d, TLS-Check fehlt/ist älter als 8 Tage,
-  Caddy-Logfenster kürzer als 7 Tage) sind in
-  Prometheus/Grafana sichtbar, aber
+  TLS-Ausstellungen >20/7 d, TLS-Check fehlt/ist älter als 8 Tage)
+  sind in Prometheus/Grafana sichtbar, aber
   **kein Kanal**, der jemanden weckt – kein Alertmanager, keine
   Benachrichtigung. **Entschieden (D-Monitoring, 2026-09-30): es bleibt
   ohne Kanal** – Grafana/Prometheus sind die Anlaufstelle, das Risiko
@@ -398,14 +390,14 @@ ss -tlnp; ss -ulnp | grep 443
 | # | Grenze | Risiko in einem Satz | Status |
 |---|---|---|---|
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | entschieden 2026-09-30 (D-Socket): keine zweite VM, Restrisiko akzeptiert, Allowlist gilt dauerhaft |
-| 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | entschieden 2026-09-30 (D-SSH): Passwort-Login bleibt Standard, Restrisiko getragen; `ssh-harden.sh` nur auf gesonderten Wunsch |
-| 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1); D-TLS 2026-09-30 teilentschieden (Beobachtung über `TlsLogTruncated`), Budget-Schutz bleibt, DNS-01 aufgeschoben (Anbieter All-Inkl bekannt, Zone/IServ unklar) |
-| 4 | TLS-Zählung blind gegenüber Log-Rotation | Zählung ist eine Untergrenze; ältere Einträge können vor Ablauf von 7 Tagen rotiert werden | `TlsIssuanceBudgetHigh`, `TlsCheckStale` und `TlsLogTruncated` (Metriken `coder_tls_log_window_seconds`, `coder_tls_log_truncated`); Zählung bleibt Untergrenze, der Verlust ist jetzt gemeldet |
+| 2 | SSH-Passwort-Login während der ersten Inbetriebnahme; Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | entschieden 2026-09-30 (D-SSH): Passwort-Login bleibt Standard, Restrisiko getragen; Nachhärtung (Drop-In aus Abschnitt 1) nur auf gesonderten Wunsch |
+| 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1); D-TLS 2026-09-30 teilentschieden (Beobachtung über `TlsIssuanceBudgetHigh`/`TlsCheckStale`), Budget-Schutz bleibt, DNS-01 aufgeschoben (Anbieter All-Inkl bekannt, Zone/IServ unklar) |
+| 4 | TLS-Zählung folgt Dateien, nicht ACME-Protokollen | eine Ausstellung zählt, sobald ihre Zertifikatsdatei angefasst wurde; Einträge älter als 7 Tage fallen aus dem Fenster | seit 2026-10-01 (A6) dateibasiert und unabhängig von Container-Logrotation (`coder_tls_issuances_7d`); `TlsLogTruncated` samt `coder_tls_log_*` entfallen |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | entschieden 2026-09-30 (D-Offsite): kein zweiter Standort, Risiko akzeptiert |
 | 6 | Restore nur teilweise geprobt, volle RTO unbekannt | der Wiederherstellungsweg mit Stack-Start und Login ist ungeprüft | Dump-Import in Probencontainer mit Datenprobe = 1 am 2026-09-30; Pfad A/B auf frischer VM bleibt offen (Probe nur auf Test-VM) |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | entschieden 2026-09-30 (D-Reboot-Fenster): 03:00 bleibt, Unterrichtsbeginn 07:45 |
-| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (6 Stück), Logs rotiert; entschieden 2026-09-30 (D-Monitoring): kein Kanal, Grafana reicht – Ausfälle sieht nur, wer hinsieht |
+| 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (5 Stück), Logs rotiert; entschieden 2026-09-30 (D-Monitoring): kein Kanal, Grafana reicht – Ausfälle sieht nur, wer hinsieht |
 | 10 | Workspace-Selbsttest (T-063) und fachliche Freigabe noch offen | unbekannte Templates könnten Socket/Privilegien nutzen | Erstinventar (Schritt 1) am 2026-09-30 für 6 Templates ohne Befund, Schritt 2 vom Betreiber bestätigt; Schritt 4 nicht protokolliert, siehe [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; Konfiguration über `CODER_PROXY_TRUSTED_HEADERS`/`CODER_PROXY_TRUSTED_ORIGINS` ist bewusst unterlassen (Vertrauen auf das ganze Compose-Netz wäre durch einen im selben Netz hängenden Workspace-Container fälschbar) | entschieden 2026-09-30 (B5): Client-IPs bleiben **nicht** im Audit, Empfehlung vom 2026-09-29 übernommen (Datenschutz/Schule). Falls doch: feste IP für `caddy` im Compose-Netz vergeben und `CODER_PROXY_TRUSTED_ORIGINS` **nur auf diese IP** setzen (nie auf das ganze Netz) |
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative dokumentiert: DNS-01 mit `_acme-challenge`-CNAME, braucht Zonen-Zugang beim Provider (B4b) |
@@ -423,9 +415,9 @@ begründen die Lage, diese Tabelle ist der Sammelpunkt.
 
 | ID | Entscheidung | Optionen | Empfehlung | Voraussetzung | Status 2026-09-30 |
 |---|---|---|---|---|---|
-| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, Zählung als gemeldete Untergrenze); eigenes Caddy-Log-Volume gegen Rotation; DNS-01-Wildcard ohne On-Demand (B4b) | Status quo, bis `TlsLogTruncated` regelmäßig meldet; dann Log-Volume; DNS-01 nur mit Zonen-Zugang und Abstimmung | KAS-Zugang von All-Inkl (beim Domainverwalter, nicht beim Betreiber), erst nach Klärung von Zone/IServ | teilentschieden: Beobachtung übernommen (`TlsLogTruncated`); DNS-01 aufgeschoben bis Zone, Hosting und IServ geklärt sind (Modul `caddy-dns/all-inkl` bekannt) |
+| D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, dateibasierte Zählung); DNS-01-Wildcard ohne On-Demand (B4b) | Status quo; Budget-Warnung ab 20 Ausstellungen/7 Tage; DNS-01 nur mit Zonen-Zugang und Abstimmung | KAS-Zugang von All-Inkl (beim Domainverwalter, nicht beim Betreiber), erst nach Klärung von Zone/IServ; DNS-API-Token beim Netzwerkadmin anfragen | teilentschieden: Zählung seit 2026-10-01 dateibasiert (A6, `TlsLogTruncated` entfallen); DNS-01 aufgeschoben bis Zone, Hosting und IServ geklärt sind (Modul `caddy-dns/all-inkl` bekannt) |
 | D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo + Allowlist bleiben dauerhaft; Erstinventar und T-063 bleiben Pflicht | – | entschieden: Empfehlung übernommen – keine zweite VM |
-| D-SSH | Wann Passwort-Login abgeschaltet wird (`ssh-harden.sh`) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, `ssh-harden.sh` ist nicht Standard |
+| D-SSH | Wann Passwort-Login abgeschaltet wird (Drop-In-Snippet aus Abschnitt 1) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, Nachhärtung ist nicht Standard |
 | D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
 | D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | 03:00 bleibt, abgestimmt gegen Unterrichtsbeginn 07:45 | – | entschieden: Empfehlung übernommen – 03:00 bleibt |
 | D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | Grafana/Prometheus bleiben die Anlaufstelle, kein Kanal | – | entschieden: kein Kanal, Grafana reicht |
