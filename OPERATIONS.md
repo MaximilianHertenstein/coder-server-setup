@@ -616,7 +616,10 @@ zum Server.
 
    Das Passwort fragt das Skript dabei interaktiv ab (A4, `read -rs`);
    in nicht-interaktiven Läufen muss `CODER_FIRST_USER_PASSWORD='…'`
-   gesetzt sein (hinter dem sudo, nie in Logs/Tickets).
+   gesetzt sein (hinter dem sudo, nie in Logs/Tickets). Selbst wählen:
+   **lange Passphrase**, kein bekanntes Standard- oder Schulpasswort
+   (SSH und Coder teilen sich das Netz; fail2ban begrenzt Versuche,
+   ersetzt aber keine Passwortstärke).
    Alternativ: unmittelbar danach selbst im Browser anmelden. Danach ein **zweites**
    Owner-Konto anlegen, damit die Administration nicht an einem Zugang
    hängt (siehe [SECURITY.md](SECURITY.md)).

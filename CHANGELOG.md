@@ -9,8 +9,52 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-01 · Basisstand dieses Eintrags: `e39d0d1` auf `main`.
+Stand: 2026-10-02 · Basisstand dieses Eintrags: `2c5b786` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-02 – Review-Nachlese §3/§4: B2 als letzter Punkt dispositioniert (abgelehnt), drei Doku-Korrekturen
+
+- **§3/§4 des Reviews gegengelesen, jeder Punkt dispositioniert.**
+  §3 (SSH) im Code/Doku bestätigt: B11-Regelpfad (Quellregeln bleiben,
+  `ufw limit 22/tcp`), fail2ban mit `FAIL2BAN_IGNORE_IP` hinter `setup.conf`
+  (A5, Warnung „Tippfehler sperrt die Schul-NAT" in SECURITY §2),
+  PermitRootLogin-WARN und `HINWEIS` statt `[OK]` für den Passwort-Check
+  (A7), SSH-Nachhärtung als 10-Zeilen-Drop-In `00-coder-hardening.conf`
+  in SECURITY §1 (Q4). Nachgetragen: **Passwortstärke-Satz in OPERATIONS
+  §11** (lange Passphrase, kein Standard-/Schulpasswort – Review §3.5,
+  bisher nirgends dokumentiert).
+- **B2/Zielbild (§4) abgelehnt** – der einzige bisher nicht
+  dispositionierte Punkt der Review-Liste. Begründung: Die Kritik an
+  unvalidierten Live-Überschreibungen ist mit A2 neutralisiert
+  (Temp-Datei validieren, dann atomar ersetzen); ein Umzug aller Heredocs
+  nach `files/` und der Pins nach `config.env` ändert keine
+  Sicherheitseigenschaft, verschiebt nur den Speicherort, koppelt aber an
+  die Pin-Mechanik (B15, bewusst so belassen) und fassen kurz vor der
+  Inbetriebnahme alle generierten Dateien und die Mehrheit der Tests an –
+  nach 3× Live-RC0 ohne Funktionsgewinn. Zeilenzahl ist kein
+  Sicherheitsattribut. Bei späterem Wartungsschmerz nachholen.
+- **Doku-Korrekturen:** SECURITY §7 – Log-Rotation-Liste nannte noch
+  `/var/log/coder-boot.log` (entfiel mit B8, es gibt keinen Schreiber
+  mehr); README „was die Tests belegen" – „Drift-Hashes über 13 Dateien"
+  präzisiert zu „13 `write_managed`-Zieldateien samt Drift-Warnung und
+  Hash-Heilung" (11 davon gelabelt und gehasht, dazu `versions.env`
+  ohne Label).
+- **Testhost-Aufräumarbeit (kein Repo-Code):** Hashstore
+  `/opt/coder/.generated-hashes` von 16 auf 11 Zeilen – Geisterzeilen
+  entfernter Altdateien (`boot-check`, `update`, `reset-passwords`,
+  `coder-bootcheck`) und der nicht mehr verfolgte `reset-coder.sh`-Rest
+  entfernt; die Einträge waren inert (`note_drift` läuft nur pro
+  `write_managed`-Ziel), aufräumen nur, damit §10-Prüfbefehl und
+  Dokumentation zusammenpassen.
+- **Teststand (lokal, 2026-10-02, tatsächlich ausgeführt):** 10 Dateien,
+  267 `PASS`, 0 `FAIL`; `bash -n setup-coder.sh scripts/*.sh tests/*.sh`
+  und `shellcheck -S warning` derselben ohne Befund; `show-sources.sh`
+  (Standard und Teilmenge) ohne Befund. Geänderte Dateien: `README.md`,
+  `OPERATIONS.md`, `SECURITY.md`, `CHANGELOG.md`. Offene Punkte
+  unverändert: DNS-API-Token, A9-Test, RTO/frische VM, Workspace-Homes,
+  Produktionsfreigabe.
 
 ---
 

@@ -289,9 +289,9 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   (Rotation dort abgleichen, nicht blind übernehmen).
 - Retry-Begrenzung: `apt`/`curl`/`pull` max. 3 Versuche mit 10 s Pause –
   keine endlosen Wiederholungen, kein Retry um Let's-Encrypt.
-- Log-Rotation für alle drei Logs des Stacks: `/var/log/coder-backup.log`
-  (`coder-backup`) sowie `/var/log/coder-boot.log` und
-  `/var/log/coder-tls.log` (`coder-logs`, wöchentlich, 8×, `copytruncate`).
+- Log-Rotation für beide Logs des Stacks: `/var/log/coder-backup.log`
+  (`coder-backup`) sowie `/var/log/coder-tls.log`
+  (`coder-logs`, wöchentlich, 8×, `copytruncate`).
   Container-Logs sind zusätzlich daemon-weit begrenzt (s. u.).
 - Container-Logs sind daemon-weit begrenzt (`daemon.json`, json-file
   10 MB × 3). Liegt eine fremde `daemon.json` ohne diese Schlüssel vor,

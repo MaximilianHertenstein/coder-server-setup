@@ -302,7 +302,8 @@ weiterer Setup-Codestellen
 (ufw-Regelpfad
 inkl. „Quellregeln bleiben unangetastet, globale 22/tcp-Allow wird entfernt,
 Abschluss per `limit`",
-Hex-Migration, Drift-Hashes über 13 Dateien,
+Hex-Migration, 13 `write_managed`-Zieldateien samt Drift-Warnung und
+Hash-Heilung,
 `ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
 (`t-b1-on-demand-ask.sh`: Muster-Falluntersuchung, optional `caddy validate`
