@@ -88,6 +88,13 @@ Stand: 2026-10-03 · Basisstand dieses Eintrags: `9c458cb` auf `main`.
   und t-b2-004 auf 2026-10-03 gezogen; OPERATIONS §10-Teststand
   gleichzeitig von 267 auf 280 PASS angehoben (war von der vorigen Runde
   stehen geblieben).
+- **Nachtrag gleicher Runde (Todo-Abarbeitung):** OPERATIONS-Satz zum
+  Reset korrigiert – ohne Terminal wird der Reset **immer** verweigert,
+  auch mit `--force` (die alte Formulierung beschrieb das Verhalten vor
+  2.5); offene Punkt-Zeile „`FAIL2BAN_IGNORE_IP` mit der öffentlichen
+  Schul-NAT-IP vor der Inbetriebnahme setzen" in README (braucht die
+  IP-Adresse des Betreibers); Vorkommen von offsite/Workspace-Volumes,
+  Docker-Patchtermin und Reset-Verhalten in der Doku gegengeprüft.
 - **Teststand (lokal, 2026-10-03, tatsächlich ausgeführt):** 10 Dateien,
   280 `PASS`, 0 `FAIL`; `bash -n setup-coder.sh scripts/*.sh tests/*.sh`
   und `shellcheck -S warning` derselben ohne Befund. Geänderte Dateien:

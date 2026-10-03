@@ -423,8 +423,9 @@ alle Einstellungen außerhalb des Coder-Stacks. Danach:
 
 `--force` ist kein Komfort-Flag: er setzt den Reset auch ohne
 funktionierendes Backup durch und verlangt eine zweite Eingabe
-`RESET-OHNE-BACKUP`. Ohne Terminal (Pipe/CI) wird der Reset ohne
-`--force` verweigert. **Nie auf Produktion üben.**
+`RESET-OHNE-BACKUP`. Ohne Terminal (Pipe/CI) wird der Reset **immer**
+verweigert, auch mit `--force` (Schutz vor `echo RESET | …`). **Nie auf
+Produktion üben.**
 
 ### Drift-Warnung (generierte Dateien)
 

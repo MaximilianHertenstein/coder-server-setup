@@ -54,6 +54,7 @@ verlinkten Stelle):
 | Produktionsfreigabe aussprechen – bewusst hier nicht dokumentiert | Betreiber | diese README |
 | Unterrichtsdaten: Workspace-Homes als akzeptierter Verlust deklarieren oder eigene Volume-Sicherung mit einrichten (vor Produktivbetrieb) | Betreiber | [RESTORE.md](RESTORE.md) „Was gesichert wird" |
 | Alarmweg/Empfänger klären, sobald Alarme jemandem zugestellt werden sollen (5 Regeln existieren, aber kein Kanal – D-Monitoring gilt bis dahin) | Betreiber | [SECURITY.md](SECURITY.md) §9 D-Monitoring |
+| `FAIL2BAN_IGNORE_IP`: öffentliche Quell-IP des Schulnetzes vor der Inbetriebnahme eintragen – aus der geteilten NAT kann ein Passwort-Tippfehler sonst die ganze Schule aus SSH sperren (Default nur `127.0.0.1/8 ::1`) | Betreiber | [SECURITY.md](SECURITY.md) §2, `setup.conf.example` |
 | Offene Verifikation: RTO inkl. VM-Boot, `/healthz` + Wildcard, volle Platte, 03:00-Fire | wartet auf frische VM / DNS / Kernel-Update | Prüfstand-Tabelle unten |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
