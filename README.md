@@ -22,7 +22,7 @@ nicht im Repository.
 | Einen Fehler diagnostizieren und sicher beheben | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Was wurde wann geändert? | [CHANGELOG.md](CHANGELOG.md) |
 | Welches Workspace-Template darf was? | [templates/allowlist.md](templates/allowlist.md) |
-| Befunde, Pläne, Prüfprotokolle (Referenz) | `ai-review/` – keine Lese-Pflicht für den Betrieb, Stand 26.–29.09.2026; neueste Setup-Prüfung vom 01.10.2026 mit Umsetzung/Ablehnungen: [CHANGELOG.md](CHANGELOG.md) (Eintrag „Review-Runde A1–A12/B1–B21"); in `ai-review/` selbst zuletzt [REVIEW-2026-09-29-SETUP-PUNKTE.md](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
+| Befunde, Pläne, Prüfprotokolle (Referenz) | [CHANGELOG.md](CHANGELOG.md) – Prüfstände und Dispositionen, Einträge 2026-09-29 (Setup-Fundliste A1–A13/B1–B10/C1–C5) und 2026-10-03 (Review-Runde A1–A12/B1–B21); Prozess-Archiv `ai-review/` am 2026-10-03 entfernt (in Git-Historie) |
 
 ## Status (Stand 2026-10-01)
 
@@ -84,7 +84,6 @@ Abschnitt 11.
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
 | `tests/` | 10 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
-| `ai-review/` | Reviews, Pläne, Implementierungsberichte (B-/B2-/P-/F-Nummern); [Prüfung der Setup-Fundliste A1–A13, B1–B10 und C1–C5](ai-review/REVIEW-2026-09-29-SETUP-PUNKTE.md) |
 
 ## Was das Setup-Skript macht
 
@@ -410,4 +409,3 @@ Produktivsystem geprüft werden:
 - [CHANGELOG.md](CHANGELOG.md) – tatsächliche Änderungsstände, keine Releases
 - [templates/allowlist.md](templates/allowlist.md) – was Workspace-Templates
   dürfen
-- `ai-review/` – Reviews, Pläne, Implementierungsberichte (Referenz)
