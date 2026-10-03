@@ -45,7 +45,10 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
       (A-Record, Wildcard `*`, 80/443 1:1, ggf. Proxy-Durchreichung).
       Befund 2026-10-03: Zone bei Kasserver/All-Inkl, `A` zeigt aktuell auf
       die alte Schulseite `85.13.130.100`, `93.240.138.106` = Kreis-Proxy
-      (451) – der Betreiber fordert nur Zeilen 1–4 an (§11 Netzwerkadmin)
+      (451) – der Betreiber fordert nur Zeilen 1–4 an (§11 Netzwerkadmin).
+      **Angefragt 2026-10-03 (E-Mail an Sascha):** externer Zugriff auf
+      10.16.103.13, Apex + optional Wildcard, WebSocket-Pflicht – Antwort:
+      erst mit **IServ-Produktivschaltung**, aktuell technisch nicht möglich
 - [ ] **Zone/Hosting klären** und beim Domainverwalter das
       **DNS-API-Token** anfragen (erst danach DNS-01 einbauen; bis dahin
       läuft On-Demand-TLS, Budget 50 Zertifikate/Woche, Warnung ab 20);
