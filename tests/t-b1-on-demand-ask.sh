@@ -85,8 +85,8 @@ printf '%s\n' "${APEX}" | grep -qF 'on_demand' \
   && fail "Apex hat on_demand (muss ohne, Budget-Schutz)" || pass "Apex OHNE on_demand"
 printf '%s\n' "${WILD}" | grep -qF 'on_demand' \
   && pass "Wildcard MIT on_demand" || fail "Wildcard ohne on_demand"
-# Review 2.9: ACME-E-Mail liegt als globale Option im Header-Block, nicht
-# mehr pro Site in "issuer acme { }".
+# ACME-E-Mail liegt als globale Option im Header-Block statt pro Site in
+# "issuer acme { }".
 grep -qF 'email admin@example.test' "${CF}" \
   && pass "ACME-E-Mail als globale Option" || fail "globale email-Option fehlt"
 grep -qF 'issuer acme' "${CF}" \
@@ -142,7 +142,7 @@ pols = d.get("apps", {}).get("tls", {}).get("automation", {}).get("policies", []
 wild = [p for p in pols if p.get("subjects") == ["*.coder.test"]]
 assert wild, "Wildcard-Policy fehlt"
 assert wild[0].get("on_demand") is True, "Wildcard-Policy ohne on_demand"
-# Review 2.9: Apex braucht keine eigene Subject-Policy mehr (globale email-
+# Apex braucht keine eigene Subject-Policy (globale email-
 # Option); zählt hat nur, dass ausserhalb der Wildcard keine Policy
 # on_demand trägt (Budget-Schutz).
 for p in pols:

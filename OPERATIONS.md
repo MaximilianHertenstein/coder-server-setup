@@ -21,8 +21,7 @@ Ein `git pull` allein verändert **nichts** am laufenden System. Änderungen
 an generierten Dateien kommen erst durch einen erneuten Lauf von
 `setup-coder.sh` an. Verwaltete Dateien werden in ihrem Zielverzeichnis
 atomar ersetzt; weicht eine Datei ab, setzt der Lauf sie ohne Vorwarnung
-deterministisch neu (seit Review-Set 2026-10-03 kein Hashstore mehr,
-siehe Abschnitt 7).
+deterministisch neu (siehe Abschnitt 7).
 
 ## 2. Vom Setup erzeugte Dateien
 
@@ -225,8 +224,7 @@ Konfiguration validieren (ohne Eingriff):
 sudo docker compose -f /opt/coder/docker-compose.yml config --quiet
 ```
 
-TLS-Budget manuell sichten (kein automatischer Check mehr, Review-Set
-2026-10-03):
+TLS-Budget manuell sichten (kein automatischer Check):
 
 ```bash
 sudo docker exec caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" | wc -l
@@ -272,9 +270,8 @@ Generationen bleiben erhalten.
 
 - Prometheus und node-exporter laufen nur auf `127.0.0.1` (9090/9100) und
   sind von außen nirgends erreichbar.
-- Grafana ist seit Review-Set 2026-10-03 **nur noch an `127.0.0.1:3001`**
-  gebunden (vorübergehend waren es alle Interfaces mit ufw-Quellregeln;
-  die Altbestandsregeln räumt das Setup beim Lauf auf). Der Port ist von
+- Grafana ist **nur an `127.0.0.1:3001`** gebunden (vorhandene
+  ufw-Quellregeln auf Port 3001 räumt das Setup beim Lauf auf). Der Port ist von
   außen nirgends erreichbar und darf **nicht** am Router weitergeleitet
   werden (nur 80/443/22).
 - Zugang per SSH-Tunnel (von überall, auch außerhalb des Schulnetzes):
@@ -293,8 +290,7 @@ Generationen bleiben erhalten.
 - **Drei Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
   Coder-Target down, Root-Partition <10 % frei, letztes Backup älter als
   25 Stunden. Sie sind einsehbar unter `http://127.0.0.1:9090/alerts`
-  bzw. in Grafana. (Die beiden TLS-Regeln entfielen mit der check-tls-Ära,
-  Review-Set 2026-10-03.)
+  bzw. in Grafana.
 - Es gibt **keinen Benachrichtigungskanal** (kein Alertmanager, keine
   Mail/Telegram/Webhook): die Regeln klingeln nirgends, sie zeigen nur
   etwas, wer hinsieht. Metriken sind sichtbar, wer sie ansieht.
@@ -329,8 +325,8 @@ Bei rotem Abschlusscheck: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
 - PostgreSQL läuft auf `postgres:18-alpine` (Major-Tag, holt 18.x-Patches
   über `pull`; aktuell 18.6, Stand 2026-09-30). Achtung, geprüft am
   Test-Host: ab Major 18 mountet das Image das Volume unter
-  `/var/lib/postgresql` (Daten in `<major>/` darin), nicht mehr unter
-  `/var/lib/postgresql/data` – das 18er-Image startet sonst absichtlich
+  `/var/lib/postgresql` (Daten in `<major>/` darin, **nicht** unter
+  `/var/lib/postgresql/data`) – das 18er-Image startet sonst absichtlich
   nicht. Compose und Image wandern deshalb immer zusammen (beides erzeugt
   `setup-coder.sh` neu). Der Wechsel von 15 geschah
   vor der Inbetriebnahme per Dump/Restore mit Datenprobe (siehe
@@ -429,10 +425,8 @@ Produktion üben.**
 Das Setup schreibt verwaltete Dateien atomar (`write_managed`); weicht eine
 vorgefundene Datei inhaltlich ab, ersetzt der nächste Lauf sie **ohne
 Vorwarnung** durch die Setup-Fassung (gleicher Inhalt: Ziel-Inode bleibt
-unangetastet). Der Hashstore der früheren Runden
-(`/opt/coder/.generated-hashes`) ist mit dem Review-Set 2026-10-03
-entfallen – bei Upgrade-Läufen alter Stände räumt das Setup die Restdatei
-noch still mit.
+unangetastet). Eine Restdatei `/opt/coder/.generated-hashes` aus älteren
+Installationen wird beim Lauf still entfernt.
 
 Gewollte Anpassungen (Caddy-Snippets, Logrotate-Zeiten, fail2ban-Jails,
 Cron-Zeiten, SSH-Policy) daher im Repository bzw. in `setup-coder.sh`
@@ -453,8 +447,8 @@ ausführen – nicht dauerhaft auf dem Server korrigieren.
 | Offsite | **nicht eingerichtet** |
 | Metrik | nach jedem Erfolg `node-textfile/coder_backup.prom` (644, atomar) → `coder_backup_last_success_timestamp_seconds`; Fehlschlag des Metrik-Schreibens verwandelt ein gutes Backup nicht in einen Cron-Fehler |
 
-Zusätzlich zieht ein Setup-Lauf vor einem Upgrade ein Backup – seit
-Review-Set volumen-basiert erkannt (läuft ein Postgres-Container mit
+Zusätzlich zieht ein Setup-Lauf vor einem Upgrade ein Backup –
+volumen-basiert erkannt (läuft ein Postgres-Container mit
 `postgres_data`, wird er gestartet und per `pg_isready` abgeklopft, bevor
 gesichert wird; ohne `backup.sh` bricht der Lauf hart ab).
 `reset-coder.sh` sichert ebenfalls (Abbruch ohne Backup, außer `--force`).
@@ -505,8 +499,7 @@ for f in tests/*.sh; do bash "$f"; done
 
 Stand 2026-10-03: alle 9 Dateien in `tests/` Exit 0, 278 `PASS`,
 0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
-ohne Befund. (`t-b2-005` entfiel mit der check-tls-Ära, `t-b2-007` heißt
-jetzt `t-b2-007-write-managed.sh`.) Vollständige Setup-/VM-Läufe sind auf dem Test-Host
+ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.
 
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder
@@ -524,30 +517,35 @@ Bis DNS und Web-Portweiterleitung stehen, startet der
 Stack trotzdem – Caddy holt das Zertifikat dann nach (Skript ist idempotent,
 einfach erneut ausführen).
 
-> **Vorab klären (offen, Stand 2026-09-30):** Laut Betreiber läuft der
-> Schulserver künftig mit **IServ** auf dem zentralen Netzwerkserver.
-> Solange unklar ist, wer DNS, Wildcard und 80/443 übernimmt, bleiben die
-> Inbetriebnahme und die TLS-Frage (On-Demand vs. DNS-01) aufgeschoben.
+> **Vorab klären (offen):** Der Zielserver ist ein **frisches Debian ohne
+> eigenen Webserver**. **IServ** läuft auf einem anderen zentralen
+> Netzwerkserver, mit dem das Schulnetz verwaltet wird – vermutlich ist
+> dort auch der Reverse-Proxy. Solange unklar ist, wie 80/443 zum
+> Zielserver kommen (DNS direkt auf den Zielserver oder Durchreichung am
+> zentralen Server) und wer DNS/Wildcard übernimmt, bleibt die TLS-Frage
+> (On-Demand vs. DNS-01) aufgeschoben.
 
 ### Pre-Flight vor dem ersten Lauf (Betreiber)
 
 Zehn Minuten am Zielserver, bevor `sudo ./setup-coder.sh` läuft – geordnet
 nach dem, was das Skript **nicht** selbst prüft:
 
-1. **Webserver-Konflikt klären – besonders IServ.** Laut Betreiber läuft
-   der Schulserver künftig mit IServ; wenn am Zielserver IServ, nginx oder
-   Apache schon **80/443** halten, kann Caddy die Ports nicht binden:
+1. **Portlage 80/443 klären.** Der Zielserver ist ein frisches Debian
+   ohne eigenen Webserver; IServ (und vermutlich der Reverse-Proxy) läuft
+   auf einem anderen zentralen Netzwerkserver. Kurz nachprüfen, ob am
+   Zielserver schon etwas **80/443** hält (sonst kann Caddy die Ports
+   nicht binden):
 
    ```bash
    ss -ltnp | grep -E ':(80|443|5432) '
-   systemctl list-units --type=service --state=running | grep -Ei 'iserv|nginx|apache|caddy'
+   systemctl list-units --type=service --state=running | grep -Ei 'nginx|apache|caddy|iserv'
    ```
 
-   Bei fremdem Listener auf 80/443 **vor dem Lauf entscheiden**: Caddy
-   bekommt die Ports (IServ-Web umziehen/Proxy-Regel, s. Netzwerkadmin
-   Zeile 4) oder Coder läuft an anderer Stelle. Das Setup erwartet 80/443.
-   Eigenes Docker-Postgres (5432) ist kein Konflikt – der Stack
-   veröffentlicht diesen Port nicht.
+   Der entscheidende Teil ist extern: DNS zeigt direkt auf den Zielserver,
+   oder der zentrale Proxy leitet 80/443 dorthin durch (ACME-Pfade +
+   TLS-Passthrough/SNI, s. Netzwerkadmin Zeile 4). Das Setup erwartet
+   80/443 am Zielserver. Eigenes Docker-Postgres (5432) ist kein Konflikt –
+   der Stack veröffentlicht diesen Port nicht.
 2. **sshd muss auf Port 22 laufen** – sonst bricht das Skript eigens vor
    der ersten Firewall-Änderung ab (eigene Regel, `sshd -T | grep -i ^port`).
 3. **Internetabbindung** (Images + Zertifikate):
@@ -575,7 +573,7 @@ nach dem, was das Skript **nicht** selbst prüft:
 | 1 | A-Record `coder.ghse-unterricht.de` → öffentliche IP des Ziel-**Servers** | sonst keine Weboberfläche |
 | 2 | A-Record Wildcard `*.coder.ghse-unterricht.de` → gleiche IP | **Pflicht**: Coder vergibt Workspace-URLs im Format `<port>--<agent>--<workspace>--<user>.coder.ghse-unterricht.de`; ohne Wildcard laufen nur die Oberfläche und keine Workspace-App/Port-Forwarding |
 | 3 | Firewall/Router: **80/tcp und 443/tcp 1:1 an den Server** weiterleiten (443/udp optional für HTTP/3) | ACME braucht 80 (http-01) und 443 (tls-alpn-01); ohne beides kein Zertifikat |
-| 4 | Falls ein Proxy/Reverse-Proxy bestehen bleibt: `/.well-known/acme-challenge/` durchreichen **und** HTTPS als TLS-Passthrough (SNI) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft |
+| 4 | Falls der zentrale Proxy (vermutlich am IServ-Server) vor dem Zielserver bleibt: `/.well-known/acme-challenge/` durchreichen **und** HTTPS als TLS-Passthrough (SNI) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft |
 | 5 | SSH/22 bleibt ausschließlich aus dem Schulnetz erreichbar; keine öffentliche Weiterleitung | Passwortzugang ist für die erste Inbetriebnahme vorgesehen; ufw + fail2ban begrenzen Fehlversuche zusätzlich |
 | 6 | Nur wenn Zeile 3 dauerhaft nicht geht: KAS-Zugang für DNS-01 (Modul `caddy-dns/all-inkl`) selbst beschaffen bzw. herausgeben | Der Betreiber hat **keinen** DNS-Zugang – Zugangsdaten und Umstellung sind Aufgabe des Domainverwalters; der Betreiber fordert nur an, was in den Zeilen 1–4 steht |
 
@@ -588,9 +586,9 @@ ein eigenes Image (xcaddy-Build) und die KAS-Zugangsdaten in einer
 `600`-Datei auf dem Server, nie im Repository – die KAS-Zugangsdaten
 liegen beim **Domainverwalter**, nicht beim Betreiber (der hat keinen
 Zugang und muss sie nur anfordern, wenn Zeile 3 dauerhaft nicht geht).
-**Die Umstellung ist am 2026-09-30 aufgeschoben**, solange unklar ist, ob
-die Zone bei All-Inkl bleibt und wer DNS/Ports künftig übernimmt (IServ,
-siehe oben); bis
+**Die Umstellung ist aufgeschoben**, solange unklar ist, ob
+die Zone bei All-Inkl bleibt und wer DNS/Ports übernimmt (zentraler
+IServ-Server, siehe oben); bis
 dahin ist http-01/tls-alpn-01 der eingeschlagene Weg. Beachten: DNS-01
 löst nur die ACME-Frage – der Nutzerverkehr braucht weiterhin 80/443 bis
 zum Server.
@@ -647,7 +645,7 @@ zum Server.
 
 Nicht Teil der Inbetriebnahme, aber betriebsrelevant: die Wildcard-Zertifikate
 laufen über On-Demand-TLS mit dem gemeinsamen Let's-Encrypt-Budget der
-Domain; eine automatische Budget-Überwachung gibt es nicht mehr
-(Review-Set 2026-10-03), Erschöpfung fällt als HTTPS-Fehler auf (manuelle
+Domain; eine automatische Budget-Überwachung gibt es nicht,
+Erschöpfung fällt als HTTPS-Fehler auf (manuelle
 Sichtprüfung in Abschnitt 5, Details
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md), Abschnitte B1–B3).

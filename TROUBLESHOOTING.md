@@ -20,7 +20,7 @@ sudo docker compose -f /opt/coder/docker-compose.yml config --quiet
 tail -50 /var/log/coder-backup.log
 ```
 
-Zusammenfassung eines früheren Setup-Laufs steht am Ende dessen Ausgabe
+Zusammenfassung des letzten Setup-Laufs steht am Ende dessen Ausgabe
 (`[OK]`/`[WARNUNG]`/`[FEHLER]`). Das Setup meldet `FEHLER` nur, wenn es
 auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 
@@ -149,7 +149,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; Zählung jüngerer Zertifikate: `sudo docker exec caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" \| wc -l` |
 | **Erwartete Ursache** | On-Demand-TLS: Zertifikat wird erst bei Bedarf ausgestellt. Bei Erschöpfung des Wochenbudgets (50/Domain, geteilt) schlägt die Ausstellung fehl. |
-| **Sichere Behebung** | Abwarten und erneut prüfen; bei Budget-Verdacht die Zählung oben gegen die 50er-Grenze der Domain halten (automatische Überwachung entfiel mit dem Review-Set 2026-10-03). Budget-DoS-Muster: viele junge Zertifikatsdateien + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden, DNS-01 als eigentlichen Fix. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
+| **Sichere Behebung** | Abwarten und erneut prüfen; bei Budget-Verdacht die Zählung oben gegen die 50er-Grenze der Domain halten (keine automatische Überwachung). Budget-DoS-Muster: viele junge Zertifikatsdateien + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden, DNS-01 als eigentlichen Fix. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
 
 ### B4. SSH-Login schlägt fehl / ich sitze draußen
 
@@ -209,7 +209,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo docker ps -a`, `sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres`, `sudo docker logs coder-postgres --tail=50`, `sudo journalctl -u docker -n 50 --no-pager` |
 | **Erwartete Ursache** | Docker startet nach dem Netzwerk; Postgres braucht bis `healthy`, Coder hält sich an `depends_on: service_healthy`, `/healthz` braucht bei On-Demand-Erstausstellung ggf. Minuten. |
-| **Sichere Behebung** | Wie C1 (`docker compose up -d` winkelt den Stack an), danach `docker ps` und `/healthz` prüfen. Das frühere lesende Boot-Gate (`boot-check.sh`, `/var/log/coder-boot.log`) entfällt seit B8. |
+| **Sichere Behebung** | Wie C1 (`docker compose up -d` winkelt den Stack an), danach `docker ps` und `/healthz` prüfen. |
 
 ### C5. Prometheus zeigt 0 Alarmregeln / Grafana ohne Datasource
 
@@ -367,8 +367,8 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | Die eigene Änderung fehlt, die Datei enthält wieder die Setup-Version. Den Hashstore gibt es nicht mehr (`/opt/coder/.generated-hashes` am 2026-10-03 entfernt, bei Upgrade-Läufen alter Stände nur noch still aufgeräumt) – es gibt keine Drift-Warnung mehr. |
-| **Erwartete Ursache** | Hand-Änderung an einer verwalteten Datei (Caddy-Snippet, Cron-Zeit, fail2ban-Drop-In `jail.d/10-coder-sshd.local`, Logrotate, SSH-Drop-In). `write_managed` ersetzt inhaltliche Abweichungen seit dem Review-Set 2026-10-03 ohne Vorwarnung. |
+| **Diagnose** | Die eigene Änderung fehlt, die Datei enthält wieder die Setup-Version. Es gibt keine Drift-Warnung – `write_managed` ersetzt Abweichungen ohne Vorwarnung, die Hand-Änderung geht verloren. |
+| **Erwartete Ursache** | Hand-Änderung an einer verwalteten Datei (Caddy-Snippet, Cron-Zeit, fail2ban-Drop-In `jail.d/10-coder-sshd.local`, Logrotate, SSH-Drop-In). |
 | **Sichere Behebung** | Gewollte Änderung in `setup-coder.sh` aufnehmen (oder für SSH/fail2ban als vorrangiges eigenes Drop-In, z. B. `00-*.conf`) und Setup erneut ausführen – dauerhaft nur auf dem Server zu korrigieren, wird bei jedem Lauf verworfen. |
 
 ### G2. Passwort-Login: Setup meldet `OK` (D-SSH)

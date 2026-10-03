@@ -1,5 +1,5 @@
 #!/bin/bash
-# T-062 / B2-004 (Stand: Review SSH 2026-10-03 – allow statt limit, weil
+# T-062 / B2-004 (Stand: allow statt limit, weil
 # ufw limit die geteilte Schul-NAT drosselt; fail2ban bleibt der
 # Brute-Force-Schutz, Netzgrenze am Router, D-SSH).
 # Geprueft: die echten Stuecke aus setup-coder.sh (nach Zeilen extrahiert,
@@ -10,8 +10,7 @@
 #         (Schleife ueber SSHD_PORTS, idempotent), DANACH eigene alte
 #         limit-Regel loeschen (kein Fenster ohne SSH-Regel); fremde/
 #         Operator-Regeln nie loeschen, einzige Quellregel-Ausnahme ist die
-#         explizite 3001-Altbestands-Allowlist (Review-Set 2026-10-03,
-#         Fehler 1–3)
+#         explizite 3001-Altbestands-Allowlist)
 #   Abschlusscheck: jede erkannte Portnummer muss als ALLOW (Anywhere)
 #         stehen; LIMIT oder fehlende Regel = Fehler
 #   Statisch: kein Bypass, kein Restore, kein Delete ausser eigene limit +
@@ -272,7 +271,7 @@ grep -qF 'ufw limit 22/tcp' "${SETUP}" \
 # Delete-Zaehlung: genau ZWEI Zeilen gesamt, EINE im Anwendungsblock.
 # (1) eigene alte limit-Regel (im Block), (2) Altbestands-Schleife fuer die
 # veralteten Grafana-3001-Regeln ausserhalb des Blocks – die einzige
-# erlaubte Quellregel-Ausnahme (Review-Set 2026-10-03, Fehler 1–3).
+# erlaubte Quellregel-Ausnahme.
 DEL_ALL="$(grep -cF 'ufw --force delete' "${SETUP}" || true)"
 DEL_APPLY="$(grep -cF 'ufw --force delete' "${WORK}/apply.sh" || true)"
 [ "${DEL_ALL}" -eq 2 ] && [ "${DEL_APPLY}" -eq 1 ] \

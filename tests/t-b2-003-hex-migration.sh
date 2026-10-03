@@ -7,7 +7,7 @@
 #  3. Das Erstkonto-Passwort geht per stdin an den Container, nicht in docker-argv.
 #  4. Die .env traegt kein DOCKER_GID mehr; die GID steht fest in der Compose-Datei.
 #  5. setup.conf-Parser: CRLF/Quotes strippen, Domain hart pruefen,
-#     Env vor conf (Review 2.2).
+#     Env vor conf.
 set -euo pipefail
 
 FAIL=0
@@ -179,7 +179,7 @@ run_stmt <(printf '%s\n' "${STMT_FIRST}") "firstuser" "${GFHEX}"
 check_argv_clean "firstuser" "${GFHEX}" "${GFHEX:0:8}"
 grep -F -q -- "${GFHEX}" "${WORK}/firstuser.stdin" && pass "Erstkonto-Passwort geht per stdin" || fail "Erstkonto-Passwort fehlt in stdin"
 
-# ---------- PARSER (Review 2.2: setup.conf CRLF/Quotes, Domain-Guard) -------
+# ---------- PARSER (setup.conf CRLF/Quotes, Domain-Guard) -------------------
 # Der echte Parser-Block aus setup-coder.sh wird extrahiert und gegen echte
 # setup.conf-Fixtures ausgefuehrt: CRLF + umschliessende Quotes muessen
 # weg, eine ungueltige Domain muss hart abbrechen, Env gewinnt vor conf.

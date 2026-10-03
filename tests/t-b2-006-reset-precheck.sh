@@ -4,7 +4,7 @@
 # down), Projekt-Container-Ausschluss (sonst breche jeder Re-Run auf
 # laufendem Stack ab), wahrheitsgemaeße Meldungen (kein "Stack ist gestoppt"),
 # Verhalten des Ausschluss-Filters als Verhaltensfixture.
-# Review-Set 2026-10-03, §3: ausserdem kleine CLI (nur [] und --force,
+# Ausserdem kleine CLI (nur [] und --force,
 # Tippfehler abgelehnt) und harte Regel "keine Nicht-Compose-Container"
 # VOR jedem destruktiven Schritt (--force hebt sie nicht auf).
 # Nur /tmp, kein Docker, keine Produktion.
@@ -167,7 +167,7 @@ else
 fi
 
 # --- 7. Kleine CLI + harte Regel "keine Nicht-Compose-Container" ------------
-# Review-Set 2026-10-03, §3: nur [] und --force sind erlaubt; fremde
+# Nur [] und --force sind erlaubt; fremde
 # Container brechen VOR jedem destruktiven Schritt ab, --force hebt das
 # Gate nicht auf (es schuetzt vor verwaisten Containern, nicht vor Backup-
 # Problemen).

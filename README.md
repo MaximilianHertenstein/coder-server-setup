@@ -30,14 +30,14 @@ nicht im Repository.
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
 | Lokale Tests | Stand 2026-10-03: alle 9 Dateien in `tests/` grün (278 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-03 nach dem Korrektur-/Vereinfachungs-Review auf dem Test-Host `2.29.11.30`: zwei volle Läufe RC 0 (0 Fehler; Altbestand 3001/Cron/Hashstore aufgeräumt, sshd-Drop-In live geprüft, Details CHANGELOG), davor dieselbe Runde (SSH-/Grafana-Runde): erster Durchlauf RC 1 (ufw-Quellregel-Liste mit Komma schlug fehl, gefunden und gefixt), danach drei Re-Runs RC 0 (0 Fehler); davor Lauf 2026-10-01 nach der Review-Runde: drei Re-Runs RC 0 (je 46 s, 0 Fehler, Skripte byte-identisch; der erste Lauf fand den A2-Rechte-Bug, RC 1, fail-closed), frischer Pfad-A-Aufbau (Exit 0 in 58 s) und Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
+| Vollständiger Setup-Lauf auf echtem System | **zwei volle Läufe RC 0 am 2026-10-03** auf dem Test-Host `2.29.11.30` (0 Fehler; sshd-Drop-In live geprüft, Altbestand 3001/Cron aufgeräumt, Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
-| Monitoring | **abgenommen 2026-10-01, 2026-10-03 neu bestätigt** (Test-Host): Prometheus `ready` 200, Alarmregeln geladen (damals 6, dann 5, seit Review-Set 2026-10-03 aktuell 3: `BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`; TLS-Regeln entfielen mit dem check-tls-Ende, `TlsLogTruncated` mit A6), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metrik (Backup) vorhanden |
-| Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg. Review-Set 2026-10-03: Backup-Kopie außerhalb des Hosts bleibt **Anforderung an den Betrieb** (Ziel/Rhythmus zu entscheiden, kein Automatismus im Repo) |
+| Monitoring | **abgenommen, Stand 2026-10-03 (Test-Host):** Prometheus `ready` 200, 3 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metrik (Backup) vorhanden |
+| Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg. **Anforderung an den Betrieb:** Backup-Kopie außerhalb des Hosts (Ziel/Rhythmus zu entscheiden, kein Automatismus im Repo) |
 | SSH-Härtung | **Entschieden (D-SSH, 2026-09-30; Regelwerk revidiert 2026-10-03):** Passwort-Login bleibt Standard; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `allow` für die erkannten sshd-Ports (kein `limit` – würde die geteilte Schul-NAT drosseln), fail2ban zusätzlich und ein eigenes SSH-Drop-In (`/etc/ssh/sshd_config.d/99-coder.conf`: Passwort-Login explizit an, `PermitRootLogin prohibit-password`; Details und Key-only-Umstellung in [SECURITY.md](SECURITY.md) §1) |
-| Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting/IServ). Von den D-Entscheidungen sonst nichts mehr offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
+| Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting und Zuständigkeit für DNS/Ports). Von den D-Entscheidungen sonst nichts offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
 
-### Offene Punkte – wer macht was (Stand 2026-10-01)
+### Offene Punkte – wer macht was (Stand 2026-10-03)
 
 Alles, was noch jemanden braucht, an einem Ort (Details jeweils in der
 verlinkten Stelle):
@@ -45,28 +45,29 @@ verlinkten Stelle):
 | Was | Wer | Wo |
 |---|---|---|
 | Pre-Flight-Checkliste durchlaufen, dann erster `setup-coder.sh`-Lauf am Schulserver | Betreiber | [OPERATIONS.md](OPERATIONS.md) §11 |
-| IServ/nginx-Konflikt auf 80/443 **vor** dem Lauf klären (Entscheidung: Ports an Caddy vs. anderer Ort) | Betreiber + Hosting/IServ | §11 Pre-Flight Punkt 1 |
+| Portlage 80/443 klären: Der Zielserver ist ein **frisches Debian ohne Webserver** – IServ läuft auf einem anderen (zentralen) Server, mit dem das Schulnetz verwaltet wird, vermutlich samt Reverse-Proxy. Entscheidung: DNS zeigt direkt auf den Zielserver, oder der zentrale Proxy leitet 80/443 durch (ACME-Pfade + TLS-Passthrough/SNI) | Betreiber + Netzwerkadmin | §11 Pre-Flight Punkt 1, §11 „Netzwerkadmin" Zeile 4 |
 | DNS: A-Record, Wildcard, 80/443-Weiterleitung, Proxy-Durchreichung beantragen. **Befund 2026-10-03:** Zone bei Kasserver/All-Inkl (`ns5/ns6.kasserver.com`), `A` für die Apex zeigt aktuell `85.13.130.100` (alte Schulseite, MX ebenfalls Kasserver), `93.240.138.106` = Kreis-Proxy `pmg.em-ghse.logoip.de` (HTTP 451) – der Weg für 80/443 und wer Kasserver-Zugang/API-Token hat, ist mit dem Schulträger zu klären | Netzwerkadmin; der Betreiber fordert nur Zeilen 1–4 an | §11 „Netzwerkadmin" |
 | 03:00-Rebootfenster mit Schulbetrieb abstimmen und im Wartungsplan hinterlegen | Betreiber | OPERATIONS §7 „Reboot", [SECURITY.md](SECURITY.md) §9 D-Reboot-Fenster |
-| Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT des Workspace-Agenten, A9); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (BLOCKER B-11 – seit Review-Set 2026-10-03 bricht `reset-coder.sh` bei Nicht-Compose-Containern hart ab, nichts wird automatisch gelöscht) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT des Workspace-Agenten, A9); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (B-11: Bei Nicht-Compose-Containern bricht `reset-coder.sh` hart ab, es wird nichts gelöscht) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
-| Zone/Hosting/IServ klären **und beim Netzwerkadmin das DNS-API-Token für die Zone erfragen** – erst danach DNS-01-Modul einbauen; bis dahin läuft On-Demand-TLS weiter (Let's-Encrypt-Limit 50 Zertifikate/Woche pro Domain, Warnung ab 20) | Domainverwalter/Hosting, **nicht** der Betreiber (Token-Anfrage: Betreiber) | OPERATIONS §11 Zeile 6, [SECURITY.md](SECURITY.md) §9 D-TLS |
+| Zone/Hosting klären **und beim Netzwerkadmin das DNS-API-Token für die Zone erfragen** – erst danach DNS-01-Modul einbauen; bis dahin läuft On-Demand-TLS (Let's-Encrypt-Limit 50 Zertifikate/Woche pro Domain, Warnung ab 20) | Domainverwalter/Hosting, **nicht** der Betreiber (Token-Anfrage: Betreiber) | OPERATIONS §11 Zeile 6, [SECURITY.md](SECURITY.md) §9 D-TLS |
 | Produktionsfreigabe aussprechen – bewusst hier nicht dokumentiert | Betreiber | diese README |
 | Unterrichtsdaten: Workspace-Homes als akzeptierter Verlust deklarieren oder eigene Volume-Sicherung mit einrichten (vor Produktivbetrieb) | Betreiber | [RESTORE.md](RESTORE.md) „Was gesichert wird" |
-| Alarmweg/Empfänger klären, sobald Alarme jemandem zugestellt werden sollen (5 Regeln existieren, aber kein Kanal – D-Monitoring gilt bis dahin) | Betreiber | [SECURITY.md](SECURITY.md) §9 D-Monitoring |
-| `FAIL2BAN_IGNORE_IP`: **nur** echte Admin-Plätze eintragen, ausdrücklich nicht die Schul-NAT (entschieden Review-Set 2026-10-03: Rateversuche aus dem Schulnetz sollen sperren; Recovery bei gesperrter NAT: anderes Netz oder Proxmox-Konsole). Default `127.0.0.1/8 ::1` | Betreiber | [SECURITY.md](SECURITY.md) §2, `setup.conf.example` |
+| Alarmweg/Empfänger klären, sobald Alarme jemandem zugestellt werden sollen (3 Regeln existieren, aber kein Kanal – D-Monitoring gilt bis dahin) | Betreiber | [SECURITY.md](SECURITY.md) §9 D-Monitoring |
+| `FAIL2BAN_IGNORE_IP`: **nur** echte Admin-Plätze eintragen, ausdrücklich nicht die Schul-NAT (Rateversuche aus dem Schulnetz sollen sperren; Recovery bei gesperrter NAT: anderes Netz oder Proxmox-Konsole). Default `127.0.0.1/8 ::1` | Betreiber | [SECURITY.md](SECURITY.md) §2, `setup.conf.example` |
 | Offene Verifikation: RTO inkl. VM-Boot, `/healthz` + Wildcard, volle Platte, 03:00-Fire | wartet auf frische VM / DNS / Kernel-Update | Prüfstand-Tabelle unten |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
-**Zielbetrieb:** ein Schulserver, per SSH nur aus dem Schulnetz
-erreichbar; die Weiterleitung der Weboberfläche (80/443) muss noch durch einen
-Netzwerkadmin umgesetzt werden – bis dahin kann das Setup dort keine
-Zertifikate ausstellen. Laut Betreiber (2026-09-30) soll der Schulserver
-künftig mit **IServ** auf dem zentralen Netzwerkserver laufen; bis
-feststeht, wer DNS, Wildcard und 80/443 übernimmt, bleiben die TLS-
-Umstellung auf DNS-01 (D-TLS) und der Inbetriebnahme-Termin aufgeschoben.
-Der Betreiber hat **keinen** DNS-Zugang – Anforderungen laufen über den
+**Zielbetrieb:** ein Schulserver (frisches Debian 13), per SSH nur aus dem
+Schulnetz erreichbar. IServ läuft **nicht** auf diesem Server, sondern auf
+einem anderen zentralen Netzwerkserver, mit dem das Schulnetz verwaltet
+wird – vermutlich ist dort auch der Reverse-Proxy. Offen ist, wie 80/443
+zum Zielserver kommen: DNS direkt auf den Zielserver, oder Durchreichung
+bzw. Proxy-Regel am zentralen Server. Bis das steht, kann das Setup dort
+keine Zertifikate ausstellen; die TLS-Umstellung auf DNS-01 (D-TLS)
+wartet zusätzlich auf Klärung von Zone/Hosting. Der Betreiber hat
+**keinen** DNS-Zugang – Anforderungen laufen über den
 Netzwerkadmin ([OPERATIONS.md](OPERATIONS.md) §11).
 Der aktuelle Test-Host `2.29.11.30` ist eine
 Hetzner-VM, die irgendwann abgeschaltet wird. **Wer was macht** (DNS +
@@ -103,8 +104,7 @@ Werte über `setup.conf` neben dem Skript (gitignored, Vorlage
 
 Verwaltete Dateien werden atomar geschrieben und bei Abweichung
 deterministisch neu gesetzt – Hand-Anpassungen an generierten Dateien
-gehen beim nächsten Lauf ohne Warnung verloren (der Hashstore der früheren
-Runden wurde mit dem Review-Set 2026-10-03 entfernt; gewollte Anpassungen
+gehen beim nächsten Lauf ohne Warnung verloren; gewollte Anpassungen
 gehören nach `/opt/coder/setup.conf` oder in den Repo-Quellen, Details in
 [OPERATIONS.md](OPERATIONS.md)).
 
@@ -366,8 +366,8 @@ Produktivsystem geprüft werden:
 1. Vollständiger Lauf von `setup-coder.sh` auf frischem Debian 13
    (inkl. Paketinstallation, Image-Pull, Let's-Encrypt-Erstausstellung).
 2. Re-Run auf laufendem Stack (Idempotenz); Hand-Änderungen an
-   generierten Dateien werden seit Review-Set 2026-10-03 ohne Warnung
-   deterministisch überschrieben (`write_managed`-Test belegt das
+   generierten Dateien werden ohne Warnung deterministisch überschrieben
+   (`write_managed`-Test belegt das
    Schreibverhalten).
 3. Echtes Backup inkl. `pg_dump`, Cron-Lauf um 01:00, logrotate,
    Verhalten bei vollem Speicher.
@@ -399,9 +399,9 @@ Produktivsystem geprüft werden:
 | 2 | erledigt 2026-09-30 19:05: Re-Run RC 0 in 48 s; Hand-Patch an der Compose-Datei wurde als Drift erkannt und deterministisch regeneriert, Stack nicht neu erstellt; erneut bestätigt 2026-10-01 nach der Skript-Extraktion: zwei Re-Runs RC 0 (56 s / 47 s), mtimes der sechs Wartungsskripte unverändert, 0 Drift |
 | 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher bleibt offen – ein echter Plattenausfall ist nur mit Rettungskonsole sicher zurückspielbar |
 | 4 | fast erledigt: Dump-Import isoliert 3,0 s, Major-Wechsel 15 → 18 live (2,3 s), **Pfad A am 2026-10-01 komplett** (Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück; 1 min 50 s ohne VM-Boot); offen bleibt nur RTO inkl. VM-Boot/Paketinstallation und `/healthz` unter echtem DNS |
-| 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); Reboot-Fenster konfiguriert geprüft (`52-coder-reboot`: `Automatic-Reboot true`, `03:00`) – tatsächlicher Fire noch nicht beobachtet; Boot-Gate `boot-check.sh` entfällt seit B8 – Wiederanlauf nach Reboot per `docker ps` und `/healthz` prüfen |
-| 6 | erledigt: Re-Run ließ genau eine `22/tcp LIMIT`-Regel (v4/v6) stehen; weltweite `allow 22/tcp` wird entfernt, Quellregeln bleiben unangetastet, fail2ban aktiv – **Stand 2026-10-03: Verfahren auf `allow` umgestellt** (eigene `limit`-Regel wird entfernt, siehe D-SSH-Revision; zusätzlich wird der Altbestand der Grafana-3001-Quellregeln innerhalb einer harten Allowlist entfernt) |
-| 7 | erledigt, inklusive Rest: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und Dumps erhalten; der Pfad „fremder Container“ wurde mit einem bewusst fremden Container geprüft (als `fremd: fremd-inventartest` gemeldet, danach selbst entfernt), Neuaufbau mit Owner-Konto grün. **Seit Review-Set 2026-10-03:** Nicht-Compose-Container führen zum harten Abbruch vor jeder Löschung (`--force` hebt das Gate nicht auf) |
+| 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); Reboot-Fenster konfiguriert geprüft (`52-coder-reboot`: `Automatic-Reboot true`, `03:00`) – tatsächlicher Fire noch nicht beobachtet; Wiederanlauf nach Reboot per `docker ps` und `/healthz` prüfen |
+| 6 | erledigt: Verfahren `allow` – weltweite `allow 22/tcp`, eigene `limit`-Regel (v4/v6) wird entfernt, Quellregeln bleiben unangetastet, fail2ban aktiv; Altbestand der Grafana-3001-Quellregeln wird innerhalb einer harten Allowlist entfernt |
+| 7 | erledigt, inklusive Rest: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und Dumps erhalten; der Pfad „fremder Container“ wurde mit einem bewusst fremden Container geprüft (als `fremd: fremd-inventartest` gemeldet, danach selbst entfernt), Neuaufbau mit Owner-Konto grün. Nicht-Compose-Container führen zum harten Abbruch vor jeder Löschung (`--force` hebt das Gate nicht auf) |
 | 8 | als Skript entfällt (D-SSH); optional manuell: SSH-Härtungs-Drop-In aus [SECURITY.md](SECURITY.md) §1, nur mit getestetem Key-Login und Zweit-Zugang |
 | 9 | teilweise: von außen 22/80/443 offen, 9090/9100/3001/3000/8080 geschlossen; Wildcard-DNS und Workspace-Subdomain nicht prüfbar, solange die Domain nicht auf den Server zeigt |
 | 10 | entfällt (D-Offsite) |

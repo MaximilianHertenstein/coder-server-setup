@@ -8,8 +8,8 @@
 # riskieren. Betrifft NUR den Coder-Stack, nicht den Server selbst
 # (SSH/Firewall/OS bleiben unverändert).
 #
-# Ablauf (F-011/P-019): Inventar (hart: Nicht-Compose-Container = Abbruch,
-# Review-Set 2026-10-03 §3) -> Backup -> Bestätigung erst nach
+# Ablauf (F-011/P-019): Inventar (hart: Nicht-Compose-Container = Abbruch)
+# -> Backup -> Bestätigung erst nach
 # Backup-Ergebnis -> Löschung. Mit --force bei Backup-Fehlschlag zusätzlich
 # Zweitbestätigung mit Anzeige des neuesten Backups.
 # Nutzung: sudo /opt/coder/reset-coder.sh [--force]
@@ -41,7 +41,7 @@ fi
 export CODER_MAINTENANCE_LOCK_HELD=1
 
 FORCE=false
-# Kleine CLI (Review-Set 2026-10-03, §3-Small): erlaubt sind genau keine
+# Kleine CLI: erlaubt sind genau keine
 # Argumente oder --force. Ein Tippfehler darf nicht still als "ohne --force"
 # weiterlaufen, und Extra-Argumente werden nicht geschluckt.
 if [ "$#" -gt 1 ] || { [ "$#" -ge 1 ] && [ "$1" != "--force" ]; }; then
@@ -72,7 +72,7 @@ if [ -z "${PROJECT:-}" ]; then
 fi
 
 echo "############################################################"
-echo "Inventar VOR dem Reset – Harte Regel (Review-Set 2026-10-03, §3):"
+echo "Inventar VOR dem Reset – Harte Regel:"
 echo "es darf KEINE Nicht-Compose-Container geben. Workspace-Container"
 echo "entstehen über den Docker-Socket, nicht über docker-compose.yml –"
 echo "'down' erfasst sie nicht; mit gelöschter DB liefen sie verwaist"

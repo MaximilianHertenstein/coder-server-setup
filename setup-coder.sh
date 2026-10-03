@@ -147,8 +147,7 @@ fi
 : "${PROMETHEUS_VERSION:=v3.15.0}"        # https://github.com/prometheus/prometheus/releases
 : "${GRAFANA_VERSION:=12.4.12}"           # https://github.com/grafana/grafana/releases
 : "${NODE_EXPORTER_VERSION:=v1.12.1}"     # https://github.com/prometheus/node_exporter/releases
-# Review 0.3 + Punkt-3-Entscheidung (Review-Set 2026-10-03): Admin-
-# Adressen, die fail2ban nie sperren darf – NUR echte Admin-Plätze hier
+# Admin-Adressen, die fail2ban nie sperren darf – NUR echte Admin-Plätze hier
 # eintragen, ausdrücklich NICHT die geteilte Schul-NAT: Rateversuche aus
 # dem Schulnetz sollen nach 5 Fehlversuchen sperren. Bewusst akzeptiert:
 # die gemeinsame NAT-IP kann dann gesperrt sein (Recovery: anderes Netz
@@ -162,7 +161,7 @@ fi
 # Versionswechsel ist ein bewusster Compose-Tag-Eintrag; Grafana-Downgrades
 # sind wegen der lokalen SQLite-Daten bewusste Manuellearbeit (Release-Notes
 # lesen). POSTGRES_VERSION wird gar nicht verwaltet: Postgres-Major nur
-# manuell ändern, immer mit frischem Backup (Review-Set 2026-10-03, Fehler 7).
+# manuell ändern, immer mit frischem Backup.
 # Versions.env: nur Version, keine Geheimnisse -> 644, ohne sudo lesbar.
 # Downgrade-Versuch hart abgebrochen, sofern nicht ausdrücklich
 # CODER_ALLOW_DOWNGRADE=yes gesetzt ist (bewusster Rollback, siehe
@@ -211,11 +210,9 @@ check_container_running() {
   fi
 }
 
-# B-012-Drift-Warnung/Hashstore am 2026-10-03 entfernt (Review-Set §4A):
 # Das Setup ist deklarativer Besitzer der generierten Dateien, das
-# Überschreiben von Handänderungen ist in README/OPERATIONS dokumentiert –
-# die Hash-Infrastruktur war dafür zusätzliche Mechanik ohne eigenen Nutzen.
-# Was bleibt: Temp schreiben, validieren, atomar ersetzen.
+# Überschreiben von Handänderungen ist in README/OPERATIONS dokumentiert.
+# Was zählt: Temp schreiben, validieren, atomar ersetzen.
 
 # Atomar eine vom Setup verwaltete Datei schreiben. Die temporäre Datei liegt
 # im Zielverzeichnis, damit mv dieselbe Dateisystem-Grenze nicht überschreitet.
@@ -388,7 +385,7 @@ apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-co
 # Standard-Installation bis die Root-Partition voll ist (Plattenkiller Nr. 1);
 # eine projektweite compose-"logging:"-Anker-Datei deckte nur die eigenen
 # Container ab, nicht z.B. "docker run"-Experimente oder spätere Projekte
-# (Review 2.10: Anker entfernt, daemon.json ist die einzige Quelle).
+# (Anker entfernt; daemon.json ist die einzige Quelle).
 # Deshalb hier die daemon-weite Vorgabe – und KEINE Fremdkonfiguration anfassen: eine
 # vorhandene daemon.json ohne unsere Log-Schlüssel wird weder überschrieben
 # (insecure-registries, live-restore, mirrors gingen verloren) noch still
@@ -423,8 +420,7 @@ EOF
 fi
 # Die Optionen liest der Daemon nur beim Start. Neu starten nur, wenn WIR die
 # Datei gerade geschrieben haben – und nur, wenn GAR KEINE Container laufen
-# (Review-Set 2026-10-03, Fehler-15-Folge: "keine eigenen Container" wäre zu
-# schwach, auch fremde Dienste hängen am Daemon). Läuft schon etwas, ist das
+# (auch fremde Dienste hängen am Daemon). Läuft schon etwas, ist das
 # ein ungefragter Ausfall; dann greift die Änderung erst beim nächsten
 # geplanten Neustart und das wird hier ausdrücklich gewarnt, statt es still
 # hinzunehmen.
@@ -468,7 +464,7 @@ cd /opt/coder
 if [ ! -f /opt/coder/.env ]; then
   # A5/P-011: fehlt die .env NUR teilweise, bricht das Skript unten ab. Fehlt
   # sie ganz, würde dieser Zweig frische Passwörter würfeln, während
-  # coder_postgres_data die alten behält – Coder käme nicht mehr an die DB
+  # coder_postgres_data die alten behält – sonst käme Coder nicht an die DB
   # (Crashloop) und nichts würde warnen. Also vor dem Würfeln prüfen, ob die
   # Datenbank-Volume schon existiert; im Zweifel abbrechen statt zerstören.
   DOCKER_VOLUMES="$(docker volume ls -q 2>/dev/null || true)"
@@ -593,8 +589,7 @@ services:
       - CODER_PROMETHEUS_COLLECT_AGENT_STATS=true
       - CODER_PROMETHEUS_ADDRESS=0.0.0.0:2112
       # B6: Telemetrie an Coder, Inc. bewusst aus – unabhängig davon, was der
-      # Build aktuell standardmäßig tut (Review 1.8: keine unbelegten
-      # Editions-Behauptungen im Kommentar).
+      # Build aktuell standardmäßig tut.
       - CODER_TELEMETRY_ENABLE=false
       # A8: Coder sitzt hinter Caddy und sieht ohne diese Werte nur die
       # Container-IP des Proxys – Audit-Log und IP-Rate-Limits würden überall
@@ -685,11 +680,11 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
       # Kein GF_SERVER_ROOT_URL nötig – Zugriff per IP (Schulnetz oder
       # SSH-Tunnel), nicht über eine eigene Domain.
-      # Telemetrie/Update-Checks an Grafana Inc. aus (Review 1.8): passt zur
+      # Telemetrie/Update-Checks an Grafana Inc. aus: passt zur
       # bewusst telemetriefreien Haltung des Stacks (siehe CODER_TELEMETRY).
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
-    # Review-Set 2026-10-03 (Fehler 1–3): NICHT auf allen Interfaces und
+    # NICHT auf allen Interfaces und
     # NICHT per ufw-Quellregeln schützen. Docker-published Ports umgehen den
     # ufw-INPUT-Pfad (IPv4-DNAT, Docker-Doku), und RFC1918-Quellen
     # (10/8, 172.16/12, 192.168/16) sind keine Präzisionsgrenze für "unser
@@ -749,9 +744,9 @@ retry3 docker compose pull
 #     Namen; für Namen IM Muster kann er es weiterhin auslösen – das Muster
 #     ist ein grober Filter, kein Budget-Schutz (P-005, Dokumentation in
 #     SECURITY.md). Wochenbudget 50/Woche pro registrierter Domain bleibt bis
-#     D-TLS (DNS-01-Wildcard ohne On-Demand) das Thema. Automatische
-#     Budget-Überwachung gibt es nicht mehr (Review-Set 2026-10-03 §4D:
-#     Zählung war zu indirekt) – Erschöpfung fällt als HTTPS-Fehler auf;
+#     D-TLS (DNS-01-Wildcard ohne On-Demand) das Thema.
+#     Eine automatische Budget-Überwachung gibt es nicht (manuelle
+#     Sichtprüfung) – Erschöpfung fällt als HTTPS-Fehler auf;
 #     Gegenmittel ist DNS-01, sobald Zone/Token geklärt sind (D-TLS).
 #
 # Muster (Quelle: Coder-Quellcode coderd/workspaceapps/appurl/appurl.go,
@@ -818,7 +813,7 @@ ${DOMAIN_CODER} {
 }
 EOF
 
-# Review 2.6: Prometheus bekommt SIGHUP bei jedem Lauf, solange es lief –
+# Prometheus bekommt SIGHUP bei jedem Lauf, solange es läuft –
 # Reload statt Neustart (P-025), ohne Hash-Vergleich: ein SIGHUP auf
 # unveränderte Regeln ist ein No-Op (braucht kein --web.enable-lifecycle).
 # Nur Grafana hat keine Reload-API und braucht weiterhin den Hash – dessen
@@ -927,7 +922,7 @@ if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' ')
   fi
 fi
 
-# 1.1/Review + Fehler 5 (Review-Set 2026-10-03): KEIN Upgrade ohne frisches
+# KEIN Upgrade ohne frisches
 # Backup. Schritt 3 zieht Bilder und "up -d" kann eine Coder-DB-Schema-
 # Migration ausführen – ohne Dump wäre danach kein Rollback möglich.
 # Entscheidend ist der BESTAND (DB-Volume), nicht ob der postgres-Container
@@ -974,7 +969,7 @@ fi
 # sie die Live-Platte erreicht haben – hier wird nur noch gestartet.
 docker compose up -d
 
-# A7/A1 + Fehler-6-Entscheidung (Review-Set 2026-10-03): die wirksam
+# Die wirksam
 # gewesene Version wird bewusst SOFORT nach "up -d" persistiert, nicht erst
 # nach den Health-Checks. Grund: die DB-Migration läuft beim Start der neuen
 # Coder-Version, nicht erst bei "gesund" – würde erst nach Healthcheck
@@ -1062,7 +1057,7 @@ fi
 ufw default deny incoming
 ufw default allow outgoing
 # SSH: allow für die im Preflight erkannten sshd-Ports (funktioniert auch
-# bei einem Nicht-22-Port, der frühere Harte-Abbruch entfiel).
+# bei einem Nicht-22-Port).
 for _ssh_p in ${SSHD_PORTS}; do
   ufw allow "${_ssh_p}/tcp"
 done
@@ -1078,14 +1073,13 @@ ufw --force delete limit 22/tcp > /dev/null 2>&1 || true
 # Abschlusscheck "fail2ban-client status sshd" das (Jail antwortet nicht).
 # port traegt die im Preflight erkannten sshd-Ports (anders als Debian-Default
 # "ssh" = nur 22 wuerde ein Nicht-22-Port nie beobachtet).
-# B7/Review 1.4+2.3: Eigene Jails in einen Drop-In unter jail.d/ legen.
+# B7: Eigene Jails in einen Drop-In unter jail.d/ legen.
 # Lese-Reihenfolge von fail2ban (man jail.conf):
 #   jail.conf -> jail.d/*.conf -> jail.local -> jail.d/*.local
 # Unser Dateiname faellt unter "jail.d/*.local" und hat damit VORRANG vor
 # einer Hand-angelegten jail.local – dort geschriebene Jails greifen also
 # NICHT. Deshalb WARN, solange jail.local existiert, statt sie still
-# anzutasten (die alte hash-guardierte Entfernung entfiel mit Review 2.3:
-# ohne Produktion gibt es keine setup-eigene Alt-Datei mehr).
+# anzutasten (ohne Produktion gibt es keine setup-eigene Alt-Datei).
 JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"
 if [ -f /etc/fail2ban/jail.local ]; then
   warn "Vorgefunden: /etc/fail2ban/jail.local – unser Drop-In ${JAIL_DROPIN} hat laut Lese-Reihenfolge Vorrang, dort geschriebene Jails greifen nicht. Eigene Werte in den Drop-In übernehmen und jail.local entfernen."
@@ -1093,7 +1087,7 @@ fi
 mkdir -p /etc/fail2ban/jail.d
 # bantime.increment verlängert Wiederholungssperren. ignoreip enthält NUR
 # Admin-Plätze (Default loopback); die Schul-NAT wird bewusst NICHT
-# eingetragen (Punkt 3, Review-Set 2026-10-03): Rateversuche aus dem
+# eingetragen: Rateversuche aus dem
 # Schulnetz sollen sperren. Werte dauerhaft in setup.conf eintragen
 # (Schlüssel FAIL2BAN_IGNORE_IP, siehe setup.conf.example).
 write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<EOF
@@ -1135,7 +1129,7 @@ ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 443/udp
 # Grafana 3001: alte Quellregeln aus der "Schulnetz via ufw"-Ära entfernen
-# (Review-Set 2026-10-03, Fehler 1–3 – Grafana ist jetzt loopback-gebunden,
+# (Grafana ist loopback-gebunden,
 # eine ufw-Regel wäre nur noch eine Lug-Regel). Idempotent: nicht vorhanden =
 # stiller No-Op. Reihenfolge: Regeln löschen, dann unten "enable".
 for _spec in \
@@ -1161,7 +1155,7 @@ else
   fail "ufw ist NICHT aktiv"
 fi
 # SSH: die im Preflight erkannten Ports müssen als ALLOW (Anywhere) stehen;
-# eine LIMIT-Regel zählt nicht mehr (D-SSH: ufw limit würde die geteilte
+# eine LIMIT-Regel erfüllt diesen Check nicht (D-SSH: ufw limit würde die geteilte
 # Schul-NAT drosseln, fail2ban ist der Brute-Force-Schutz) und Quellregeln
 # allein zahlen auch nicht – diese Firewall soll den Zugang nur nicht
 # versehentlich verschließen, die Netzgrenze liegt am Router.
@@ -1184,7 +1178,7 @@ if fail2ban-client status sshd > /dev/null 2>&1; then
 else
   fail "fail2ban-Client oder Jail 'sshd' antwortet nicht – prüfen mit: sudo fail2ban-client status"
 fi
-# D-SSH/Policy (Review-Set 2026-10-03, Abschnitte 0/5): Passwort-Login für
+# D-SSH/Policy: Passwort-Login für
 # normale Benutzer ausdrücklich erlaubt, root bleibt bei Schlüssel. Das
 # "von überall" hält die ufw-ALLOW-Regel oben; hier wird die sshd-Seite
 # aktiv gesetzt statt nur beobachtet. Validierung: sshd -T über die GESAMTE
@@ -1231,7 +1225,7 @@ if grep -qi '^passwordauthentication yes' <<< "${SSHD_EFFECTIVE_CONFIG}" \
 else
   fail "SSH-Passwort-Login NICHT aktiv (erwartet yes in ${SSHD_DROPIN}) – prüfen mit: sudo sshd -T | grep -iE 'passwordauthentication|kbdinteractive' (Vorrang anderer Drop-Ins?)"
 fi
-# Review 0.3a: root per Passwort von ueberall waere ein Upgrade-Pfad jeden
+# root per Passwort von ueberall waere ein Upgrade-Pfad jeden
 # Brute-Forces – unser Drop-In schreibt prohibit-password; Warnung fängt
 # Vorrang fremder Drop-Ins/Altkonfiguration ab.
 if grep -qi '^permitrootlogin yes' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
@@ -1256,7 +1250,7 @@ if grep -qE '^443/udp[[:space:]]' <<< "${UFW_STATUS}"; then
 else
   fail "Port 443/udp fehlt in ufw"
 fi
-# Grafana 3001 (Review-Set 2026-10-03, Fehler 1–4): bewusst KEINE
+# Grafana 3001: bewusst KEINE
 # ufw-Regel – Loopback-Bindung ist der Schutz; eine stehengebliebene Altregel
 # wäre eine Lug-Regel (behauptet "Schulnetz-Schutz", den Docker ohnehin
 # umgeht) und wird oben bereits idempotent gelöscht.
@@ -1288,9 +1282,8 @@ Unattended-Upgrade::Automatic-Reboot-Time "03:00";
 EOF
 
 APT_UU_CONFIG="$(apt-config dump 2>/dev/null || true)"
-# Fehler 4 (Review-Set 2026-10-03): unattended-upgrades ist auf Debian ein
-# oneshot-Service, den apt-daily-upgrade.timer anstößt – "dienst läuft
-# dauerhaft" war ein False-Failure. Geprüft wird der Timer (aktiv +
+# unattended-upgrades ist auf Debian ein oneshot-Service, den
+# apt-daily-upgrade.timer anstößt – geprüft wird der Timer (aktiv +
 # enabled), dazu die APT::Periodic-Zeile oben.
 if systemctl is-active --quiet apt-daily-upgrade.timer \
   && systemctl is-enabled --quiet apt-daily-upgrade.timer; then
@@ -1318,10 +1311,9 @@ for _src in "${SETUP_DIR}"/scripts/*.sh; do
   _src_base="$(basename "${_src}")"
   write_managed "/opt/coder/${_src_base}" 755 "${_src_base}" < "${_src}"
 done
-# Alte TLS-Check-Ära (A6/B-005: check-tls.sh + Cron + Metrik) am
-# 2026-10-03 entfernt (Review-Set §4D/Fehler 8–9): Caddy betreibt ACME
-# selbst, die Zählung war zu indirekt für das tatsächliche Budget.
-# Hinterlassenschaften still entfernen – jeweils idempotenter No-Op.
+# Alten TLS-Check-Bestand (check-tls.sh, Cron, Metrik, Log) still entfernen –
+# Caddy betreibt ACME selbst, eine eigene Zählung gibt es nicht (D-TLS);
+# jeweils idempotenter No-Op.
 rm -f /etc/cron.d/coder-tlscheck /opt/coder/check-tls.sh \
       /var/log/coder-tls.log /opt/coder/node-textfile/coder_tls.prom
 
@@ -1360,9 +1352,8 @@ write_managed "/etc/logrotate.d/coder-backup" 644 "coder-backup-logrotate" <<'EO
 }
 EOF
 
-# C4/Update: coder-logs-Logrotate entfiel mit der TLS-Check-Ära am
-# 2026-10-03 (errotierte nur /var/log/coder-tls.log; coder-boot.log schon
-# mit B8, coder-backup.log hat eigene Datei). Stale Datei entfernen.
+# C4/Update: überflüssige Logrotate-Datei entfernen (coder-backup.log hat
+# eine eigene Datei).
 rm -f /etc/logrotate.d/coder-logs
 
 if systemctl is-active --quiet cron; then

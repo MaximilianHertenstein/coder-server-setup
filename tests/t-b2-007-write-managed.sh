@@ -2,9 +2,9 @@
 # T-026-Delta / B2-007: zentraler atomarer Schreibhelfer write_managed.
 # Geprueft: alle verwalteten Dateien nutzen genau ihn (ein Schreibaufruf je
 # Pfad), Temp-Datei im Zielverzeichnis, Validierer vor dem Austausch,
-# bash -n-Guard fuer *.sh, und die Hash-/Drift-Infrastruktur ist vollstaendig
-# entfernt (Review-Set 2026-10-03, Ueber-Engineering A: Hashstore, note_drift,
-# remember_hash waren tote Komplexitaet ohne Operator-Workflow).
+# bash -n-Guard fuer *.sh; Hash-/Drift-Infrastruktur (Hashstore, note_drift,
+# remember_hash) ist tote Komplexitaet ohne Operator-Workflow und gehoert
+# nicht in den Quelltext.
 # Verhalten der ECHTEN write_managed-Funktion (ausextrahiert aus
 # setup-coder.sh, Ziele in /tmp):
 #   (a) identischer Inhalt -> Ziel-Inode unangetastet, Modus nachgezogen
@@ -25,8 +25,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 # --- 1. Struktur: verwaltete Dateien nutzen atomaren Schreibhelfer ----------
-# 9 direkte write_managed-Adressen (frueher 11; weg mit /etc/cron.d/
-# coder-tlscheck und /etc/logrotate.d/coder-logs, Review-Set 2026-10-03 §4D).
+# 9 direkte write_managed-Adressen.
 # SSH-Drop-In und versions.env adressieren ueber Variablen und stehen nicht
 # in dieser Liste (unten separat geprueft).
 EXPECTED="/opt/coder/docker-compose.yml
@@ -44,7 +43,7 @@ echo "INFO: write_managed=${N_MANAGED}"
 [ "${N_MANAGED}" -eq 9 ] && pass "alle 9 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 9)"
 grep -qF 'write_managed "${VERSIONS_FILE}"' "${SETUP}" && pass "versions.env nutzt ebenfalls write_managed" || fail "versions.env nutzt write_managed nicht"
 
-# SSH-Drop-In (Review-Set 2026-10-03, Fehler 1-3): eigene Policy-Datei,
+# SSH-Drop-In: eigene Policy-Datei,
 # per write_managed verwaltet, damit sie beim Setup-Lauf konsistent bleibt.
 grep -qF 'SSHD_DROPIN="/etc/ssh/sshd_config.d/99-coder.conf"' "${SETUP}" \
   && grep -qF 'write_managed "${SSHD_DROPIN}"' "${SETUP}" \
@@ -115,7 +114,7 @@ else
   pass "Schritt-10-Hashschleife ist entfernt"
 fi
 
-# TLS-Check-Aera (Review-Set 2026-10-03, Ueber-Engineering D/Fehler 8-9):
+# TLS-Check-Bestand (Altbestand):
 # weder Skript noch Cron noch Logrotate werden weiter geschrieben; die
 # stillen rm -f fuer Altbestand sind ausdruecklich erlaubt.
 for tok in \
@@ -242,14 +241,13 @@ fi
 if grep -qF 'tee /etc/fail2ban/jail.local ' "${SETUP}"; then
   fail "B7: eigene jail.local wird noch beschrieben (Ueberschreibt Operator-Jails)"
 else
-  pass "B7: jail.local wird nicht mehr beschrieben"
+  pass "B7: jail.local wird nicht beschrieben"
 fi
 grep -qF 'JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"' "${SETUP}" \
   && pass "B7: eigene Jails liegen in jail.d/10-coder-sshd.local" \
   || fail "B7: Drop-In-Pfad fehlt"
-# Review 2.3: die hash-guardierte Entfernung einer vorgefundenen jail.local
-# entfiel (ohne Produktion gibt es keine setup-eigene Alt-Datei). Was bleibt,
-# ist die WARNUNG – angefasst wird nie.
+# Eine vorgefundene jail.local wird nie angefasst (ohne Produktion gibt es
+# keine setup-eigene Alt-Datei). Was zaehlt, ist die WARNUNG.
 grep -qF '[ -f /etc/fail2ban/jail.local ]; then' "${SETUP}" \
   && pass "B7: vorhandene jail.local wird erkannt (Pflicht: Warnung)" \
   || fail "B7: Erkennung vorhandener jail.local fehlt"

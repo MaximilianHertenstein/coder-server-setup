@@ -68,7 +68,7 @@ find "${BACKUP_DIR}" -maxdepth 1 -name 'coder_*.sql.gz.tmp.*' -mmin +1440 -delet
 # Mindestplatz vor dem Dump (P-007/B-015): klar abbrechen statt partieller Datei.
 # 500-MB-Bodenwert ist konservativ, aber UNVERMESSEN (kein Ersatz für
 # Platten-Monitoring; retention.size/check.sh erst nach Messung, D-Monitoring).
-# Fehler 12 (Review-Set 2026-10-03): df selbst schlägt fehl -> ABBRUCH,
+# df selbst schlägt fehl -> ABBRUCH,
 # nicht stumm weiter (sonst läuft der Dump ohne Platzprüfung in die ENOSPC).
 MIN_FREE_BYTES=524288000
 if FREE_BYTES=$(df --output=avail -B1 "${BACKUP_DIR}" 2>/dev/null | tail -n1 | tr -d ' '); then
@@ -159,7 +159,7 @@ else
   logger -t coder-backup "Warnung: Backup OK, Metrik-Datei konnte nicht angelegt werden" || true
 fi
 
-# Rotation nach ALTER mit Mindestbestand (Review 1.7): reine Stückzahl-
+# Rotation nach ALTER mit Mindestbestand: reine Stückzahl-
 # rotation verdrängt bei mehreren Wartungsläufen am selben Tag die täglichen
 # Backups – die Historie wird kürzer als 14 Tage. Gelöscht wird nur, was
 # älter als 14 Tage ist; dazu nie die 7 neuesten Dateien, damit auch nach
