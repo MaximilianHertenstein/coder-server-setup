@@ -95,9 +95,9 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo sshd -T \| grep '^port '`, `sudo ufw status numbered`, `sudo ufw show added` |
-| **Erwartete Ursache** | `sshd -T` ist fehlgeschlagen, liefert keinen Port oder einen Port ungleich 22; oder `ufw status`/`ufw show added` ist nicht lesbar; bei inaktiver UFW zusätzlich eine gespeicherte SSH-Quellbeschränkung. |
-| **Sichere Behebung** | Das Setup hat vor jeder Firewall-Änderung abgebrochen. Bei unbekanntem/falschem SSH-Port zuerst über einen funktionierenden Zugang den SSH-Port klären, dann erneut ausführen. Bei inaktiver UFW die gespeicherten Regeln (`ufw show added`) und die Schulnetz-Regel prüfen und UFW anschließend bewusst aktivieren. Eine **aktive** quellbeschränkte SSH-Regel ist kein Abbruchgrund mehr: das Setup lässt sie stehen, meldet sie und setzt keine weltweite `limit 22/tcp`-Regel daneben; wer sie ändern will, tut das manuell (`sudo ufw status numbered`, `sudo ufw delete …`) – es gibt keinen Bypass-Parameter mehr. |
+| **Diagnose** | `sudo sshd -T \| grep '^port '`, `sudo ufw status numbered` |
+| **Erwartete Ursache** | `sshd -T` ist fehlgeschlagen oder liefert keinen Port (dann bricht das Setup vor jeder Serveränderung ab); oder `ufw status` ist nicht lesbar. |
+| **Sichere Behebung** | Das Setup hat vor jeder Firewall-Änderung abgebrochen. Ist sshd nicht lesbar/fehlt der Port: `openssh-server` installieren bzw. die Konfiguration reparieren, dann erneut ausführen. Von 22 abweichende Ports (z. B. `2222`) sind kein Abbruchgrund mehr – ufw-Regel und fail2ban-Port folgen der Erkennung; für die sshd_config-Seite selbst gilt: Port-Änderungen in `/etc/ssh/sshd_config.d/` eintragen (vorgezogene Drop-In-Datei), nicht in der Hauptdatei. Quellregeln und fremde ufw-Regeln werden nie angefasst; wer sie ändern will, tut das manuell (`sudo ufw status numbered`, `sudo ufw delete …`) – es gibt keinen Bypass-Parameter mehr. |
 
 ### A8. `Wenig Platte unter /opt/coder (< 1 GB)`
 
@@ -171,7 +171,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | Beide Pfade wie in Schritt 8 getrennt testen: lokal `curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' --resolve coder.…:443:127.0.0.1 https://coder.…/healthz`, öffentlich ohne `--resolve` (echter DNS-Weg), zusätzlich von einem externen Netz (Handy-Hotspot) derselben URL. `getent hosts coder.…` zeigt die öffentliche IP. |
+| **Diagnose** | Beide Pfade wie in Schritt 7 getrennt testen: lokal `curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' --resolve coder.…:443:127.0.0.1 https://coder.…/healthz`, öffentlich ohne `--resolve` (echter DNS-Weg), zusätzlich von einem externen Netz (Handy-Hotspot) derselben URL. `getent hosts coder.…` zeigt die öffentliche IP. |
 | **Erwartete Ursache** | NAT-Hairpin/Loopback: der Router im Schulnetz erlaubt es LAN-Clients nicht, die eigene öffentliche IP anzusprechen (Verbindung hängt/`000`), während der lokale `--resolve`-Pfad und echte externe Clients einwandfrei laufen. |
 | **Sichere Behebung** | Ergebnis außerhalb des Schulnetzes verifizieren (Hotspot/externes Netz): dort 200 = Betrieb in Ordnung, Hairpin ist nur ein Testeffekt. Hairpin-NAT am Router aktivieren, falls vorhanden und gewünscht; sonst LAN-Tests über den lokalen Pfad dokumentieren und den öffentlichen Pfad nur extern prüfen. **Nicht** Caddy/TLS umkonfigurieren – die Ursache liegt am NAT, nicht am Stack. |
 
@@ -267,13 +267,13 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 ## E. Firewall, Updates, Wartung
 
-### E1. `[FEHLER] ufw ist NICHT aktiv` / `SSH-Rate-Limit-Regel fehlt`
+### E1. `[FEHLER] ufw ist NICHT aktiv` / `SSH-ALLOW-Regel fehlt`
 
 | | |
 |---|---|
 | **Diagnose** | `sudo ufw status verbose`, `grep IPV6 /etc/default/ufw` |
 | **Erwartete Ursache** | Lauf abgebrochen vor Schritt 4, oder Regeln wurden manuell verändert. |
-| **Sichere Behebung** | Setup erneut ausführen (Regeln werden idempotent gesetzt). Bei vorhandener restriktiver SSH-Regel zuerst `sudo ufw status numbered` prüfen – das Setup lässt sie stehen und setzt keine weltweite Regel daneben (siehe A7 und SECURITY.md). **Nicht** einfach `ufw allow 22/tcp` setzen – das öffnet ohne Rate-Limit. |
+| **Sichere Behebung** | Setup erneut ausführen (Regeln werden idempotent gesetzt). Die SSH-Regel ist `ufw allow <sshd-Port>/tcp` (Revision 2026-10: kein `limit` mehr – es würde die geteilte Schul-NAT drosseln); eine alte `limit 22/tcp`-Regel eigener Läufe entfernt das Setup automatisch. Vorgefundene Quellregeln bleiben unangetastet (siehe A7 und [SECURITY.md](SECURITY.md)). |
 
 ### E2. `[FEHLER] fail2ban läuft NICHT` / `Jail 'sshd' ist nicht aktiv`
 
@@ -289,7 +289,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo ufw status numbered` |
 | **Erwartete Ursache** | Regeln gelöscht/verändert. |
-| **Sichere Behebung** | Setup erneut ausführen. Danach `sudo ufw status` muss `Status: active` und die vier Regeln (22/tcp LIMIT, 80, 443/tcp, 443/udp) zeigen. |
+| **Sichere Behebung** | Setup erneut ausführen. Danach `sudo ufw status` muss `Status: active` und die Regeln (22/tcp ALLOW, 80, 443/tcp, 443/udp, 3001 nur aus privaten Quellen) zeigen. |
 
 ### E4. Update läuft nicht durch / `Update-Gate rot`
 

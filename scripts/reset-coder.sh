@@ -19,8 +19,8 @@
 #            bewusste Freigabe zur Zerstörung ohne Netz (Backup defekt oder
 #            kein Backup vorhanden). Wer: nur der dokumentierte Betreiber nach
 #            Kenntnisnahme des neuesten verfügbaren Backups (wird angezeigt).
-#            Nachweis: zweite Eingabe 'RESET-OHNE-BACKUP' (nicht per Pipe ohne
-#            Terminal fütterbar – P-019 verweigert Pipe ohne --force).
+#            Nachweis: zweite Eingabe 'RESET-OHNE-BACKUP' (immer interaktiv,
+#            P-019 verweigert Pipe auch mit --force).
 # Danach: sudo ./setup-coder.sh erneut ausführen, um alles neu aufzubauen.
 set -euo pipefail
 cd /opt/coder
@@ -42,11 +42,13 @@ if [ "${1:-}" = "--force" ]; then
   FORCE=true
 fi
 
-# P-019: nicht-interaktiv (Pipe/CI) ohne --force verweigern – ein per Pipe
-# eingespeistes "RESET" ist keine bewusste Bestätigung.
-if [ ! -t 0 ] && [ "${FORCE}" != "true" ]; then
-  echo "Fehler: stdin ist kein Terminal (Pipe/CI erkannt). Destruktiver Reset wird ohne --force verweigert." >&2
-  echo "Interaktiv aufrufen oder bewusst: sudo /opt/coder/reset-coder.sh --force" >&2
+# P-019: Destruktiver Reset braucht IMMER ein Terminal, auch mit --force –
+# --force ersetzt nur das Backup-Gate, nicht die bewusste Bestätigung.
+# Ein per Pipe eingespeistes "RESET" oder "RESET-OHNE-BACKUP" ist keine
+# bewusste Bestätigung.
+if [ ! -t 0 ]; then
+  echo "Fehler: stdin ist kein Terminal (Pipe/CI erkannt). Destruktiver Reset wird verweigert." >&2
+  echo "Interaktiv aufrufen: sudo /opt/coder/reset-coder.sh [--force]" >&2
   exit 1
 fi
 

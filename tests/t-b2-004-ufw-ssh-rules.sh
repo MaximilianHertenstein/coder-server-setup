@@ -1,16 +1,19 @@
 #!/bin/bash
-# T-062 / B2-004 (Stand: Review B11 – schmaler Regelpfad, kein
-# Quellbeschränkungs-Pfad, SSH global via ufw limit 22/tcp + fail2ban).
+# T-062 / B2-004 (Stand: Review SSH 2026-10-03 – allow statt limit, weil
+# ufw limit die geteilte Schul-NAT drosselt; fail2ban bleibt der
+# Brute-Force-Schutz, Netzgrenze am Router, D-SSH).
 # Geprueft: die echten Stuecke aus setup-coder.sh (nach Zeilen extrahiert,
 # mit Fake-ufw in /tmp, ohne Root, ohne Produktion):
 #   Gate: ohne lesbaren ufw-Status = harter Abbruch; inaktiv = Warnung,
-#         Lauf faehrt fort (Netzgrenze liegt am Router, D-SSH)
-#   Regelanwendung: Policy erst, dann die drei weltweiten allow-Schreibweisen
-#         loeschen UND den Erfolg verifizieren (sonst Exit 1), dann
-#         limit 22/tcp; nie eine Quellregel anfassen
-#   Abschlusscheck: rate-limitierte 22/tcp-Regel muss existieren
+#         Lauf faehrt fort
+#   Regelanwendung: Policy erst, dann allow fuer die erkannten sshd-Ports
+#         (Schleife ueber SSHD_PORTS, idempotent), DANACH eigene alte
+#         limit-Regel loeschen (kein Fenster ohne SSH-Regel); nie eine
+#         Quellregel anfassen, keine fremden Regeln loeschen
+#   Abschlusscheck: jede erkannte Portnummer muss als ALLOW (Anywhere)
+#         stehen; LIMIT oder fehlende Regel = Fehler
 #   Statisch: kein Bypass, kein Restore, kein Quellregel-Delete, keine
-#         Detektor-/Beschraenkungs-Zweiglogik mehr
+#         Detektor-/Beschraenkungs-Zweiglogik, keine "ufw limit"-Zeile
 set -euo pipefail
 
 FAIL=0
@@ -32,7 +35,7 @@ RE_INACTIVE="$(sed -n "s/.*grep -qi '\(Status[^']*\)'.*/\1/p" "${SETUP}" | head 
 GATE_ANCHOR='if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then'
 GATE_END='# Regelanwendung: einfache feste Folge.'
 APPLY_START='# Regelanwendung: einfache feste Folge.'
-APPLY_END='# backend=systemd explizit setzen'
+APPLY_END='# Nur die Nicht-Defaults setzen.'
 CHECK_START='UFW_STATUS="$(ufw status)"'
 CHECK_END='# B13: ein einziger Check'
 
@@ -62,8 +65,8 @@ done
 # --- Fake-ufw ---------------------------------------------------------------
 # Der Zustand liegt in einer Datei: "delete"/"limit"/"allow"/"enable"
 # schreiben FAKE_UFW_STATUS_AFTER, "status" liest den aktuellen Stand. Damit
-# ist die Verifikation nach der allow->limit-Umwandlung testbar, ohne echtes
-# ufw. Jeder Aufruf wird protokolliert (FAKE_UFW_CALLS).
+# ist testbar, was passiert, ohne echtes ufw. Jeder Aufruf wird protokolliert
+# (FAKE_UFW_CALLS).
 cat > "${BIN}/ufw" <<'FAKE'
 #!/usr/bin/env bash
 rc="${FAKE_UFW_RC:-0}"
@@ -111,6 +114,7 @@ run_all() {  # $1=Status $2=Status nach Aenderung $3=RC $4=Markerdatei
     warn() { echo "WARN: $1"; }
     ok()   { echo "OK: $1"; }
     fail() { echo "FEHLER: $1"; }
+    export SSHD_PORTS="${SSHD_PORTS:-22}"
     export FAKE_UFW_STATUS="${status}"
     export FAKE_UFW_STATUS_AFTER="${after}"
     export FAKE_UFW_RC="${rc}"
@@ -152,7 +156,7 @@ S_RESTRICT_OLD='Status: active
 To                         Action      From
 --                         ------      ----
 22                         ALLOW       192.168.1.0/24
-22/tcp                     ALLOW       Anywhere'
+22/tcp                     LIMIT       Anywhere'
 S_RESTRICT_KEEP='Status: active
 To                         Action      From
 --                         ------      ----
@@ -160,31 +164,31 @@ To                         Action      From
 S_ONLY_80='Status: active
 80/tcp                     ALLOW       Anywhere
 443/tcp                    ALLOW       Anywhere'
-S_ONLY_80_LIMIT='Status: active
+S_ONLY_80_ALLOW='Status: active
 80/tcp                     ALLOW       Anywhere
 443/tcp                    ALLOW       Anywhere
-22/tcp                     LIMIT       Anywhere'
+22/tcp                     ALLOW       Anywhere'
 
-# --- Pfad A: weltweit vorhanden ---------------------------------------------
-# Unbeschraenkt: die drei allow-Schreibweisen werden idempotent geloescht
-# (No-Op, wenn nichts vorhanden) und limit 22/tcp (ebenfalls idempotent)
-# gesetzt. Nie darf eine Quellregel ("delete allow from") beruehrt werden.
+# --- Pfad A: alte limit-Regel vorhanden -------------------------------------
+# Die eigene limit-Regel frueherer Laeufe wird nach dem neuen allow entfernt
+# (allow zuerst, also nie ein Augenblick ohne SSH-Regel). Quellregeln nie
+# anfassen, fremde Regeln nie loeschen.
 capture "${S_ACTIVE}" "${S_ACTIVE}" 0
 assert_rc 0 "Pfad A (weltweit limit) laeuft weiter"
 assert_out "CHECK_CONTINUE" "Pfad A: Lauf geht weiter"
 assert_no_out "WARN:" "Pfad A: keine WARNung"
-assert_calls "delete allow 22/tcp" "Pfad A: allow-Loeschversuch (idempotenter No-Op)"
-assert_calls "limit 22/tcp" "Pfad A: limit wird idempotent gesetzt"
+assert_calls "allow 22/tcp" "Pfad A: allow wird gesetzt"
+assert_calls "delete limit 22/tcp" "Pfad A: eigene alte limit-Regel wird entfernt"
 assert_no_calls "delete allow from" "Pfad A: keine Quellregel wird geloescht"
 
-# Pfad A ohne SSH-Regel: fehlende Regel setzen, Loeschversuche sind No-Op.
-capture "${S_ONLY_80}" "${S_ONLY_80_LIMIT}" 0
+# Pfad A ohne SSH-Regel: allow ist idempotent, delete limit = No-Op.
+capture "${S_ONLY_80}" "${S_ONLY_80_ALLOW}" 0
 assert_rc 0 "Pfad A (nur 80/443) laeuft weiter"
-assert_calls "limit 22/tcp" "Pfad A: fehlende SSH-Regel wird gesetzt"
+assert_calls "allow 22/tcp" "Pfad A: fehlende SSH-Regel wird als allow gesetzt"
 assert_no_calls "delete allow from" "Pfad A (nur 80/443): keine Quellregel geloescht"
 
 # --- Pfad C: UFW inaktiv ----------------------------------------------------
-capture "Status: inactive" "${S_ACTIVE}" 0
+capture "Status: inactive" "${S_ALLOW_22_WORLD}" 0
 assert_rc 0 "Pfad C (inactive) laeuft weiter"
 assert_out "WARN:" "Pfad C: Hinweis ausgegeben"
 assert_no_calls "delete allow from" "Pfad C: keine Quellregel wird geloescht"
@@ -196,49 +200,47 @@ capture "" "" 127
 assert_rc 1 "Pfad C (ufw fehlt): Abbruch vor jeder Aenderung"
 assert_out "ufw-Status nicht lesbar" "Pfad C (ufw fehlt): Klartext-Meldung"
 
-# --- Pfad B (ehemals restriktiv): Quellregeln bleiben unberuehrt -----------
-# B11: keine Beschaenkungs-Zweiglogik mehr – die weltweite ALLOW wird
-# geloescht und limit gesetzt, die Quellregel ("22 ALLOW 192.168.1.0/24")
-# bleibt davon strukturell unangetastet.
+# --- Pfad B: Quellregeln bleiben unberuehrt ---------------------------------
+# B11/D-SSH: keine Beschaenkungs-Zweiglogik; die Quellregel wird nie
+# geloescht, allow + delete-eigene-limit laufen idempotent daneben.
 capture "${S_RESTRICT_OLD}" "${S_RESTRICT_KEEP}" 0
-assert_rc 0 "Pfad B (Quellregel + weltweite ALLOW) laeuft weiter"
-assert_calls "delete allow 22/tcp" "Pfad B: weltweite allow wird entfernt"
-assert_calls "limit 22/tcp" "Pfad B: limit wird gesetzt"
+assert_rc 0 "Pfad B (Quellregel + alte limit) laeuft weiter"
+assert_calls "allow 22/tcp" "Pfad B: allow wird gesetzt"
+assert_calls "delete limit 22/tcp" "Pfad B: eigene limit-Regel wird entfernt"
 assert_no_calls "delete allow from" "Pfad B: Quellregel wird nie geloescht"
 
-# Quellregel allein (keine weltweite Regel): idempotenter Lauf.
+# Quellregel allein (keine 22-Regel): idempotenter Lauf.
 capture "${S_RESTRICT_KEEP}" "${S_RESTRICT_KEEP}" 0
 assert_rc 0 "Pfad B (nur Quellregel) laeuft weiter"
-assert_calls "limit 22/tcp" "Pfad B: limit wird trotz Quellregel gesetzt"
+assert_calls "allow 22/tcp" "Pfad B: allow wird auch neben der Quellregel gesetzt"
 
-# --- Regelanwendung: allow -> limit nur weltweit ----------------------------
-capture "${S_ALLOW_WORLD}" "${S_ACTIVE}" 0
-assert_rc 0 "Umwandlung (OpenSSH) laeuft weiter"
-assert_calls "delete allow OpenSSH" "Umwandlung: vorgefundene OpenSSH-Regel wird entfernt"
-assert_calls "limit 22/tcp" "Umwandlung: rate-limitierte Regel wird gesetzt"
-assert_out "OK:" "Umwandlung: Erfolgsmeldung"
-
-capture "${S_ALLOW_22_WORLD}" "${S_ONLY_80_LIMIT}" 0
-assert_rc 0 "Umwandlung (22/tcp) laeuft weiter"
-assert_calls "delete allow 22/tcp" "Umwandlung: 22/tcp-Regel wird entfernt"
-assert_calls "limit 22/tcp" "Umwandlung: rate-limitierte Regel wird gesetzt"
-
-# Verifikation: bleibt eine weltweite ALLOW-Zeile stehen, hart abbrechen –
-# kein stilles Weiterlaufen mit offenem SSH.
+# --- Pfad D: fremde allow-Regeln bleiben unangetastet -----------------------
+# Frueher wurden drei allow-Schreibweisen geloescht und limit gesetzt; jetzt
+# wird nichts geloescht ausser der eigenen limit-Regel.
 capture "${S_ALLOW_WORLD}" "${S_ALLOW_WORLD}" 0
-assert_rc 1 "Umwandlung ohne Wirkung: Exit 1"
-assert_out "steht nach dem Löschen noch" "Umwandlung ohne Wirkung: Fehlermeldung"
-printf '%s' "${OUT}" | grep -qF "CHECK_CONTINUE" \
-  && fail "Umwandlung ohne Wirkung: darf nicht weiterlaufen" \
-  || pass "Umwandlung ohne Wirkung: kein Weiterlauf"
+assert_rc 0 "Pfad D (OpenSSH-allow) laeuft weiter"
+assert_no_calls "delete allow OpenSSH" "Pfad D: fremde/vorgefundene allow wird NICHT geloescht"
+assert_calls "allow 22/tcp" "Pfad D: eigene allow-Regel wird gesetzt"
+
+capture "${S_ALLOW_22_WORLD}" "${S_ALLOW_22_WORLD}" 0
+assert_rc 0 "Pfad D (22/tcp-allow) laeuft weiter"
+assert_no_calls "delete allow 22/tcp" "Pfad D: vorhandene 22/tcp-allow bleibt (idempotentes Skipping)"
+assert_calls "allow 22/tcp" "Pfad D: allow wird idempotent aufgerufen"
 
 # --- Abschlusscheck ---------------------------------------------------------
-capture "${S_ACTIVE}" "${S_ACTIVE}" 0
-assert_out "per ufw rate-limitiert" "Abschlusscheck: weltweite limit-Regel als ok"
+capture "${S_ALLOW_22_WORLD}" "${S_ALLOW_22_WORLD}" 0
+assert_out "SSH-Port 22/tcp steht als ALLOW" "Abschlusscheck: weltweite ALLOW-Regel als ok"
 assert_out "ufw ist aktiv" "Abschlusscheck: Aktivitaet bestaetigt"
 
+# Alte limit-Regel allein zaehlt NICHT mehr als erfuellt (D-SSH).
+capture "${S_ACTIVE}" "${S_ACTIVE}" 0
+assert_out "SSH-ALLOW-Regel fehlt" "Abschlusscheck: LIMIT ohne ALLOW = Fehler"
+printf '%s' "${OUT}" | grep -qF "CHECK_CONTINUE" \
+  && pass "Abschlusscheck: Lauf bricht bei fehlender ALLOW-Regel ab" \
+  || fail "Abschlusscheck: bricht nicht ab"
+
 capture "${S_ONLY_80}" "${S_ONLY_80}" 0
-assert_out "SSH-Rate-Limit-Regel fehlt" "Abschlusscheck: fehlende Regel = Fehler"
+assert_out "SSH-ALLOW-Regel fehlt" "Abschlusscheck: fehlende Regel = Fehler"
 
 # --- Statisch: keine stille Oeffnung, alte Schwachstelle weg ----------------
 grep -qF 'CODER_ALLOW_SSH_DOWNGRADE' "${SETUP}" \
@@ -260,19 +262,27 @@ grep -qF 'quellbeschränkte SSH-Regel bleibt unangetastet' "${SETUP}" \
 grep -qF 'ufw show added' "${SETUP}" \
   && fail "ufw show added wird noch abgefragt (Quellregel-Detektion)" \
   || pass "kein ufw show added (kein Quellregel-Detektor)"
+grep -qF 'ufw limit 22/tcp' "${SETUP}" \
+  && fail "harte 'ufw limit 22/tcp'-Zeile ist noch im Setup" \
+  || pass "keine 'ufw limit 22/tcp'-Zeile (allow statt limit)"
 
-# Delete-Zeilen existieren nur in der Regelanwendung (Extrakt):
-# drei Schreibweisen derselben Regel (OpenSSH-Profil, 22/tcp, 22), sonst nirgends.
+# Genau eine Delete-Zeile: die eigene alte limit-Regel, nirgends sonst.
 DEL_ALL="$(grep -cF 'ufw --force delete' "${SETUP}" || true)"
 DEL_APPLY="$(grep -cF 'ufw --force delete' "${WORK}/apply.sh" || true)"
-[ "${DEL_ALL}" -eq 3 ] && [ "${DEL_APPLY}" -eq 3 ] \
-  && pass "genau die drei Delete-Zeilen der Anwendung, keine ausserhalb (Anzahl=${DEL_ALL})" \
-  || fail "Delete-Zeilen ausserhalb der Anwendung: gesamt=${DEL_ALL} im Block=${DEL_APPLY}"
-grep -qF 'ufw --force delete limit' "${SETUP}" \
-  && fail "limit-Regel wird noch geloescht" || pass "limit-Regel wird nicht geloescht"
-grep -qF "grep -E '(22/tcp|OpenSSH)[[:space:]]+(LIMIT|ALLOW)'" "${SETUP}" \
-  && pass "Abschlusscheck filtert SSH-Zeilen (22/tcp|OpenSSH)" \
-  || fail "SSH-Zeilenfilter im Abschlusscheck fehlt"
+[ "${DEL_ALL}" -eq 1 ] && [ "${DEL_APPLY}" -eq 1 ] \
+  && pass "genau die eine Delete-Zeile (eigene limit) in der Anwendung (Anzahl=${DEL_ALL})" \
+  || fail "Delete-Zeilen: gesamt=${DEL_ALL} im Block=${DEL_APPLY} (erwartet 1/1)"
+grep -qF 'ufw --force delete limit 22/tcp' "${SETUP}" \
+  && pass "Delete trifft nur die eigene limit-Regel" \
+  || fail "eigene limit-Regel wird nicht geloescht"
+
+# SSH-Regel kommt aus der erkannten Portliste, nicht aus einer Festzahl.
+grep -qF 'ufw allow "${_ssh_p}/tcp"' "${SETUP}" \
+  && pass "allow in der Schleife ueber SSHD_PORTS" \
+  || fail "allow-Schleife ueber SSHD_PORTS fehlt"
+grep -qF '^${_p}/tcp[[:space:]]+ALLOW[[:space:]]+Anywhere' "${SETUP}" \
+  && pass "Abschlusscheck filtert ALLOW-Zeilen der erkannten Ports" \
+  || fail "ALLOW-Filter im Abschlusscheck fehlt"
 LC="$(grep -nF 'UFW_OUT="$(ufw status numbered' "${SETUP}" | cut -d: -f1 || true)"
 LI="$(grep -nF "grep -qi 'Status:" "${SETUP}" | cut -d: -f1 || true)"
 LA="$(grep -nF '# Regelanwendung: einfache feste Folge.' "${SETUP}" | cut -d: -f1 || true)"

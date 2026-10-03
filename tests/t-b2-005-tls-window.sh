@@ -7,6 +7,9 @@
 #   - Zählung per find -mtime -7 (kein docker logs, kein WINDOW/TRUNCATED)
 #   - coder_tls_issuances_7d und last_success werden abgelegt
 #   - Lesefehler -> Exit 1 OHNE Metrik-Aktualisierung (TlsCheckStale feuert)
+#   - fehlendes certificates-Verzeichnis = frische Installation = Metrik 0
+#     mit Erfolgszeitpunkt (KEIN TlsCheckStale-False-Positive bis zum
+#     ersten Zertifikat), Container weg = Exit 1
 #   - Alert TlsLogTruncated existiert NICHT mehr; Budget-/Stale-Alerts liegen
 #     auf den beiden neuen/bleibenden Metriken
 # Nur /tmp, keine Produktion: Pfad und PATH im extrahierten Kopf umgebogen,
@@ -30,10 +33,10 @@ if cp "${REPO_ROOT}/scripts/check-tls.sh" "${WORK}/check-tls.raw" 2>/dev/null; t
 else
   fail "scripts/check-tls.sh nicht lesbar"
 fi
-if grep -qF 'scripts/check-tls.sh' "${SETUP}"; then
-  pass "Setup installiert check-tls.sh aus scripts/"
+if grep -qF 'for _src in "${SETUP_DIR}"/scripts/*.sh' "${SETUP}"; then
+  pass "Setup schreibt check-tls.sh per scripts/*.sh-Write-Managed-Schleife"
 else
-  fail "Setup installiert scripts/check-tls.sh nicht"
+  fail "Setup schreibt scripts/*.sh nicht (Schleife fehlt)"
 fi
 bash -n "${WORK}/check-tls.raw" && pass "check-tls.sh ist syntaktisch gueltig" || fail "Syntax check-tls.sh"
 
@@ -75,7 +78,9 @@ grep -qF -- '- alert: TlsLogTruncated' "${SETUP}" \
 # --- Fakes ------------------------------------------------------------------
 cat > "${BIN}/docker" <<'FAKE'
 #!/usr/bin/env bash
-# FAKE_FIND_OUT: Ausgabe von "find ... | wc -l"; FAKE_DOCKER_RC: Fehlschlag.
+# FAKE_FIND_OUT: Ausgabe von "find" (zeilenweise Dateien, "" = keine);
+# FAKE_CERTDIR: certificates-Verzeichnis vorhanden ("yes"/"no", Default yes);
+# FAKE_DOCKER_RC: Fehlschlag.
 rc="${FAKE_DOCKER_RC:-0}"
 if [ "${rc}" -ne 0 ]; then
   echo "Error: no such container" >&2
@@ -83,7 +88,12 @@ if [ "${rc}" -ne 0 ]; then
 fi
 cmd="${1:-}"; shift || true
 case "${cmd}" in
-  exec) printf '%s\n' "${FAKE_FIND_OUT:-0}" ;;
+  exec)
+    case " $* " in
+      *" sh -c "*) printf '%s\n' "${FAKE_CERTDIR:-yes}" ;;
+      *) printf '%s\n' "${FAKE_FIND_OUT-0}" ;;
+    esac
+    ;;
   *) exit 1 ;;
 esac
 FAKE
@@ -112,7 +122,7 @@ run_case() { # $1=Name $2=wc-Ausgabe $3=docker-rc $4=erwarteter Exit
 }
 
 # A: drei Zertifikate in 7 Tagen -> Metrik 3, Timestamp aktuell, logger-Zeile
-run_case drei 3 0 0
+run_case drei $'a.crt\nb.crt\nc.crt' 0 0
 P="${WORK}/drei/textfile/coder_tls.prom"
 grep -qxF 'coder_tls_issuances_7d 3' "${P}" \
   && pass "drei: coder_tls_issuances_7d 3" || fail "drei: issuances != 3"
@@ -124,7 +134,7 @@ grep -qF 'TLS-Ausstellungen letzte 7 Tage' "${WORK}/drei.out" \
   && pass "drei:stdout nennt die 7-Tage-Zahl" || fail "drei: stdout-Zeile fehlt"
 
 # B: null Zertifikate (frische Installation) -> Metrik 0, Exit 0
-run_case null 0 0 0
+run_case null "" 0 0
 grep -qxF 'coder_tls_issuances_7d 0' "${WORK}/null/textfile/coder_tls.prom" \
   && pass "null: coder_tls_issuances_7d 0" || fail "null: issuances != 0"
 
@@ -147,6 +157,23 @@ rc=0
 FAKE_FIND_OUT=2 FAKE_LOGGER_OUT="${dir}/logger.out" \
   bash "${dir}/check-tls.sh" > "${dir}/out" 2>&1 || rc=$?
 [ "${rc}" -eq 1 ] && pass "ohne Textfile-Dir: Exit 1" || fail "ohne Textfile-Dir: rc=${rc}"
+
+# E: certificates-Verzeichnis fehlt (frische Installation) -> Metrik 0 +
+# Erfolgszeitpunkt, Exit 0. Sonst feuert TlsCheckStale bis zum ersten
+# Zertifikat waehrend DNS/Portweiterleitung noch warten.
+dir="${WORK}/frisch"
+mkdir -p "${dir}/textfile"
+sed -e "s|export PATH=\"/usr/local/sbin|export PATH=\"${BIN}:/usr/local/sbin|" \
+    -e "s|/opt/coder/node-textfile|${dir}/textfile|g" \
+    "${WORK}/check-tls.raw" > "${dir}/check-tls.sh"
+rc=0
+FAKE_CERTDIR=no FAKE_LOGGER_OUT="${dir}/logger.out" \
+  bash "${dir}/check-tls.sh" > "${dir}/out" 2>&1 || rc=$?
+[ "${rc}" -eq 0 ] && pass "frisch (kein certificates-Dir): Exit 0" || fail "frisch: rc=${rc} (erwartet 0)"
+grep -qxF 'coder_tls_issuances_7d 0' "${dir}/textfile/coder_tls.prom" \
+  && pass "frisch: Metrik 0 geschrieben" || fail "frisch: Metrik fehlt/falsch"
+grep -qE '^coder_tls_check_last_success_timestamp_seconds [0-9]{9,}$' "${dir}/textfile/coder_tls.prom" \
+  && pass "frisch: Erfolgszeitpunkt gesetzt" || fail "frisch: Erfolgszeitpunkt fehlt"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-005: ALLE PRUEFUNGEN BESTANDEN"

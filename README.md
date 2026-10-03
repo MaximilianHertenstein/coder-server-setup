@@ -29,12 +29,12 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-01: alle 10 Dateien in `tests/` grün (267 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-01 nach der Review-Runde auf dem Test-Host `2.29.11.30`: drei Re-Runs RC 0 (je 46 s, 0 Fehler, Skripte byte-identisch; der erste Lauf fand den A2-Rechte-Bug, RC 1, fail-closed); davor frischer Pfad-A-Aufbau (Exit 0 in 58 s) und Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
+| Lokale Tests | Stand 2026-10-03: alle 10 Dateien in `tests/` grün (280 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
+| Vollständiger Setup-Lauf auf echtem System | Letzter Lauf 2026-10-03 (SSH-/Grafana-Runde) auf dem Test-Host `2.29.11.30`: erster Durchlauf RC 1 (ufw-Quellregel-Liste mit Komma schlug fehl, gefunden und gefixt), danach drei Re-Runs RC 0 (0 Fehler); davor Lauf 2026-10-01 nach der Review-Runde: drei Re-Runs RC 0 (je 46 s, 0 Fehler, Skripte byte-identisch; der erste Lauf fand den A2-Rechte-Bug, RC 1, fail-closed), frischer Pfad-A-Aufbau (Exit 0 in 58 s) und Re-Run am 2026-09-30 (Exit 0, Drift erkannt, Firewall unverändert) – Details [CHANGELOG.md](CHANGELOG.md) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen 2026-10-01** (Test-Host): Prometheus `ready` 200, Alarmregeln geladen (damals 6, aktuell 5: `BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`, `TlsCheckStale`, `TlsIssuanceBudgetHigh`; `TlsLogTruncated` entfallen mit A6), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metriken (Backup/TLS) vorhanden |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg |
-| SSH-Härtung | **Entschieden (D-SSH, 2026-09-30):** Passwort-Login bleibt Standard; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `limit 22/tcp` und fail2ban zusätzlich, optionale Nachhärtung als dokumentiertes Drop-In-Snippet ([SECURITY.md](SECURITY.md) §1) |
+| SSH-Härtung | **Entschieden (D-SSH, 2026-09-30; Regelwerk revidiert 2026-10-03):** Passwort-Login bleibt Standard; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `allow` für die erkannten sshd-Ports (kein `limit` – würde die geteilte Schul-NAT drosseln) und fail2ban zusätzlich, optionale Nachhärtung als dokumentiertes Drop-In-Snippet ([SECURITY.md](SECURITY.md) §1) |
 | Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting/IServ). Von den D-Entscheidungen sonst nichts mehr offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
 
 ### Offene Punkte – wer macht was (Stand 2026-10-01)
@@ -48,11 +48,12 @@ verlinkten Stelle):
 | IServ/nginx-Konflikt auf 80/443 **vor** dem Lauf klären (Entscheidung: Ports an Caddy vs. anderer Ort) | Betreiber + Hosting/IServ | §11 Pre-Flight Punkt 1 |
 | DNS: A-Record, Wildcard, 80/443-Weiterleitung, Proxy-Durchreichung beantragen | Netzwerkadmin; der Betreiber fordert nur Zeilen 1–4 an | §11 „Netzwerkadmin" |
 | 03:00-Rebootfenster mit Schulbetrieb abstimmen und im Wartungsplan hinterlegen | Betreiber | OPERATIONS §7 „Reboot", [SECURITY.md](SECURITY.md) §9 D-Reboot-Fenster |
-| Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT des Workspace-Agenten, A9) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT des Workspace-Agenten, A9); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (BLOCKER B-11 – solange bleiben fremde Container nur als Hinweis, nichts wird automatisch gelöscht) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
 | Zone/Hosting/IServ klären **und beim Netzwerkadmin das DNS-API-Token für die Zone erfragen** – erst danach DNS-01-Modul einbauen; bis dahin läuft On-Demand-TLS weiter (Let's-Encrypt-Limit 50 Zertifikate/Woche pro Domain, Warnung ab 20) | Domainverwalter/Hosting, **nicht** der Betreiber (Token-Anfrage: Betreiber) | OPERATIONS §11 Zeile 6, [SECURITY.md](SECURITY.md) §9 D-TLS |
 | Produktionsfreigabe aussprechen – bewusst hier nicht dokumentiert | Betreiber | diese README |
 | Unterrichtsdaten: Workspace-Homes als akzeptierter Verlust deklarieren oder eigene Volume-Sicherung mit einrichten (vor Produktivbetrieb) | Betreiber | [RESTORE.md](RESTORE.md) „Was gesichert wird" |
+| Alarmweg/Empfänger klären, sobald Alarme jemandem zugestellt werden sollen (5 Regeln existieren, aber kein Kanal – D-Monitoring gilt bis dahin) | Betreiber | [SECURITY.md](SECURITY.md) §9 D-Monitoring |
 | Offene Verifikation: RTO inkl. VM-Boot, `/healthz` + Wildcard, volle Platte, 03:00-Fire | wartet auf frische VM / DNS / Kernel-Update | Prüfstand-Tabelle unten |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
@@ -95,11 +96,10 @@ Werte über `setup.conf` neben dem Skript (gitignored, Vorlage
 | 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
 | 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `caddy/Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus/prometheus.yml` + `prometheus/rules/coder-alerts.yml`, Grafana-Datasource-Provisioning, `node-textfile/` – jedes Schreiben atomar mit Hash und Validierung (Compose/Caddyfile/Prometheus-Config+Regeln), danach `docker compose pull` |
 | 3 | Docker-Stack starten | Preflights (Daemon, Platte), dann `up -d`; Caddy und Prometheus bei laufendem Container per `reload`/SIGHUP neu, Grafana nur bei geänderter Provisioning-Datei neu |
-| 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw limit 22/tcp`, 80/443 frei, fail2ban-Jail `sshd`, Abschluss-Checks |
-| 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades, Reboot 03:00, TLS-Zählung (`check-tls.sh` + Cron); Docker Engine bleibt manuell |
+| 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw allow` für die erkannten sshd-Ports (eigene alte `limit`-Regel wird entfernt), 80/443 frei, 3001 nur aus privaten Quellen, fail2ban-Jail `sshd`, Abschluss-Checks |
+| 5 | Automatische Sicherheitsupdates + Wartungsskripte | Debian-Paketupdates per unattended-upgrades, Reboot 03:00, TLS-Zählung (`check-tls.sh` + Cron), Schreiben aller `scripts/*.sh` nach `/opt/coder/` (755, per `write_managed`: Hash + `bash -n` + atomar); Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |
-| 7 | Wartungsskripte installieren | `backup.sh`, `check-tls.sh`, `reset-coder.sh` nach `/opt/coder/` (755, byte-identisch zu `scripts/`) |
-| 8 | Abschlusscheck & Zusammenfassung | Container, Socket-GID, `https://…/healthz`, Wildcard-DNS, Nutzer-/Owner-Hinweis (B2), `[FEHLER]`-Zähler → Exit 1 bei Fehlern |
+| 7 | Abschlusscheck & Zusammenfassung | Container, Socket-GID, `https://…/healthz`, Wildcard-DNS, Nutzer-/Owner-Hinweis (B2), `[FEHLER]`-Zähler → Exit 1 bei Fehlern |
 
 Jeder erzeugten Datei wird beim Schreiben ein Hash in
 `/opt/coder/.generated-hashes` zugeordnet. Weicht eine Datei ab (Operator-
@@ -116,7 +116,7 @@ deterministisch neu – Hand-Anpassungen gehen dabei verloren, Details in
 | PostgreSQL | `postgres:18-alpine` | keiner | nur im Compose-Netz |
 | Prometheus | `prom/prometheus:v3.14.0` (exakt) | 127.0.0.1:9090 | lokal |
 | node-exporter | `prom/node-exporter:v1.12.1` (exakt) | 127.0.0.1:9100 | lokal |
-| Grafana | `grafana/grafana:12.4.5` (exakt) | 127.0.0.1:3001 | lokal, per SSH-Tunnel |
+| Grafana | `grafana/grafana:12.4.5` (exakt) | `3001` (alle Interfaces, ufw nur private Quellen) | Schulnetz (HTTP, Login Pflicht) + SSH-Tunnel |
 | sshd, ufw, fail2ban, Cron | Debian-Pakete | 22/tcp | ufw `limit` + fail2ban |
 
 Volumes: `postgres_data`, `caddy_data`, `caddy_config`, `prometheus_data`,
@@ -237,12 +237,15 @@ November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/suppo
 
 - **SSH**: Auf dem Schulserver ist Port 22 laut Netzvorgabe nur aus dem
   Schulnetz erreichbar. Passwort-Login bleibt bewusst aktiv (D-SSH,
-  2026-09-30); ufw rate-limitiert (`ufw limit 22/tcp`) und fail2ban
-  begrenzen Fehlversuche (`ignoreip` schützt Admin-Adressen vor der
+  2026-09-30); ufw stellt `allow` für die erkannten sshd-Ports (Revision
+  2026-10-03: kein `limit`, weil es die geteilte Schul-NAT aller Nutzer
+  drosseln würde) und fail2ban begrenzt Fehlversuche (5 Fehlversuche in
+  10 min → 1 h Sperre, `ignoreip` schützt Admin-Adressen vor der
   geteilten Schul-NAT). Das Setup ändert die SSH-Konfiguration nicht; für
   eine optionale Nachhärtung (Key-only, Zweit-Zugang) steht ein kurzes
   Drop-In-Snippet in [SECURITY.md](SECURITY.md) §1.
-- **Firewall**: ufw mit `default deny incoming`; 80/443 (tcp+udp) frei.
+- **Firewall**: ufw mit `default deny incoming`; 80/443 (tcp+udp) frei,
+  3001 (Grafana) nur aus privaten (Schulnetz-)Quellen.
   Prometheus, node-exporter und Grafana sind ausschließlich an
   `127.0.0.1` gebunden.
 - **Docker-Socket**: Der Coder-Container hält `/var/run/docker.sock`
@@ -290,7 +293,7 @@ shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-10-01: alle 10 Testskripte Exit 0 (267 `PASS`, 0 `FAIL`, in
+Stand 2026-10-03: alle 10 Testskripte Exit 0 (280 `PASS`, 0 `FAIL`, in
 diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
@@ -300,10 +303,11 @@ Was die Tests **belegen**: das Verhalten der Wartungsskripte (echte Dateien
 unter `scripts/`: Backup-Headercheck, TLS-Zählfenster, Reset-Precheck) und
 weiterer Setup-Codestellen
 (ufw-Regelpfad
-inkl. „Quellregeln bleiben unangetastet, globale 22/tcp-Allow wird entfernt,
-Abschluss per `limit`",
-Hex-Migration, 13 `write_managed`-Zieldateien samt Drift-Warnung und
-Hash-Heilung,
+inkl. „Quellregeln bleiben unangetastet, `allow` für die erkannten
+sshd-Ports, eigene alte `limit`-Regel wird entfernt",
+Hex-Migration, `write_managed` samt Drift-Warnung und
+Hash-Heilung (11 direkte Zieldateien, die drei `scripts/*.sh` per
+Schleife, dazu `versions.env`),
 `ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
 (`t-b1-on-demand-ask.sh`: Muster-Falluntersuchung, optional `caddy validate`
@@ -389,7 +393,7 @@ Produktivsystem geprüft werden:
 | 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher bleibt offen – ein echter Plattenausfall ist nur mit Rettungskonsole sicher zurückspielbar |
 | 4 | fast erledigt: Dump-Import isoliert 3,0 s, Major-Wechsel 15 → 18 live (2,3 s), **Pfad A am 2026-10-01 komplett** (Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück; 1 min 50 s ohne VM-Boot); offen bleibt nur RTO inkl. VM-Boot/Paketinstallation und `/healthz` unter echtem DNS |
 | 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); Reboot-Fenster konfiguriert geprüft (`52-coder-reboot`: `Automatic-Reboot true`, `03:00`) – tatsächlicher Fire noch nicht beobachtet; Boot-Gate `boot-check.sh` entfällt seit B8 – Wiederanlauf nach Reboot per `docker ps` und `/healthz` prüfen |
-| 6 | erledigt: Re-Run ließ genau eine `22/tcp LIMIT`-Regel (v4/v6) stehen; weltweite `allow 22/tcp` wird entfernt, Quellregeln bleiben unangetastet, fail2ban aktiv |
+| 6 | erledigt: Re-Run ließ genau eine `22/tcp LIMIT`-Regel (v4/v6) stehen; weltweite `allow 22/tcp` wird entfernt, Quellregeln bleiben unangetastet, fail2ban aktiv – **Stand 2026-10-03: Verfahren auf `allow` umgestellt** (eigene `limit`-Regel wird entfernt, nichts anderes wird gelöscht, siehe D-SSH-Revision) |
 | 7 | erledigt, inklusive Rest: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und Dumps erhalten; der Pfad „fremder Container“ wurde mit einem bewusst fremden Container geprüft (als `fremd: fremd-inventartest` gemeldet, danach selbst entfernt), Neuaufbau mit Owner-Konto grün |
 | 8 | als Skript entfällt (D-SSH); optional manuell: SSH-Härtungs-Drop-In aus [SECURITY.md](SECURITY.md) §1, nur mit getestetem Key-Login und Zweit-Zugang |
 | 9 | teilweise: von außen 22/80/443 offen, 9090/9100/3001/3000/8080 geschlossen; Wildcard-DNS und Workspace-Subdomain nicht prüfbar, solange die Domain nicht auf den Server zeigt |

@@ -9,8 +9,94 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-02 · Basisstand dieses Eintrags: `2c5b786` auf `main`.
+Stand: 2026-10-03 · Basisstand dieses Eintrags: `9c458cb` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
+
+---
+
+## 2026-10-03 – Externes Review (SSH/Fehler/Overengineering/Reihenfolge) dispositioniert: SSH auf allow+fail2ban, sechs Bugs gefixt, Rest abgelehnt
+
+- **Review-Set (143 Z., Abschnitte 1–4) je Punkt gegen Code verifiziert.**
+  Zugestimmt und umgesetzt:
+  - **§1 SSH** (Empfehlung „allow statt limit + fail2ban" akzeptiert, 1.1–1.5):
+    Port-Erkennungsschleife `sshd -T` statt Abbruch bei Port != 22 (leerer
+    Port bleibt harter Abbruch); weltweite `allow 22/tcp` wird gesetzt,
+    danach `delete limit 22/tcp` – Reihenfolge ohne Fenster ohne
+    SSH-Regel, Quellregeln und fremde Allows bleiben unangetastet;
+    Abschlusscheck verlangt `ALLOW` (eine `LIMIT`-Regel zählt nicht);
+    TROUBLESHOOTING A7 neu (Passwort-Login in `sshd_config.d/*.conf`,
+    keine Komma-Port-Regeln, kein `show added`) und E1 neu; fail2ban-
+    Drop-In auf die nicht-default Keys reduziert (`sshd`, `port`,
+    `bantime`+`increment`, `ignoreip`) – Defaults am Test-Host verifiziert
+    (`jail.d/defaults-debian.conf` enabled+systemd, `jail.conf` 5/10m),
+    Begründung als Kommentar (B13).
+  - **§2:** 2.1 Doppel-Installation der `scripts/*.sh` (write_managed +
+    `install`) durch eine Schleife ersetzt, Schritt 7 entfällt
+    (`[x/8]`→`[x/7]` überall); 2.2 setup.conf-Parser: CR- und Quote-Strip
+    plus Domain-Regex-Guard mit hartem Abbruch; 2.4 check-tls: `find`-RC
+    wird weitergereicht (echte Lesefehler = Exit 1 ohne Metrik), dazu der
+    frische-Installation-Fall – fehlendes `certificates`-Verzeichnis zählt
+    als 0 Ausstellungen MIT Erfolgszeitpunkt, sonst feuert `TlsCheckStale`
+    bis zum ersten Zertifikat; 2.5 reset-coder: Nicht-TTY wird immer
+    verweigert, auch mit `--force` (am Test-Host: Pipe → Verweigerung,
+    rc 1); 2.9 Update-Cadence „mind. monatlich + kritische CVEs" in
+    OPERATIONS §7; 2.11 geprüft – die README-Dokuliste führt
+    TROUBLESHOOTING bereits, kein Änderungsbedarf (Head-Liste im Setup
+    ist bewusst die Inhaltsdoku).
+  - **§3:** 3.11 `tee > /dev/null` → Redirects (5 Stellen).
+  - **3.1 = Nutzerentscheidung:** Monitoring bleibt (Option 1), offene
+    Zeile „Alarmweg/Empfänger klären" in README, D-Monitoring in SECURITY
+    aktualisiert; **Q2 umgesetzt:** Grafana `3001:3000` auf allen
+    Interfaces (Router leitet nur 80/443/22) plus drei ufw-Quellregeln
+    (10/8, 172.16/12, 192.168/16), Abschlusscheck, A7b-Bindungs-Ausnahme
+    mit Begründung, Setup-Zusammenfassung nennt `http://<IP>:3001`.
+  - **§4 Reihenfolge** als Arbeitsreihenfolge gefolgt (Bugs → SSH →
+    Klein-Vereinfachungen → Doku/Tests); keine eigenständige Änderung.
+- **Abgelehnt (Grund):** 2.3 Pflichtfelder für Domain/ACME-Adresse
+  (Einzelschul-Repo, Werte überall in Doku/Git – Reibung ohne Schutz);
+  2.6 Allowlist-`case` in reset-coder (bewusster Tripwire auf ein
+  unbekanntes Volume-Label, kein toter Code); 2.7 Workspace-Cleanup
+  (blockiert auf Label-Verifikation A9/B-11, offener Punkt mit Owner);
+  2.8 Offsite/Volumes (D-Offsite 2026-09-30 entschieden, Workspace-Homes
+  bereits akzeptierter Verlust); 2.10 LE-Budget (bereits offener Punkt,
+  Option 1: Warnung ab 20, DNS-01 wartet auf Token); 3.2 On-Demand-TLS
+  (geparkt bis TLS-Strategie entschieden – ohne DNS-01 aktuell kein TLS);
+  3.3 Drift-System, 3.4 Downgrade-Schutz, 3.5 Locks, 3.7 Erstkonto,
+  3.13 Kommentar-IDs (vorherige Entscheidungen B3-Kern/B15/B4/Q6-A4/B20
+  bleiben); 3.6 Abschlusschecks (dokumentierter Betriebswert – `set -e`
+  prüft nicht, ob Konfiguration auch aktiv ist); 3.8 Backup-Verifikation
+  und -Rotation (Datensicherungspfad: Größenregressions-Check fängt leere
+  Dumps, Mindestbestand 7); 3.9 retry3 (Schulnetz: Pause + Ursachen-Log
+  beabsichtigt); 3.10 Logdateien/logrotate (Dateien überleben
+  Journal-Vacuum, getestet, in Doku tabelliert); 3.12 node-exporter-Port
+  (OPERATIONS §5 checks curlen `127.0.0.1:9100`).
+- **Testhost-Fund (2026-10-03, Durchläufe auf `2.29.11.30`):** erster
+  Lauf RC 1 – `ufw allow from 10.0.0.0/8,172.16.0.0/12,…` (Komma-Liste)
+  meldet `ERROR: Bad source address`; Fix = drei Einzelregeln. Danach
+  drei Re-Runs RC 0 (0 FEHLER). Weitere Live-Befunde: die vorhandene
+  `22/tcp LIMIT`-Regel wird von `allow` konvertiert („Rule updated",
+  eine Regel, kein Doppel – deshalb verlangt der Abschlusscheck ALLOW);
+  Drift-Warnung zweimal real verifiziert (Hand-Edits an backup.sh und
+  check-tls.sh → WARN → regeneriert, Hashstore stimmt); TLS-Check einmalig
+  OK über den frischen-Installation-Pfad (Metrik 0 + Timestamp); ufw =
+  `22/tcp ALLOW` (kein LIMIT), 3× 3001-ALLOW aus Privatnetzen; Grafana
+  lauscht auf `0.0.0.0:3001`; fail2ban-Jail `sshd` aktiv, Drop-In enthält
+  nur die vier Keys; alle `/opt/coder/*.sh` Mode 755.
+- **Datums-Korrektur:** die in dieser Runde gesetzten Datumsangaben
+  waren um einen Tag auf 2026-10-02 verschoben (Review kam am
+  2026-10-03 07:49 an) – in README, SECURITY, OPERATIONS, setup-coder.sh
+  und t-b2-004 auf 2026-10-03 gezogen; OPERATIONS §10-Teststand
+  gleichzeitig von 267 auf 280 PASS angehoben (war von der vorigen Runde
+  stehen geblieben).
+- **Teststand (lokal, 2026-10-03, tatsächlich ausgeführt):** 10 Dateien,
+  280 `PASS`, 0 `FAIL`; `bash -n setup-coder.sh scripts/*.sh tests/*.sh`
+  und `shellcheck -S warning` derselben ohne Befund. Geänderte Dateien:
+  `setup-coder.sh`, `scripts/check-tls.sh`, `scripts/reset-coder.sh`,
+  `tests/` (t-b2-003/-004/-005/-006/-007, t-071b, t-090), `README.md`,
+  `SECURITY.md`, `OPERATIONS.md`, `TROUBLESHOOTING.md`, `CHANGELOG.md`.
+  Offene Punkte: unverändert (DNS-API-Token, A9/Hairpin + B-11-Labels,
+  RTO/frische VM, Produktionsfreigabe, Push) plus neu „Alarmweg/
+  Empfänger klären" (Owner Betreiber).
 
 ---
 

@@ -1,7 +1,8 @@
 #!/bin/bash
 # T-026-Delta / B2-007: zentraler atomarer Schreibhelfer statt wiederholter
 # tee/chmod/hash-Sequenzen. Geprueft: alle driftverwalteten Dateien nutzen
-# ihn, Drift kommt vor dem Austausch und der Hash danach; keine Schritt-8-Schleife.
+# ihn, Drift kommt vor dem Austausch und der Hash danach; keine
+# Hash-Nachzugs-Schleife am Laufende.
 # Verhalten der ECHTEN note_drift-/remember_hash-Funktionen aus
 # setup-coder.sh (ausextrahiert, sudo-Shim, Hashstore in /tmp):
 #   (a) gruener Lauf -> keine WARN
@@ -29,17 +30,27 @@ EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/grafana/provisioning/datasources/prometheus.yml
 /etc/fail2ban/jail.d/10-coder-sshd.local
 /etc/apt/apt.conf.d/52-coder-reboot
-/opt/coder/check-tls.sh
 /etc/cron.d/coder-tlscheck
-/opt/coder/backup.sh
 /etc/cron.d/coder-backup
 /etc/logrotate.d/coder-backup
 /etc/logrotate.d/coder-logs"
 
 N_MANAGED=$(grep -c '^write_managed "/' "${SETUP}")
 echo "INFO: write_managed=${N_MANAGED}"
-[ "${N_MANAGED}" -eq 13 ] && pass "alle 13 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 13)"
+[ "${N_MANAGED}" -eq 11 ] && pass "alle 11 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 11)"
 grep -qF 'write_managed "${VERSIONS_FILE}"' "${SETUP}" && pass "versions.env nutzt ebenfalls write_managed" || fail "versions.env nutzt write_managed nicht"
+
+# 2.1: die drei Wartungsskripte kommen ueber eine Schleife (inkl. bash -n
+# und Hash), nicht ueber Einzel-Aufrufe oder install(1).
+grep -qF 'for _src in "${SETUP_DIR}"/scripts/*.sh' "${SETUP}" \
+  && grep -qF 'write_managed "/opt/coder/${_src_base}" 755 "${_src_base}"' "${SETUP}" \
+  && pass "scripts/*.sh werden per write_managed-Schleife geschrieben" \
+  || fail "write_managed-Schleife fuer scripts/*.sh fehlt"
+if grep -qF 'install -m 755 -t /opt/coder' "${SETUP}"; then
+  fail "doppelte Installation per install(1) ist noch im Setup"
+else
+  pass "keine doppelte install(1)-Zeile mehr"
+fi
 
 # A2-Live-Fix (2026-10-01): Temp ist per mktemp 600, promtool-Container läuft
 # als nobody – ohne chmod vor dem Validierer scheitert validate_prom_rules mit

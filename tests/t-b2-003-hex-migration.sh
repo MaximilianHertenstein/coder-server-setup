@@ -6,6 +6,8 @@
 #  2. Newline/NUL-Guard und Vollstaendigkeits-Check der .env greifen.
 #  3. Das Erstkonto-Passwort geht per stdin an den Container, nicht in docker-argv.
 #  4. Die .env traegt kein DOCKER_GID mehr; die GID steht fest in der Compose-Datei.
+#  5. setup.conf-Parser: CRLF/Quotes strippen, Domain hart pruefen,
+#     Env vor conf (Review 2.2).
 set -euo pipefail
 
 FAIL=0
@@ -176,6 +178,58 @@ check_argv_clean() {
 run_stmt <(printf '%s\n' "${STMT_FIRST}") "firstuser" "${GFHEX}"
 check_argv_clean "firstuser" "${GFHEX}" "${GFHEX:0:8}"
 grep -F -q -- "${GFHEX}" "${WORK}/firstuser.stdin" && pass "Erstkonto-Passwort geht per stdin" || fail "Erstkonto-Passwort fehlt in stdin"
+
+# ---------- PARSER (Review 2.2: setup.conf CRLF/Quotes, Domain-Guard) -------
+# Der echte Parser-Block aus setup-coder.sh wird extrahiert und gegen echte
+# setup.conf-Fixtures ausgefuehrt: CRLF + umschliessende Quotes muessen
+# weg, eine ungueltige Domain muss hart abbrechen, Env gewinnt vor conf.
+P_START='if [ -f "${SETUP_DIR}/setup.conf" ]; then'
+P_END='# Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt'
+P_S="$(grep -nF "${P_START}" "${SETUP}" | cut -d: -f1 || true)"
+P_E="$(grep -nF "${P_END}" "${SETUP}" | cut -d: -f1 || true)"
+if [ -n "${P_S}" ] && [ -n "${P_E}" ] && [ "${P_S}" -lt "${P_E}" ]; then
+  awk -v a="${P_S}" -v b="${P_E}" 'NR>=a && NR<b' "${SETUP}" > "${WORK}/parser.sh"
+  pass "Parser-Block extrahierbar (Z.${P_S}-Z.${P_E})"
+else
+  fail "Parser-Anker fehlen/ungeordnet (${P_S}/${P_E})"
+fi
+bash -n "${WORK}/parser.sh" && pass "Parser-Block syntaktisch gueltig" || fail "Parser-Syntax"
+
+run_parser() {  # $1=conf (leer = keine Datei) $2=erwarteter rc; Env DOMAIN optional als $3
+  local d="${WORK}/pconf" rc=0 out="" envarg=(env)
+  rm -rf "${d}"; mkdir -p "${d}"
+  [ -n "$1" ] && printf '%s' "$1" > "${d}/setup.conf"
+  [ "$#" -ge 3 ] && envarg=(env "DOMAIN_CODER=$3")
+  out=$("${envarg[@]}" SETUP_DIR="${d}" bash -c \
+    'set -euo pipefail; . "$0"; printf "D=%s|E=%s|I=%s\n" "${DOMAIN_CODER}" "${ACME_EMAIL}" "${FAIL2BAN_IGNORE_IP:-}"' \
+    "${WORK}/parser.sh" 2>&1) || rc=$?
+  RC="${rc}"; OUT="${out}"
+}
+
+# (a) CRLF + doppelte/single Quotes + Kommentar + unbekannter Schluessel:
+# Werte kommen sauber an, Lauf geht weiter.
+run_parser $'DOMAIN_CODER="coder.beispiel.de"\r\nACME_EMAIL=\'ops@beispiel.de\'\r\nFAIL2BAN_IGNORE_IP=192.168.7.1\r\n# Kommentar\r\nUNBEKANNT=x\r\n' 0
+[ "${RC}" -eq 0 ] && pass "Parser: CRLF/Quotes-Conf wird gelesen" || fail "Parser: rc=${RC} (erwartet 0)"
+[ "${OUT}" = "D=coder.beispiel.de|E=ops@beispiel.de|I=192.168.7.1" ] \
+  && pass "Parser: CR und Quotes strippen, Wert exakt" \
+  || fail "Parser: Ausgabe=${OUT}"
+
+# (b) Grossbuchstaben in der Domain -> harter Abbruch mit Klartext.
+run_parser $'DOMAIN_CODER=Coder.Beispiel.de\r\n' 1
+[ "${RC}" -eq 1 ] && pass "Parser: ungueltige Domain -> Exit 1" || fail "Parser: rc=${RC} (erwartet 1)"
+case "${OUT}" in *"keine gültige Domain"*) pass "Parser: Klartext zur Domain" ;; *) fail "Parser: Domain-Fehlertext fehlt (${OUT})" ;; esac
+
+# (c) Leerzeichen in der Domain -> ebenfalls hart abbrechen.
+run_parser $'DOMAIN_CODER=coder beispiel.de\r\n' 1
+[ "${RC}" -eq 1 ] && pass "Parser: Domain mit Leerzeichen -> Exit 1" || fail "Parser: rc=${RC} (erwartet 1)"
+
+# (d) Umgebungsvariable gewinnt vor setup.conf.
+run_parser $'DOMAIN_CODER=from-conf.example.de\r\n' 0 from-env.example.de
+case "${OUT}" in D=from-env.example.de\|*) pass "Parser: Env gewinnt vor conf" ;; *) fail "Parser: Env-Vorrang fehlt (${OUT})" ;; esac
+
+# (e) keine setup.conf -> eingebauter Default greift.
+run_parser "" 0
+case "${OUT}" in D=coder.ghse-unterricht.de\|*) pass "Parser: Default-Domain ohne conf" ;; *) fail "Parser: Default fehlt (${OUT})" ;; esac
 
 if [ "${FAIL}" = "0" ]; then
   echo "B2-003: ALLE PRUEFUNGEN BESTANDEN"

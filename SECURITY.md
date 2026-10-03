@@ -19,16 +19,19 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 - **Zielbetrieb (Schulserver):** Passwort-Login ist **Standard und bleibt
   es** (Entscheidung D-SSH, 2026-09-30). SSH ist laut Netzvorgabe **nur aus dem
   Schulnetz** erreichbar; diese äußere Beschränkung liegt in der
-  Netzwerkinfrastruktur, nicht in diesem Setup. ufw rate-limitiert Port 22
-  zusätzlich, fail2ban sperrt wiederholte Fehlversuche. Das Setup ändert
+  Netzwerkinfrastruktur, nicht in diesem Setup. ufw stellt `allow` für die
+  erkannten sshd-Ports (Regelwerk 2026-10-03: kein `limit`, weil ufw limit
+  6 Verbindungen/30 s je Quell-IP gelten würde und sich die ganze Schul-NAT
+  das teilt), fail2ban sperrt wiederholte Fehlversuche. Das Setup ändert
   die SSH-Konfiguration nicht; eine optionale Nachhärtung ist unten als
   manuelles Drop-In-Snippet dokumentiert (nicht Standard, D-SSH).
 - **Test-Host (Hetzner `2.29.11.30`):** Login **nur per Key** – es existiert
   kein Konto mit Passwort in `/etc/shadow`, ein Passwort-Login schlägt bei
   jedem Konto fehl. Port 22 ist auf dieser separaten Test-VM von überall
   erreichbar; das ist nicht die Netzvorgabe für den Schulserver.
-- Schutz zusätzlich zur jeweiligen Netzvorgabe: `ufw limit 22/tcp`
-  (eingebautes Rate-Limiting von ufw) und fail2ban als zweite Linie.
+- Schutz zusätzlich zur jeweiligen Netzvorgabe: `ufw allow` der sshd-Ports
+  (Netzgrenze am Router, Firewall sperrt nur versehentlich zu) und fail2ban
+  als Brute-Force-Linie (5 Fehlversuche in 10 min → 1 h, inkrementell).
 - Passwort-Login ist **nicht** deaktiviert – mit D-SSH (2026-09-30) ist das
   der gewollte Dauerzustand, nicht nur der Zustand der ersten
   Inbetriebnahme. Das Setup führt keine SSH-Härtung aus; der
@@ -43,12 +46,12 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 **Vorgehen bei der ersten Inbetriebnahme: Passwortzugang im Schulnetz**
 
 Nichts zu ergänzen – das Setup liefert den Schutz bereits, gemessen auf dem
-Test-Host am 2026-09-29:
+Test-Host (zuletzt geprüft 2026-10-03):
 
 | Maßnahme | Ist-Wert | Quelle |
 |---|---|---|
-| `ufw limit 22/tcp` (v4 + v6) | aktiv, Rate-Limiting | `ufw status` |
-| fail2ban-Jail `sshd` | 5 Fehlversuche / 10 min / 1 h Ban (mit `bantime.increment`), `backend=systemd`, `ignoreip=127.0.0.1/8 ::1` | `/etc/fail2ban/jail.d/10-coder-sshd.local` |
+| `ufw allow 22/tcp` (v4 + v6) | aktiv (allow statt limit seit 2026-10-03) | `ufw status` |
+| fail2ban-Jail `sshd` | 5 Fehlversuche / 10 min / 1 h Ban (mit `bantime.increment`), `backend=systemd`, `ignoreip=127.0.0.1/8 ::1` – enabled/backend/maxretry/findtime kommen aus Debians Defaults (`jail.conf`, `jail.d/defaults-debian.conf`), port/bantime/increment/ignoreip aus dem Setup-Drop-In | `/etc/fail2ban/jail.d/10-coder-sshd.local` + Debian-Defaults |
 | fail2ban tatsächlich am Sperren | `Total banned: 134`, `Currently banned: 10` | `fail2ban-client status sshd` |
 | Root per Passwort gesperrt | `permitrootlogin without-password` | `sshd -T` |
 | Leere Passwörter / Kbd-Interactive | `permitemptypasswords no`, `kbdinteractiveauthentication no` | `sshd -T` |
@@ -59,7 +62,7 @@ und `LoginGraceTime 30`. Der Effekt wäre gering, weil fail2ban ohnehin
 nach 5 Fehlversuchen in 10 Minuten sperrt.
 
 ```bash
-sudo ufw status verbose                      # 22/tcp LIMIT?
+sudo ufw status verbose                      # 22/tcp ALLOW?
 sudo fail2ban-client status sshd             # Jail aktiv, aktuelle Bans
 sudo sshd -T | grep -iE '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin)'
 sudo journalctl -u ssh -n 50 --no-pager
@@ -208,32 +211,26 @@ sudo docker logs coder-caddy --tail=100 | grep -iE 'error|acme'
 | Regel | Wert |
 |---|---|
 | Default-Policy | `deny incoming`, `allow outgoing` (explizit gesetzt, nicht auf Debian-Default verlassen) |
-| SSH | `ufw limit 22/tcp` |
+| SSH | `ufw allow <sshd-Port>/tcp` (Ports aus `sshd -T`, meist `22/tcp`) |
 | Web | `ufw allow 80/tcp`, `443/tcp`, `443/udp` (HTTP/3) |
+| Grafana | drei Regeln: `ufw allow from 10.0.0.0/8 to any port 3001 proto tcp` (analog `172.16.0.0/12`, `192.168.0.0/16`; eine Quelle je Regel, ufw lehnt Komma-Listen ab) |
 | Aktivierung | `ufw --force enable` |
 | IPv6 | gleiche Policy für v4+v6, solange `IPV6=yes` in `/etc/default/ufw`; sonst WARN und nur v4 |
 
 **Re-Run-Schutz**: Das Setup löscht keine SSH-Regel, die es nicht selbst
-angelegt hat. Findet es eine restriktivere SSH-Regel (Quelle ≠ Anywhere),
-lässt sie stehen, meldet sie und setzt daneben **keine** weltweite
-`limit 22/tcp`-Regel – ufw wertet beide parallel, die Beschränkung wäre
-dann wirkungslos. Steht schon eine weltweite 22-Regel neben der
-Beschränkung, wird auch das nur gemeldet; ihre Auflösung bleibt dem
-Operator überlassen (`sudo ufw status numbered`). Die einzige Änderung an
-einem Bestand ist die Umwandlung einer weltweiten `allow`- in eine
-`limit`-Regel, danach folgt ein erneuter `ufw status`: bleibt eine
-weltweite `ALLOW`-Zeile stehen, bricht das Setup mit `[FEHLER]` ab, statt
-still mit offenem SSH weiterzulaufen.
-Bei inaktiver UFW prüft das Setup zusätzlich `ufw show added`; findet es dort
-eine gespeicherte SSH-Quellbeschränkung, bricht es vor Policy- und Regel-
-Änderungen ab. Der Report `added` zeigt die gespeicherten UFW-Befehle auch,
-wenn die Firewall nicht aktiv ist ([Debian-13-ufw(8)](https://manpages.debian.org/trixie/ufw/ufw.8.en.html)).
+angelegt hat. Es setzt `allow <erkannter sshd-Port>/tcp` (idempotent) und
+entfernt danach ausschließlich seine eigene alte `limit 22/tcp`-Regel
+früherer Läufe – erst nach dem `allow`, also nie ein Augenblick ohne
+SSH-Regel. Vorgefundene Quellregeln (Quelle ≠ Anywhere) und fremde
+allow-Schreibweisen bleiben unangetastet; wer sie ändern will, tut das
+manuell (`sudo ufw status numbered`, `sudo ufw delete …`). Ohne lesbaren
+ufw-Status bricht das Setup vor jeder Regel- oder Policy-Änderung ab.
 
 **Port-Vorabprüfung (B6):** Bevor das Setup eine UFW-Policy oder -Regel
 anfasst, liest es die konfigurierten SSH-Ports aus `sshd -T`. Ist die
-Konfiguration nicht lesbar, fehlt eine Port-Angabe oder weicht die Liste von
-exakt `22` ab (z. B. `2222`), bricht es ab, statt den SSH-Port ungeschützt
-zu lassen.
+Konfiguration nicht lesbar oder fehlt eine Port-Angabe, bricht es ab, statt
+den SSH-Port ungeschützt zu lassen. Von 22 abweichende Ports (z. B. `2222`)
+sind dagegen erlaubt: ufw-Regel und fail2ban-`port` folgen der Erkennung.
 
 **Was ufw hier nicht schützt** (vom Setup selbst so dokumentiert):
 Docker trägt für per `ports:` publizierte Container-Ports eigene
@@ -327,12 +324,14 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
 | PostgreSQL | kein Host-Port | nein, nur im Compose-Netz |
 | Prometheus | `127.0.0.1:9090` | nein |
 | node-exporter | `127.0.0.1:9100` | nein |
-| Grafana | `127.0.0.1:3001` | nein (SSH-Tunnel) |
-| sshd | `22/tcp` (Host) | ja, rate-limitiert |
+| Grafana | `3001` (alle Interfaces; ufw-Regel nur für private Quellen) | ja, ab dem Schulnetz (HTTP, Login Pflicht, kein TLS) |
+| sshd | `22/tcp` (Host) | ja, `ufw allow` + fail2ban (Brute-Force-Schutz) |
 
 Bindungsregel (im Setup als Review-Check hinterlegt): neue `ports:`-Einträge
 nur als `127.0.0.1:<port>:<port>`; öffentliche Ports bleiben Caddy
-vorbehalten.
+vorbehalten. Ausnahme Grafana 3001 (Q2, 2026-10-03): bewusst für das
+Schulnetz publiziert, Schutz kommt aus der ufw-Quellenregel, der
+Router-Weiterleitung (nur 80/443/22) und dem Grafana-Login.
 
 **Docker-Socket – das größte Restrisiko**
 
@@ -395,7 +394,7 @@ ss -tlnp; ss -ulnp | grep 443
 | 4 | TLS-Zählung folgt Dateien, nicht ACME-Protokollen | eine Ausstellung zählt, sobald ihre Zertifikatsdatei angefasst wurde; Einträge älter als 7 Tage fallen aus dem Fenster | seit 2026-10-01 (A6) dateibasiert und unabhängig von Container-Logrotation (`coder_tls_issuances_7d`); `TlsLogTruncated` samt `coder_tls_log_*` entfallen |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | entschieden 2026-09-30 (D-Offsite): kein zweiter Standort, Risiko akzeptiert |
 | 6 | Restore nur teilweise geprobt, volle RTO unbekannt | der Wiederherstellungsweg mit Stack-Start und Login ist ungeprüft | Dump-Import in Probencontainer mit Datenprobe = 1 am 2026-09-30; Pfad A/B auf frischer VM bleibt offen (Probe nur auf Test-VM) |
-| 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert, 127.0.0.1-Bindung ist der eigentliche Schutz |
+| 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | dokumentiert; 127.0.0.1-Bindung bleibt der Schutz von Prometheus/node-exporter, Grafana 3001 ist die bewusste Ausnahme (Router leitet nur 80/443/22 weiter, ufw-Quellenregel, Login) |
 | 8 | Reboot automatisch 03:00 | abgebrochene Unterrichtssitzungen | entschieden 2026-09-30 (D-Reboot-Fenster): 03:00 bleibt, Unterrichtsbeginn 07:45 |
 | 9 | Kein Benachrichtigungskanal (nur Regeln), keine Digest-Pins | Ausfälle heben keine Alarmierung aus, Prometheus/Grafana zeigen sie nur dem, der hinsieht | Regeln vorhanden (5 Stück), Logs rotiert; entschieden 2026-09-30 (D-Monitoring): kein Kanal, Grafana reicht – Ausfälle sieht nur, wer hinsieht |
 | 10 | Workspace-Selbsttest (T-063) und fachliche Freigabe noch offen | unbekannte Templates könnten Socket/Privilegien nutzen | Erstinventar (Schritt 1) am 2026-09-30 für 6 Templates ohne Befund, Schritt 2 vom Betreiber bestätigt; Schritt 4 nicht protokolliert, siehe [templates/allowlist.md](templates/allowlist.md) |
@@ -417,10 +416,10 @@ begründen die Lage, diese Tabelle ist der Sammelpunkt.
 |---|---|---|---|---|---|
 | D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, dateibasierte Zählung); DNS-01-Wildcard ohne On-Demand (B4b) | Status quo; Budget-Warnung ab 20 Ausstellungen/7 Tage; DNS-01 nur mit Zonen-Zugang und Abstimmung | KAS-Zugang von All-Inkl (beim Domainverwalter, nicht beim Betreiber), erst nach Klärung von Zone/IServ; DNS-API-Token beim Netzwerkadmin anfragen | teilentschieden: Zählung seit 2026-10-01 dateibasiert (A6, `TlsLogTruncated` entfallen); DNS-01 aufgeschoben bis Zone, Hosting und IServ geklärt sind (Modul `caddy-dns/all-inkl` bekannt) |
 | D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo + Allowlist bleiben dauerhaft; Erstinventar und T-063 bleiben Pflicht | – | entschieden: Empfehlung übernommen – keine zweite VM |
-| D-SSH | Wann Passwort-Login abgeschaltet wird (Drop-In-Snippet aus Abschnitt 1) | Status quo (Passwort + `ufw limit` + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, Nachhärtung ist nicht Standard |
+| D-SSH | Wann Passwort-Login abgeschaltet wird (Drop-In-Snippet aus Abschnitt 1) | Status quo (Passwort + `ufw allow` der sshd-Ports + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, Nachhärtung ist nicht Standard; Regelwerk 2026-10-03 revidiert: `allow` statt `limit` (geteilte Schul-NAT darf ufw nicht drosseln), fail2ban bleibt Brute-Force-Schutz |
 | D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
 | D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | 03:00 bleibt, abgestimmt gegen Unterrichtsbeginn 07:45 | – | entschieden: Empfehlung übernommen – 03:00 bleibt |
-| D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | Grafana/Prometheus bleiben die Anlaufstelle, kein Kanal | – | entschieden: kein Kanal, Grafana reicht |
+| D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | Grafana/Prometheus bleiben die Anlaufstelle, kein Kanal | – | entschieden: kein Kanal, Grafana reicht – Alarmweg/Empfänger bleibt als offener Punkt notiert (README „Offene Punkte") |
 | D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | kein zweiter Standort; lokal bleiben Dumps 700/600 und die Restore-Probe der Schutz | – | entschieden: kein zweiter Standort, Restrisiko akzeptiert |
 
 Nur noch offen: **DNS-01** (D-TLS-Teil, deckt sich mit **B4b**) –

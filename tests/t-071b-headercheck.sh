@@ -91,10 +91,10 @@ if grep -qF 'HEADER="$(zcat "${TMP}"' "${BACKUP}" \
 else
   fail "scripts/backup.sh enthaelt B2-001-Fix nicht (oder Einzeiler noch vorhanden)"
 fi
-if grep -qF 'scripts/backup.sh' "${REPO_ROOT}/setup-coder.sh"; then
-  pass "Setup installiert backup.sh aus scripts/"
+if grep -qF 'for _src in "${SETUP_DIR}"/scripts/*.sh' "${REPO_ROOT}/setup-coder.sh"; then
+  pass "Setup schreibt backup.sh per scripts/*.sh-Write-Managed-Schleife"
 else
-  fail "Setup installiert scripts/backup.sh nicht"
+  fail "Setup schreibt scripts/*.sh nicht (Schleife fehlt)"
 fi
 
 if [ "${FAIL}" -eq 0 ]; then

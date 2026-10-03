@@ -94,10 +94,19 @@ trap setup_cleanup EXIT
 # setzen – z.B. die Admin-IP aus fail2ban ignorip. Vorrang:
 #   Umgebungsvariable (aktueller Lauf) > setup.conf > eingebauter Default.
 # Nur die vier freigegebenen Schlüssel werden gelesen, alles andere (auch
-# Syntaxfehler) überschreibt nichts und bricht den Lauf nicht ab.
+# Syntaxfehler) überschreibt nichts und bricht den Lauf nicht ab; danach
+# bricht die Domain-Prüfung bei ungültigem DOMAIN_CODER hart ab.
 if [ -f "${SETUP_DIR}/setup.conf" ]; then
   while IFS='=' read -r _sk _sv || [ -n "${_sk}" ]; do
     case "${_sk}" in ''|\#*) continue ;; esac
+    # Werte wörtlich übernehmen wäre schädlich: CRLF (Windows-Editor) landet
+    # als \r in Domain/Jail/Compose, umschließende Anführungszeichen in der
+    # fail2ban- oder Caddyfile-Konfiguration. Beides hier strippen.
+    _sv="${_sv%$'\r'}"
+    case "${_sv}" in
+      \"*\") _sv="${_sv#\"}"; _sv="${_sv%\"}" ;;
+      \'*\') _sv="${_sv#\'}"; _sv="${_sv%\'}" ;;
+    esac
     case "${_sk}" in
       DOMAIN_CODER)       [ -n "${DOMAIN_CODER+x}" ] || DOMAIN_CODER="${_sv}" ;;
       ACME_EMAIL)         [ -n "${ACME_EMAIL+x}" ] || ACME_EMAIL="${_sv}" ;;
@@ -110,6 +119,14 @@ fi
 # über setup.conf) gesetzt wurde.
 : "${DOMAIN_CODER:=coder.ghse-unterricht.de}"
 : "${ACME_EMAIL:=hert@ghse.de}"
+# Domain hart prüfen, bevor sie in Caddyfile/Compose wandert: Leerzeichen,
+# Anführungszeichen, \r oder Grossbuchstaben würden die Konfiguration oder
+# die TLS-Ausstellung brechen.
+if ! [[ "${DOMAIN_CODER}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+  echo "Fehler: DOMAIN_CODER='${DOMAIN_CODER}' ist keine gültige Domain (erlaubt: klein, a-z, 0-9, '.', '-'; kein Leerzeichen/Anführung/\\r)." >&2
+  echo "In setup.conf oder als Umgebungsvariable korrigieren, dann Setup erneut." >&2
+  exit 1
+fi
 # Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt, CADDY bewusst nur
 # minor-gepinnt (z. B. "2.10") – TLS-taugliche Patch-Updates sollen über
 # "docker compose pull" ankommen; postgres:18-alpine analog (Major-Tag).
@@ -206,8 +223,8 @@ remember_hash() {
   h=$(sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
   [ -n "${h}" ] || return 0
   touch "${HASHSTORE}" 2>/dev/null || true
-  awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null | tee "${HASHSTORE}.tmp" > /dev/null || true
-  echo "${h}  ${file}" | tee -a "${HASHSTORE}.tmp" > /dev/null
+  awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null > "${HASHSTORE}.tmp" || true
+  echo "${h}  ${file}" >> "${HASHSTORE}.tmp"
   mv "${HASHSTORE}.tmp" "${HASHSTORE}"
   chmod 600 "${HASHSTORE}"
 }
@@ -227,7 +244,7 @@ write_managed() { # $1=Pfad $2=Modus $3=Drift-Label [$4=Validierer]; Inhalt via 
   dir="${file%/*}"
   base="${file##*/}"
   MANAGED_TMP=$(mktemp "${dir}/.${base}.tmp.XXXXXX")
-  if ! tee "${MANAGED_TMP}" > /dev/null; then
+  if ! cat > "${MANAGED_TMP}"; then
     rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
     MANAGED_TMP=""
     return 1
@@ -312,9 +329,9 @@ validate_prom_config() {
 }
 
 # A10: Alle SSH-Vorbedingungen HIER, vor Docker-Installation und Stack-Start.
-# Die Firewall-Regel unten ist fest auf "22/tcp"; lauscht sshd auf einem
-# anderen Port, würde "ufw enable" den eigenen Zugang abschneiden – deshalb
-# hart abbrechen, bevor irgendetwas installiert oder verändert wird
+# Die Firewall-Regel unten setzt die hier erkannten sshd-Ports; ohne lesbare
+# sshd-Konfiguration wäre unklar, welchen Port "ufw enable" noch offen lässt –
+# deshalb hart abbrechen, bevor irgendetwas installiert oder verändert wird
 # (Zugriff dann nur noch über Konsolenzugang des Hosts).
 if ! command -v sshd > /dev/null 2>&1; then
   echo "Fehler: sshd nicht gefunden – openssh-server fehlt; ohne SSH-Zugang würde die Firewall-Änderung den Host absperren." >&2
@@ -330,15 +347,9 @@ if [ -z "${SSHD_PORTS}" ]; then
   echo "Fehler: sshd -T lieferte keinen Port – Abbruch vor jeder Serveränderung." >&2
   exit 1
 fi
-if [ "${SSHD_PORTS}" != "22" ]; then
-  echo "Fehler: sshd lauscht auf Port '${SSHD_PORTS}', dieses Skript erlaubt aber nur 22/tcp." >&2
-  echo "Abbruch vor jeder Serveränderung – sonst würde 'ufw enable' den SSH-Zugang schneiden." >&2
-  echo "Port in setup-coder.sh anpassen (Suchbegriff: 'ufw limit 22/tcp') und erneut ausführen." >&2
-  exit 1
-fi
 
 echo "############################################################"
-echo "# [1/8] Docker Engine installieren"
+echo "# [1/7] Docker Engine installieren"
 echo "############################################################"
 # C1: Alle Cron-Zeiten dieses Skripts (Backup 01:00, Reboot 03:00, TLS-Check
 # Mo 06:30) gelten in LOCALTIME. Neue VMs laufen oft auf UTC, dann läuft das
@@ -386,8 +397,7 @@ fi
 
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-  ${VERSION_CODENAME} stable" | \
-  tee /etc/apt/sources.list.d/docker.list > /dev/null
+  ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
 
 retry3 apt-get update
 apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -417,7 +427,7 @@ if [ -f "${DAEMON_JSON}" ]; then
   fi
 else
   install -d -m 0755 /etc/docker
-  tee "${DAEMON_JSON}" > /dev/null <<'EOF'
+  cat > "${DAEMON_JSON}" <<'EOF'
 {
   "log-driver": "json-file",
   "log-opts": {
@@ -459,7 +469,7 @@ fi
 # sudo usermod -aG docker "$USER"
 
 echo "############################################################"
-echo "# [2/8] Verzeichnis und Konfigurationsdateien anlegen"
+echo "# [2/7] Verzeichnis und Konfigurationsdateien anlegen"
 echo "############################################################"
 mkdir -p /opt/coder/backups
 chmod 700 /opt/coder/backups
@@ -495,7 +505,7 @@ if [ ! -f /opt/coder/.env ]; then
   GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)
 
   ENV_TMP=$(mktemp /opt/coder/.env.tmp.XXXXXX)
-  tee "$ENV_TMP" > /dev/null <<EOF
+  cat > "$ENV_TMP" <<EOF
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
 EOF
@@ -690,15 +700,18 @@ services:
       # in /opt/coder/.env (GRAFANA_ADMIN_PASSWORD) ändern und Grafana neu
       # starten (siehe OPERATIONS.md).
       - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
-      # Kein GF_SERVER_ROOT_URL nötig – Zugriff läuft per SSH-Tunnel auf
-      # 127.0.0.1:3001, nicht über eine eigene Domain.
+      # Kein GF_SERVER_ROOT_URL nötig – Zugriff per IP (Schulnetz oder
+      # SSH-Tunnel), nicht über eine eigene Domain.
       # Telemetrie/Update-Checks an Grafana Inc. aus (Review 1.8): passt zur
       # bewusst telemetriefreien Haltung des Stacks (siehe CODER_TELEMETRY).
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
-    # Zusätzlich lokal erreichbar für Direktzugriff/Debugging
+    # Betreiber-Wunsch (Q2, 2026-10-03): Dashboard vom Schulnetz aus sehen.
+    # Bindung auf alle Interfaces; Schutz: Router leitet nur 80/443/22 weiter
+    # (WAN sieht 3001 nicht), ufw-Quellenregel unten für IPv6/Host-Pfad,
+    # Grafana braucht Login. Bewusst ohne TLS (Schul-LAN).
     ports:
-      - "127.0.0.1:3001:3000"
+      - "3001:3000"
     volumes:
       # C3: Datasource-Quittung (provisioniert, statt manuell im UI einzutragen).
       # Nur das Unterverzeichnis gemountet, damit der Rest von
@@ -930,7 +943,7 @@ install -d -m 0755 /opt/coder/node-textfile
 GRAFANA_PROV_AFTER=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml | cut -d' ' -f1)
 
 echo "############################################################"
-echo "# [3/8] Docker-Stack starten"
+echo "# [3/7] Docker-Stack starten"
 echo "############################################################"
 cd /opt/coder
 
@@ -967,7 +980,7 @@ docker compose up -d
 # Moment, in dem die neuen Images laufen (ein Abbruch vor "up -d" darf keine
 # nie gelaufene Version als wirksam eintragen, ein Abbruch DANACH darf keine
 # bereits migrierte DB ungeschützt lassen). "install -d" sichert den Pfad,
-# falls dieser Block je früher stünde (A1: tee legt keine Verzeichnisse an).
+# falls dieser Block je früher stünde (A1: cat legt keine Verzeichnisse an).
 install -d -m 0755 /opt/coder
 write_managed "${VERSIONS_FILE}" 644 - <<VERSIONSEOF
 # Von setup-coder.sh erzeugt – wirksam gewesene Versionen des letzten Laufs.
@@ -1022,19 +1035,21 @@ fi
 docker compose ps
 
 echo "############################################################"
-echo "# [4/8] Firewall (ufw) + SSH-Schutz einrichten"
+echo "# [4/7] Firewall (ufw) + SSH-Schutz einrichten"
 echo "############################################################"
 apt_install ufw fail2ban
 
 # Der sshd-Port-Check steht im Preflight (vor Schritt 1) – A10: Vorbedingungen
 # gehören vor die Installation, nicht erst vor der ersten Firewall-Änderung.
 #
-# B11/D-SSH: kein Quellbeschränkungs-Pfad. Die Netzgrenze (SSH nur aus dem
-# Schulnetz) liegt am Router, nicht an dieser Firewall; fail2ban ist der
-# Brute-Force-Schutz. Geblieben sind die Sicherheitsinvarianten:
+# B11/D-SSH: kein Quellbeschränkungs-Pfad und kein Rate-Limit in der Firewall.
+# Die Netzgrenze (SSH nur aus dem Schulnetz) liegt am Router; fail2ban ist der
+# Brute-Force-Schutz. ufw limit (6 Verbindungen/30 s je Quell-IP) würde die
+# geteilte Schul-NAT-IP drosseln – alle dahinter zahlen mit. Invarianten:
 #   - Ohne lesbaren ufw-Status wird NICHTS geaendert (Abbruch).
-#   - Weltweite allow-Regeln (die limit wirkungslos machen wuerden) werden
-#     entfernt und der Erfolg VERIFIZIERT, bevor mit limit weitergemacht wird.
+#   - Nichts wird geloescht, außer der eigenen alten limit-Regel frueherer
+#     Laeufe (erst allow setzen, dann loeschen – niemals ein Fenster ohne
+#     SSH-Regel). Quellregeln und fremde Regeln bleiben unangetastet.
 if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then
   fail "ufw-Status nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
   exit 1
@@ -1044,33 +1059,26 @@ if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
 fi
 
 # Regelanwendung: einfache feste Folge. Reihenfolge erst Policy, dann
-# SSH-Regeln; "limit" ist idempotent ("Skipping adding existing rule"),
-# deletes auf nicht vorhandene Regeln scheitern still (|| true).
+# SSH-Regeln; "allow" ist idempotent ("Skipping adding existing rule").
 ufw default deny incoming
 ufw default allow outgoing
-# Nur die drei weltweiten Schreibweisen einer allow-Regel; Quellregeln
-# ("allow from …") sind davon strukturell nicht betroffen.
-ufw --force delete allow 22/tcp  > /dev/null 2>&1 || true
-ufw --force delete allow 22      > /dev/null 2>&1 || true
-ufw --force delete allow OpenSSH > /dev/null 2>&1 || true
-UFW_LEFTOVER="$(ufw status numbered 2>/dev/null || true)"
-UFW_LEFTOVER="$(printf '%s\n' "${UFW_LEFTOVER}" \
-  | grep -Ei '(^|[[:space:]])(22(/tcp)?|OpenSSH)([[:space:]]|\(v6\)|$)' \
-  | grep -Ei '[[:space:]]Anywhere([[:space:]\(]|$)' \
-  | grep -Ei '[[:space:]]ALLOW([[:space:]]|$)' || true)"
-if [ -n "${UFW_LEFTOVER}" ]; then
-  fail "weltweite 'allow'-SSH-Regel steht nach dem Löschen noch (${UFW_LEFTOVER}) – manuell prüfen: sudo ufw status numbered"
-  exit 1
-fi
-ufw limit 22/tcp
+# SSH: allow für die im Preflight erkannten sshd-Ports (funktioniert auch
+# bei einem Nicht-22-Port, der frühere Harte-Abbruch entfiel).
+for _ssh_p in ${SSHD_PORTS}; do
+  ufw allow "${_ssh_p}/tcp"
+done
+# Eigene Altregel aus der limit-Ära entfernen – allow steht bereits, also
+# kein Augenblick ohne SSH-Regel. Nicht vorhanden = stiller No-Op.
+ufw --force delete limit 22/tcp > /dev/null 2>&1 || true
 
-# backend=systemd explizit setzen: Debians fail2ban-Paket hat python3-systemd
-# als harte Abhängigkeit (steht so auf der offiziellen Debian-Paketseite),
-# journald ist also immer verfügbar - "auto" wählt das aber nicht zuverlässig
-# automatisch (bekanntes, in fail2bans eigenem Bugtracker dokumentiertes
-# Verhalten auf systemd-basierten Distributionen). Eine zusätzliche
-# rsyslog/auth.log-Installation ist damit unnötig und wäre auf Debian 13
-# überflüssiger Overhead.
+# Nur die Nicht-Defaults setzen. Debian liefert selbst [sshd] enabled=true,
+# backend=systemd und journalmatch in jail.d/defaults-debian.conf sowie
+# maxretry=5/findtime=10m in jail.conf (am Test-Host geprueft 2026-10-03);
+# die Schluessel bleiben in unserer .local also aus, weil fail2ban sektionen-
+# uebergreifend pro Schluessel fusioniert. Fehlt die Debian-Datei, merkt der
+# Abschlusscheck "fail2ban-client status sshd" das (Jail antwortet nicht).
+# port traegt die im Preflight erkannten sshd-Ports (anders als Debian-Default
+# "ssh" = nur 22 wuerde ein Nicht-22-Port nie beobachtet).
 # B7/Review 1.4+2.3: Eigene Jails in einen Drop-In unter jail.d/ legen.
 # Lese-Reihenfolge von fail2ban (man jail.conf):
 #   jail.conf -> jail.d/*.conf -> jail.local -> jail.d/*.local
@@ -1084,17 +1092,13 @@ if [ -f /etc/fail2ban/jail.local ]; then
   warn "Vorgefunden: /etc/fail2ban/jail.local – unser Drop-In ${JAIL_DROPIN} hat laut Lese-Reihenfolge Vorrang, dort geschriebene Jails greifen nicht. Eigene Werte in den Drop-In übernehmen und jail.local entfernen."
 fi
 mkdir -p /etc/fail2ban/jail.d
-# Review 0.3: bantime.increment verlängert Wiederholungssperren, ignoreip
-# schützt Admin-Adressen vor der geteilten Schul-NAT (sonst sperrt ein
-# Tippfehler die gemeinsame Quell-IP). Werte dauerhaft in setup.conf
-# eintragen (Schlüssel FAIL2BAN_IGNORE_IP, siehe setup.conf.example).
+# bantime.increment verlängert Wiederholungssperren, ignoreip schützt die
+# geteilte Schul-NAT (5 Fehlversuche sperrten sonst die gemeinsame Quell-IP
+# für alle). Werte dauerhaft in setup.conf eintragen (Schlüssel
+# FAIL2BAN_IGNORE_IP, siehe setup.conf.example).
 write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<EOF
 [sshd]
-enabled  = true
-backend  = systemd
-port     = ssh
-maxretry = 5
-findtime = 10m
+port     = ${SSHD_PORTS// /,}
 bantime  = 1h
 bantime.increment = true
 ignoreip = ${FAIL2BAN_IGNORE_IP}
@@ -1124,11 +1128,23 @@ fi
 # für IPv6 laufen sie aber über INPUT/docker-proxy und werden gebraucht,
 # deshalb bleiben sie stehen. Bindungsregel: neue "ports:"-Einträge NUR als
 # "127.0.0.1:<port>:<port>" – öffentliche Ports bleiben Caddy (80/443)
-# vorbehalten, Prometheus/Grafana sind nur an 127.0.0.1 gebunden. SSH gilt
-# nicht als Docker-Port: sshd ist ein Host-Dienst, ufw/fail2ban greifen hier.
+# vorbehalten, Prometheus/node-exporter sind nur an 127.0.0.1 gebunden.
+# Bewusste Ausnahme: Grafana 3001 (Q2, 2026-10-03) – vom Schulnetz aus
+# sichtbar, ufw-Quellenregel + Router-Weiterleitung als Schutz, Login Pflicht.
+# SSH gilt nicht als Docker-Port: sshd ist ein Host-Dienst, ufw/fail2ban
+# greifen hier.
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 443/udp
+# Grafana-Dashboard 3001 nur aus privaten (Schulnetz-)Quellen. Belt and
+# braces: Docker-Published-Ports umgehen ufw auf dem IPv4-DNAT-Weg (SECURITY,
+# Risiko 7), die Regeln tragen also vor allem IPv6/Host-Pfad und
+# dokumentieren die Absicht – WAN bleibt zusätzlich vom Router
+# ausgeschlossen. Eine Quelle je Regel: ufw lehnt Komma-Listen ab
+# ("Bad source address", beim Test 2026-10-03 gefunden).
+for _net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+  ufw allow from "${_net}" to any port 3001 proto tcp
+done
 ufw --force enable
 ufw status verbose
 if grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
@@ -1143,14 +1159,21 @@ if grep -q "Status: active" <<< "${UFW_STATUS}"; then
 else
   fail "ufw ist NICHT aktiv"
 fi
-# B11: prüfen, dass die weltweite Rate-Limit-Regel nach enable wirkt – eine
-# daneben stehende weltweite ALLOW würde sie stumm aufheben (ist oben vor dem
-# set bereits entfernt und verifiziert worden).
-UFW_SSH_LINES="$(grep -E '(22/tcp|OpenSSH)[[:space:]]+(LIMIT|ALLOW)' <<< "${UFW_STATUS}" || true)"
-if grep -q "22/tcp.*LIMIT" <<< "${UFW_SSH_LINES}"; then
-  ok "SSH ist offen, aber per ufw rate-limitiert (22/tcp LIMIT)"
-else
-  fail "SSH-Rate-Limit-Regel fehlt in ufw – prüfen mit: sudo ufw status"
+# SSH: die im Preflight erkannten Ports müssen als ALLOW (Anywhere) stehen;
+# eine LIMIT-Regel zählt nicht mehr (D-SSH: ufw limit würde die geteilte
+# Schul-NAT drosseln, fail2ban ist der Brute-Force-Schutz) und Quellregeln
+# allein zahlen auch nicht – diese Firewall soll den Zugang nur nicht
+# versehentlich verschließen, die Netzgrenze liegt am Router.
+UFW_SSH_MISSING=""
+for _p in ${SSHD_PORTS}; do
+  if grep -qE "^${_p}/tcp[[:space:]]+ALLOW[[:space:]]+Anywhere" <<< "${UFW_STATUS}"; then
+    ok "SSH-Port ${_p}/tcp steht als ALLOW in ufw"
+  else
+    UFW_SSH_MISSING="${UFW_SSH_MISSING} ${_p}"
+  fi
+done
+if [ -n "${UFW_SSH_MISSING}" ]; then
+  fail "SSH-ALLOW-Regel fehlt in ufw für Port(s):${UFW_SSH_MISSING} – prüfen mit: sudo ufw status"
 fi
 # B13: ein einziger Check statt is-active/ping/Total-failed – "status sshd"
 # liefert nur Exit 0, wenn Dienst UND Jail antworten (der Reload-Retry oben
@@ -1190,9 +1213,16 @@ if grep -qE '^443/udp[[:space:]]' <<< "${UFW_STATUS}"; then
 else
   fail "Port 443/udp fehlt in ufw"
 fi
+# Grafana 3001 (Q2): Quellenregel muss stehen – sonst sieht niemand vom
+# Schulnetz das Dashboard (WAN ist unabhängig am Router gesperrt).
+if grep -qE '^3001/tcp[[:space:]]+ALLOW[[:space:]]' <<< "${UFW_STATUS}"; then
+  ok "Grafana 3001/tcp steht in ufw (Quellenregel Schulnetz)"
+else
+  fail "Grafana 3001/tcp-Regel fehlt in ufw – prüfen mit: sudo ufw status"
+fi
 
 echo "############################################################"
-echo "# [5/8] Automatische Sicherheitsupdates einrichten"
+echo "# [5/7] Automatische Sicherheitsupdates einrichten"
 echo "############################################################"
 apt_install unattended-upgrades
 
@@ -1236,7 +1266,15 @@ fi
 # schreibt coder_tls_issuances_7d. Die Erfolgszeit wird separat exportiert,
 # damit ein ausgefallener oder verpasster Cronlauf als TlsCheckStale
 # sichtbar wird.
-write_managed "/opt/coder/check-tls.sh" 755 "check-tls.sh" < "${SETUP_DIR}/scripts/check-tls.sh"
+# Wartungsskripte: eine Schleife statt drei getrennter Pfade (frueher
+# Schritt 7 "install -m 755" plus zwei Einzel-Aufrufen). write_managed
+# hashet jede Datei, prueft *.sh per bash -n und schreibt atomar – und die
+# Skripte stehen hier, bevor check-tls.sh unten und backup.sh in Schritt 6
+# das erste Mal gebraucht werden.
+for _src in "${SETUP_DIR}"/scripts/*.sh; do
+  _src_base="$(basename "${_src}")"
+  write_managed "/opt/coder/${_src_base}" 755 "${_src_base}" < "${_src}"
+done
 write_managed "/etc/cron.d/coder-tlscheck" 644 "coder-tlscheck-Cron" <<'EOF'
 30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1
 EOF
@@ -1250,9 +1288,8 @@ else
 fi
 
 echo "############################################################"
-echo "# [6/8] Tägliches Datenbank-Backup einrichten"
+echo "# [6/7] Tägliches Datenbank-Backup einrichten"
 echo "############################################################"
-write_managed "/opt/coder/backup.sh" 755 "backup.sh" < "${SETUP_DIR}/scripts/backup.sh"
 
 # F-009(a): ohne Cron-Daemon läuft nie ein Backup, das Setup meldete trotzdem
 # [OK]. Das Paket wurde bereits in Schritt 1 installiert; hier werden die
@@ -1351,20 +1388,12 @@ else
 fi
 
 echo "############################################################"
-echo "# [7/8] Skripte nach /opt/coder kopieren"
-echo "############################################################"
-# B10: eine Zeile statt pro Datei write_managed + Existenz-Gate – write_managed
-# und set -e brechen bei Problemen ohnehin ab, und die Skripte werden erst
-# jetzt gebraucht, wenn sie aufgerufen werden. Mode 755 wie bisher.
-install -m 755 -t /opt/coder "${SETUP_DIR}"/scripts/*.sh
-
-echo "############################################################"
-echo "# [8/8] Abschlusscheck & Zusammenfassung"
+echo "# [7/7] Abschlusscheck & Zusammenfassung"
 echo "############################################################"
 
 # B-012/B2-007: Der Schritt-10-Block, der hier alle 15 Hashes auf einmal
 # nachgezogen hat, ist entfernt. remember_hash steht jetzt an jeder Schreib-
-# stelle direkt nach erfolgreichem tee/chmod – ein Abbruch vor Schritt 8
+# stelle direkt nach erfolgreichem Schreiben/chmod – ein Abbruch vor Schritt 7
 # hinterlässt damit keine veralteten Hashes mehr, die im nächsten Lauf eine
 # Fehl-Warnung ("Operator-Drift") für setup-eigene Residuen auslösen.
 # Residueller, dokumentierter Restpfad: Kill genau zwischen Schreiben und
@@ -1536,7 +1565,7 @@ echo "Workspace-Apps/Port-Forwarding brauchen zusätzlich den Wildcard-DNS-Eintr
 echo "*.${DOMAIN_CODER} -> öffentliche Server-IP (siehe Kopf des Skripts)."
 echo "Neue Releases: Pin in setup-coder.sh (Versions-Variablen) ändern und"
 echo "das Setup erneut ausführen. Docker-Engine-Updates sind separat und manuell."
-echo "Grafana weiterhin nur per SSH-Tunnel: 127.0.0.1:3001"
+echo "Grafana: http://<Server-IP>:3001 ab dem Schulnetz (Login admin) oder per SSH-Tunnel: 127.0.0.1:3001"
 
 if [ "${ERROR_COUNT}" -gt 0 ]; then
   echo ""

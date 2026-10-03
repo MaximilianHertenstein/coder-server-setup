@@ -24,11 +24,17 @@ cp "${REPO_ROOT}/scripts/reset-coder.sh" "${WORK}/reset-coder.sh" \
 LINES=$(wc -l < "${WORK}/reset-coder.sh")
 echo "INFO: scripts/reset-coder.sh = ${LINES} Zeilen"
 [ "${LINES}" -gt 50 ] || fail "reset-coder.sh zu kurz (nicht extrahierbar?)"
-# B10: das Setup kopiert alle scripts/*.sh (inkl. reset-coder.sh) per install.
-if grep -qF 'install -m 755 -t /opt/coder "${SETUP_DIR}"/scripts/*.sh' "${SETUP}"; then
-  pass "Setup installiert scripts/*.sh (inkl. reset-coder.sh) aus scripts/"
+# B10/2.1: das Setup schreibt alle scripts/*.sh (inkl. reset-coder.sh) per
+# write_managed-Schleife (Hash + bash -n + atomar), frueher per install-Zeile.
+if grep -qF 'for _src in "${SETUP_DIR}"/scripts/*.sh' "${SETUP}"; then
+  pass "Setup schreibt scripts/*.sh (inkl. reset-coder.sh) per Schleife"
 else
-  fail "Setup installiert scripts/*.sh nicht"
+  fail "Setup schreibt scripts/*.sh nicht (Schleife fehlt)"
+fi
+if grep -qF 'install -m 755 -t /opt/coder' "${SETUP}"; then
+  fail "doppelte Installation per install(1) ist noch im Setup"
+else
+  pass "keine doppelte install(1)-Zeile mehr"
 fi
 
 line_of() { grep -nF -- "$1" "${WORK}/reset-coder.sh" | head -n1 | cut -d: -f1; }

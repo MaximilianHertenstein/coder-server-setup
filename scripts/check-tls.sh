@@ -9,10 +9,28 @@
 # Exit 1 und aktualisieren den Erfolgszeitpunkt nicht.
 set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-if ! COUNT=$(docker exec coder-caddy sh -c 'find /data/caddy/certificates -name "*.crt" -mtime -7 2>/dev/null | wc -l'); then
-  echo "Fehler: Zertifikatsdateien konnten nicht gezaehlt werden; TLS-Metrik bleibt unveraendert." >&2
-  logger -t coder-tls "FEHLER: Zertifikatsdateien konnten nicht gezaehlt werden" || true
+# Frische Installation ohne ausgestellte Zertifikate: caddy_data hat noch
+# kein certificates-Verzeichnis – das ist kein Lesefehler, sondern Stand
+# "0 Ausstellungen"; die Metrik und der Erfolgszeitpunkt muessen trotzdem
+# gesetzt werden, sonst feuert TlsCheckStale bis zum ersten Zertifikat.
+# Container nicht erreichbar oder find-Fehler im vorhandenen Verzeichnis =
+# Exit 1, Metrik bleibt unveraendert. Frueher maskierte
+# "find 2>/dev/null | wc -l" im Container jeden Fehler und zaehlte still 0.
+if ! CERT_DIR_STATE="$(docker exec coder-caddy sh -c \
+  'if [ -d /data/caddy/certificates ]; then echo yes; else echo no; fi')"; then
+  echo "Fehler: caddy-Container nicht erreichbar; TLS-Metrik bleibt unveraendert." >&2
+  logger -t coder-tls "FEHLER: caddy-Container nicht erreichbar" || true
   exit 1
+fi
+if [ "${CERT_DIR_STATE}" = "yes" ]; then
+  if ! FILES="$(docker exec coder-caddy find /data/caddy/certificates -name "*.crt" -mtime -7)"; then
+    echo "Fehler: Zertifikatsdateien konnten nicht gezaehlt werden (find meldete Fehler); TLS-Metrik bleibt unveraendert." >&2
+    logger -t coder-tls "FEHLER: Zertifikatsdateien konnten nicht gezaehlt werden" || true
+    exit 1
+  fi
+  COUNT="$(printf '%s\n' "${FILES}" | grep -c . || true)"
+else
+  COUNT=0
 fi
 echo "TLS-Ausstellungen letzte 7 Tage (im caddy_data geaenderte *.crt): ${COUNT}"
 # Atomar schreiben: der textfile-Collector ignoriert Dateien, die mit "." an-

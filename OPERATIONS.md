@@ -143,7 +143,7 @@ dieser Datei neu (`sudo docker restart coder-grafana`).
 
 ## 5. Checks (Gesundheit prüfen)
 
-Schritt 8 des Setups meldet `[OK]`/`[WARNUNG]`/`[FEHLER]` für: die sechs
+Schritt 7 des Setups meldet `[OK]`/`[WARNUNG]`/`[FEHLER]` für: die sechs
 Container, den Docker-Socket-Zugriff (GroupAdd/docker-GID),
 `https://<domain>/healthz` (HTTP 200) und den Wildcard-DNS. Einen
 belegten Port meldet `docker compose up` mit klarer Portangabe (Diagnose:
@@ -237,9 +237,9 @@ Wöchentlicher TLS-Stand (liefert Zahl + `logger`-Eintrag):
 sudo /opt/coder/check-tls.sh      # Log: /var/log/coder-tls.log
 ```
 
-Alles davon zusammen in einem Lauf: `sudo ./setup-coder.sh` – Schritt 8
+Alles davon zusammen in einem Lauf: `sudo ./setup-coder.sh` – Schritt 7
 meldet jeden Punkt einzeln als `[OK]`/`[WARNUNG]`/`[FEHLER]`. Zusätzlich
-meldet Schritt 8 den Nutzerstand (B2): solange kein menschliches Konto
+meldet Schritt 7 den Nutzerstand (B2): solange kein menschliches Konto
 existiert, weist er darauf hin, dass der erste Anmeldende Owner wird.
 
 ### Empfohlene Routine
@@ -276,9 +276,14 @@ Generationen bleiben erhalten.
 
 ### Monitoring und Grafana
 
-- Prometheus und node-exporter laufen nur auf `127.0.0.1` (9090/9100),
-  Grafana nur auf `127.0.0.1:3001`. Von außen ist nichts davon erreichbar.
-- Zugriff per SSH-Tunnel:
+- Prometheus und node-exporter laufen nur auf `127.0.0.1` (9090/9100) und
+  sind von außen nirgends erreichbar.
+- Grafana ist seit 2026-10-03 (Q2) auf allen Interfaces erreichbar:
+  **vom Schulnetz aus** `http://<Server-IP>:3001` (Login: `admin`), bewusst
+  ohne TLS. Der Port darf **nicht** am Router nach außen weitergeleitet
+  werden (nur 80/443/22); die ufw-Regel lässt nur private Quellen zu.
+- Alternativ/ergänzend per SSH-Tunnel (immer möglich, auch von außerhalb
+  des Schulnetzes):
 
   ```bash
   ssh -L 3001:127.0.0.1:3001 <user>@<server>
@@ -488,7 +493,7 @@ tail -20 /var/log/coder-backup.log
 | Log-Rotation Backup-Log | wöchentlich | `/etc/logrotate.d/coder-backup` |
 | Debian-Paketupdates + Reboot 03:00 (ohne Docker Engine) | Debian-Default | unattended-upgrades, `52-coder-reboot` |
 | Coder-/Stack-Update | **nie automatisch** | manueller Setup-Lauf (Abschnitt 7) |
-| Docker-Engine-/Compose-Update | **nie automatisch** | manuelles APT-Upgrade in einem Wartungsfenster |
+| Docker-Engine-/Compose-Update | **nie automatisch**, empfohlen mind. monatlich + bei kritischen CVEs im Wartungsfenster | manuelles APT-Upgrade, siehe Abschnitt 7 „Update (bewusst manuell)" |
 
 Prüfen: `systemctl is-active cron`, `ls -l /etc/cron.d/`,
 `sudo systemctl status unattended-upgrades --no-pager`.
@@ -501,7 +506,7 @@ shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-10-01: alle 10 Dateien in `tests/` Exit 0, 267 `PASS`,
+Stand 2026-10-03: alle 10 Dateien in `tests/` Exit 0, 280 `PASS`,
 0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
 ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.
