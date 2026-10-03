@@ -24,7 +24,8 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
   6 Verbindungen/30 s je Quell-IP gelten würde und sich die ganze Schul-NAT
   das teilt), fail2ban sperrt wiederholte Fehlversuche.
   Das Setup schreibt das eigene Drop-In
-  `/etc/ssh/sshd_config.d/99-coder.conf` und macht die Passwort-Policy damit
+  `/etc/ssh/sshd_config.d/01-coder.conf` (Sortiert vor jeder `50-*`-Datei,
+  z. B. cloud-init) und macht die Passwort-Policy damit
   explizit und überlebend gegenüber Debian-Updates (`PasswordAuthentication
   yes`, `KbdInteractiveAuthentication yes`, `PermitRootLogin
   prohibit-password`); validiert wird über `sshd -T` auf der GESAMTEN
@@ -62,7 +63,7 @@ Test-Host (zuletzt geprüft 2026-10-03):
 | fail2ban tatsächlich am Sperren | `Total banned: 134`, `Currently banned: 10` | `fail2ban-client status sshd` |
 | Root per Passwort gesperrt | `permitrootlogin prohibit-password` (Drop-In, Warnung fängt Vorrang fremder Drop-Ins ab) | `sshd -T` |
 | Leere Passwörter / Kbd-Interactive | `permitemptypasswords no`, `kbdinteractiveauthentication yes` (PAM-Pfad, bewusst mit dem Drop-In gesetzt) | `sshd -T` |
-| Passwort-Login allgemein | `passwordauthentication yes` (Drop-In, bewusst offen) | `sshd -T` + `/etc/ssh/sshd_config.d/99-coder.conf` |
+| Passwort-Login allgemein | `passwordauthentication yes` (Drop-In, bewusst offen) | `sshd -T` + `/etc/ssh/sshd_config.d/01-coder.conf` |
 
 Optional und derzeit **nicht** gesetzt: ein Drop-In mit `MaxAuthTries 3`
 und `LoginGraceTime 30`. Der Effekt wäre gering, weil fail2ban ohnehin
@@ -78,13 +79,13 @@ sudo journalctl -u ssh -n 50 --no-pager
 **Optionale Nachhärtung (Key-only, vorrangiges Drop-In)**
 
 Mit D-SSH (2026-09-30) **nicht** Standard; B19 hat das alte
-`ssh-harden.sh` entfernt. Das Setup-Drop-In `99-coder.conf` erlaubt
+`ssh-harden.sh` entfernt. Das Setup-Drop-In `01-coder.conf` erlaubt
 Passwort-Login – ein **vorangestelltes** Drop-In (`00-…`) gewinnt pro
 Keyword über die lexikalische Reihenfolge und schaltet Passwort-Login
 damit ohne Eingriff ins Setup ab. Vorher: Zweit-Zugang
 (Konsole/Proxmox/iDRAC) bereithalten und Key-Login aus einem zweiten
 Fenster testen. Dann Drop-In anlegen (lädt vor der Debian-Standarddatei
-und vor `99-coder.conf`):
+und vor `01-coder.conf`):
 
 ```bash
 sudo tee /etc/ssh/sshd_config.d/00-coder-hardening.conf >/dev/null <<'EOF'
@@ -119,9 +120,10 @@ Die Nachhärtung selbst ist eine VM-/Produktionshandlung.
 - Eine vorhandene, aber **unvollständige** `.env` wird nie still neu
   gewürfelt (das würde die DB-Anmeldung zerstören) – das Setup bricht ab
   und nennt die Reparatur.
-- Nicht-Hex-Werte in der `.env` führen zum Abbruch mit der Reparatur aus
-  TROUBLESHOOTING.md A4: `GRAFANA_ADMIN_PASSWORD` nach OPERATIONS §7 neu
-  setzen, `POSTGRES_PASSWORD` manuell in DB und `.env` abgleichen.
+- Nicht-Hex in `POSTGRES_PASSWORD` führt zum Abbruch mit der Reparatur aus
+  TROUBLESHOOTING.md A4 (Wert manuell in DB und `.env` abgleichen).
+  `GRAFANA_ADMIN_PASSWORD` ist vom Hex-Zwang ausgenommen – Rotation nach
+  OPERATIONS §7 (dort wirkt `grafana cli`, nicht der Neustart).
 - Newline/NUL in `.env`-Werten wird hart abgewiesen, nicht still getrimmt.
 - Rotation (Grafana, manuell ohne Skript): Ablauf in OPERATIONS §7 –
   erst `backup.sh`, dann neues Hex-Passwort per STDIN an `grafana cli`
@@ -401,7 +403,7 @@ ss -tlnp; ss -ulnp | grep 443
 | # | Grenze | Risiko in einem Satz | Status |
 |---|---|---|---|
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | entschieden 2026-09-30 (D-Socket): keine zweite VM, Restrisiko akzeptiert, Allowlist gilt dauerhaft |
-| 2 | SSH-Passwort-Login (jetzt als Drop-In fixiert); Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | entschieden 2026-09-30 (D-SSH): Passwort-Login bleibt Standard, Restrisiko getragen; Setup schreibt `99-coder.conf` (Policy sichtbar), Nachhärtung via vorrangigem `00-*.conf` nur auf gesonderten Wunsch |
+| 2 | SSH-Passwort-Login (jetzt als Drop-In fixiert); Zielserver nur aus dem Schulnetz erreichbar, separater Test-Host weltweit erreichbar | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten; Test-Host hat eine andere Netzgrenze | entschieden 2026-09-30 (D-SSH): Passwort-Login bleibt Standard, Restrisiko getragen; Setup schreibt `01-coder.conf` (Policy sichtbar), Nachhärtung via vorrangigem `00-*.conf` nur auf gesonderten Wunsch |
 | 3 | On-Demand-`ask` prüft nur das Namensmuster | für jedes Muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert (B1); D-TLS 2026-09-30 teilentschieden (keine automatische Beobachtung, manuelle Sichtprüfung siehe Abschnitt 3), Budget-Schutz bleibt, DNS-01 aufgeschoben (Anbieter All-Inkl bekannt, Zone/Hosting/Zuständigkeit unklar) |
 | 4 | Keine automatische TLS-Budget-Überwachung | bei Erschöpfung des Wochenbudgets fällt erst die Zertifikatsausstellung als Fehler auf (HTTPS-Fehler im Unterricht) | manuelle Zählung in Abschnitt 3 – eine automatische Zählung gibt es bewusst nicht (zu indirekt für das tatsächliche Budget); DNS-01 bleibt der eigentliche Fix |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | entschieden 2026-09-30 (D-Offsite): kein zweiter Standort, Risiko akzeptiert |

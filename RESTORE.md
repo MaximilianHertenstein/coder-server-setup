@@ -39,9 +39,14 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 
 - Gesichert (täglich, verifiziert per `gzip -t`): Postgres-Dump
   (`/opt/coder/backups/coder_*.sql.gz`, neueste 14, lokal auf derselben Platte).
-- NICHT gesichert: `.env` (alle Passwörter!), Compose-/Caddy-/Prometheus-Config
-  (entstehen per Setup-Re-Run neu), Caddy-Zertifikate, Grafana-Dashboards
-  (als Code/Export pflegen oder Verlust akzeptieren), Prometheus-Historie
+- Gesichert (neben dem Dump, bei jedem Backup-Lauf erneuert): `.env`-Kopie
+  `/opt/coder/backups/coder.env` (600, aktueller Stand aller Passwörter –
+  lokal, **kein** Offsite).
+- NICHT gesichert: Compose-/Caddy-/Prometheus-Config
+  (entstehen per Setup-Re-Run neu), Caddy-Zertifikate (Caddy stellt neu aus),
+  Grafana-Dashboards (das Setup-Provisioning legt sein Dashboard neu an;
+  UI-eigene Dashboards exportieren oder Verlust akzeptieren),
+  Prometheus-Historie
   (15 d, verzichtbar), Workspace-Dateien (Unterrichtsdaten!).
 - **Was das nach einem Restore heißt:**
   - `caddy_data` (ACME-Kontostand, Zertifikate) fehlt auf frischer VM –
@@ -62,9 +67,10 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
 1. Gültiger Dump (`gzip -t` grün, Größe plausibel, T-080-Mini-Restore ok).
 2. `.env`-Ersatz: entweder eine separat auf die Restore-VM übertragene
    `.env`-Kopie (zum Beispiel `.env.bak.*` oder verschlüsseltes Offsite nach
-   B-02) oder Wissen, dass ein Neuaufbau neue Passwörter würfelt (Pfad B).
-   `.env` und `.env.bak.*` sind nie Bestandteil des SQL-Dumps; lokale Kopien
-   auf derselben ausgefallenen VM sind kein Offsite-Backup.
+   B-02), die lokale Kopie `backups/coder.env` (solang das Dateisystem
+   lesbar ist) oder Wissen, dass ein Neuaufbau neue Passwörter würfelt
+   (Pfad B). `.env` und `.env.bak.*` sind nie Bestandteil des SQL-Dumps;
+   lokale Kopien auf derselben ausgefallenen VM sind kein Offsite-Backup.
 3. Frische Debian-13-VM + dieses Repo (getesteter Commit).
 4. **Restore-Sonde im Quellsystem vor dem zu probenden Backup** – ohne sie
    meldet Pfad A Schritt 5 nachher rot (Zählung `0`/fehlende Tabelle gilt

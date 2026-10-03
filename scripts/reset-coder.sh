@@ -1,7 +1,7 @@
 #!/bin/bash
 # Setzt die Coder-Installation zurück, als wäre sie neu installiert:
-# Datenbank, Grafana-Dashboards und generierte Passwörter (.env) werden
-# gelöscht. Backups unter /opt/coder/backups bleiben erhalten.
+# Datenbank, Grafana-Dashboards, generierte Passwörter (.env) und
+# versions.env werden gelöscht. Backups unter /opt/coder/backups bleiben erhalten.
 # Caddys Zertifikate (caddy_data/caddy_config) bleiben ABSICHTLICH erhalten:
 # ein Reset während der Testphase soll nicht bei jedem Mal ein neues Let's-
 # Encrypt-Zertifikat anfordern und so das Wochen-Rate-Limit pro Domain
@@ -24,22 +24,14 @@
 #            P-019 verweigert Pipe auch mit --force).
 #            Andere Argumente werden abgelehnt (kein stilles Ignorieren von
 #            Tippfehlern). --force ersetzt NICHT das Fremd-Container-Gate.
-# Danach: sudo ./setup-coder.sh erneut ausführen, um alles neu aufzubauen.
+# Danach: im Repo-Verzeichnis (setup-coder.sh liegt nicht in /opt/coder)
+# sudo ./setup-coder.sh erneut ausführen, um alles neu aufzubauen.
 set -euo pipefail
 cd /opt/coder
 
-# Wartungs-Lock vor Inventar/Backup/Bestätigung halten, damit kein Update,
-# Passwortwechsel oder Backup zwischen Sicherung und destruktivem Reset läuft.
-(umask 077; : >> /opt/coder/.maintenance.lock)
-chown root:root /opt/coder/.maintenance.lock
-chmod 600 /opt/coder/.maintenance.lock
-exec 8>>/opt/coder/.maintenance.lock
-if ! flock -w 300 8; then
-  echo "reset-coder.sh: Wartungs-Lock nach 300 s nicht erhalten; Reset abgebrochen." >&2
-  exit 75
-fi
-export CODER_MAINTENANCE_LOCK_HELD=1
-
+# Eingabe-Checks VOR dem Lock: Tippfehler und Pipe-Aufrufe melden sich
+# sofort, nicht erst nach bis zu 300 s Lock-Wartezeit – beide Prüfungen sind
+# reine Leseprüfungen und brauchen keinen gegengehaltenen Lock.
 FORCE=false
 # Kleine CLI: erlaubt sind genau keine
 # Argumente oder --force. Ein Tippfehler darf nicht still als "ohne --force"
@@ -61,6 +53,18 @@ if [ ! -t 0 ]; then
   echo "Interaktiv aufrufen: sudo /opt/coder/reset-coder.sh [--force]" >&2
   exit 1
 fi
+
+# Wartungs-Lock vor Inventar/Backup/Bestätigung halten, damit kein Update,
+# Passwortwechsel oder Backup zwischen Sicherung und destruktivem Reset läuft.
+(umask 077; : >> /opt/coder/.maintenance.lock)
+chown root:root /opt/coder/.maintenance.lock
+chmod 600 /opt/coder/.maintenance.lock
+exec 8>>/opt/coder/.maintenance.lock
+if ! flock -w 300 8; then
+  echo "reset-coder.sh: Wartungs-Lock nach 300 s nicht erhalten; Reset abgebrochen." >&2
+  exit 75
+fi
+export CODER_MAINTENANCE_LOCK_HELD=1
 
 # Compose-Projektname determinieren (F-004/P-016): Default = Verzeichnisname
 # (/opt/coder -> "coder"), aber per -p/Env überstimmbar – daher aus
@@ -98,7 +102,7 @@ echo "WARNUNG: Das löscht unwiderruflich:"
 echo "  - Datenbank (alle Nutzer, Workspaces, Templates)"
 echo "  - Grafana-Dashboards/-Einstellungen"
 echo "  - Prometheus-Metrikverlauf"
-echo "  - generierte Passwörter (.env)"
+echo "  - generierte Passwörter (.env) und versions.env"
 echo "Backups unter /opt/coder/backups bleiben erhalten."
 echo "Caddys Let's-Encrypt-Zertifikate bleiben erhalten (kein Rate-Limit-Risiko)."
 echo "Server-Einstellungen (SSH, Firewall, Docker) bleiben unverändert."
@@ -205,12 +209,16 @@ while IFS= read -r VOL_NAME; do
   docker volume rm "${VOL_NAME}"
 done <<< "${VOLUMES_TO_DELETE}"
 
-echo "Entferne generierte Passwörter (.env)..."
-rm -f .env
+echo "Entferne generierte Passwörter (.env) und versions.env..."
+# versions.env mit: die Datei hält den wirksam gewesenen Versions-Stand, der
+# den Downgrade-Guard im Setup steuert – nach einem Reset ist die DB frisch,
+# ein restlicher Stand würde einen Neuaufbau mit niedrigerer Version blockieren.
+rm -f .env versions.env
 
 echo "------------------------------------------------------------"
-echo "Reset abgeschlossen. Zum Neuaufbau:"
+echo "Reset abgeschlossen. Zum Neuaufbau (im Repo-Verzeichnis – das Setup"
+echo "liegt nicht in /opt/coder):"
 echo "  sudo ./setup-coder.sh"
-echo "(erzeugt neue Passwörter und startet den Stack komplett neu)"
+echo "(erzeugt neue Passwörter und versions.env, startet den Stack komplett neu)"
 echo "(Workspace-/fremde Container gab es vorher nicht – harte Regel oben.)"
 echo "------------------------------------------------------------"

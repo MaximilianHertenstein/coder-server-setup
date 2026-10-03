@@ -1,0 +1,2158 @@
+===== setup-coder.sh =====
+     1	#!/usr/bin/env bash
+     2	# ============================================================================
+     3	# Coder-Server Setup – coder.ghse-unterricht.de
+     4	# Zielsystem: Debian 13 (trixie)
+     5	#
+     6	# Aufruf als root (ohne root bricht das Skript vor jeder Änderung ab):
+     7	#   chmod +x setup-coder.sh
+     8	#   sudo ./setup-coder.sh
+     9	# Persistente Werte (Domain, ACME-Mail, fail2ban-Admin-IP) in setup.conf
+    10	# ablegen (Vorlage: setup.conf.example, gitignored) – die überlebt Re-Runs.
+    11	# Für einen Lauf gilt weiterhin: sudo env DOMAIN_CODER=… ./setup-coder.sh
+    12	# (Umgebung schlägt setup.conf, setup.conf schlägt den Default).
+    13	# Einzige interaktive Eingabe: Erstlauf ohne vorhandenes Konto, wenn
+    14	# CODER_FIRST_USER_EMAIL und CODER_FIRST_USER_USERNAME gesetzt und stdin ein
+    15	# TTY sind, fragt das Skript einmal unsichtbar das Erstkonto-Passwort ab
+    16	# (read -rs; leer lassen = Konto später im Browser anlegen). Sonst kein
+    17	# Prompt. Nicht-interaktiv: CODER_FIRST_USER_PASSWORD setzen (OPERATIONS §11).
+    18	#
+    19	# Mehrfach ausführbar (idempotent): bei Abbruch, fehlendem DNS oder fehlender
+    20	# Portweiterleitung einfach erneut laufen lassen; fehlendes DNS meldet der
+    21	# Abschlusscheck als WARNUNG, nicht als Fehler.
+    22	#
+    23	# Inhaltliche Details bewusst nur in den Dokumenten (Single Source):
+    24	#   README.md        Start, Voraussetzungen (DNS/Wildcard), Prüfstand
+    25	#   OPERATIONS.md    Betrieb, Wartungsskripte, Cron, Netz-Anforderung, Updates
+    26	#   SECURITY.md      Socket-Risiko, D-SSH, On-Demand-TLS-Budget, Monitoring
+    27	#   RESTORE.md       Wiederherstellung
+    28	# Image-Versionen und Pin-Regeln stehen an den Variablendefinitionen unten.
+    29	# ============================================================================
+    30	
+    31	set -euo pipefail
+    32	
+    33	# Eigenes Verzeichnis: die installierbaren Wartungsskripte liegen als echte
+    34	# Dateien unter scripts/ (direkt per bash -n/shellcheck prüfbar) und werden
+    35	# über write_managed von dort eingespielt. Voraussetzung: das Repo liegt
+    36	# vollständig auf dem Server (git clone, siehe README).
+    37	SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    38	
+    39	# Root ist Pflicht – zuerst, vor jeder Prüfung und jeder Änderung: Lock,
+    40	# Rechte und Dateien unter /opt/coder gehören root, und die Wartungsskripte
+    41	# sperren dieselbe Datei. Ohne root würde das Setup scheitern, nachdem es
+    42	# bereits Pakete installiert hätte.
+    43	# sudo leitet fremde Umgebungsvariablen nicht durch; Werte gehören hinter
+    44	# das sudo: sudo env DOMAIN_CODER=… ACME_EMAIL=… ./setup-coder.sh
+    45	if [ "$(id -u)" -ne 0 ]; then
+    46	  echo "Fehler: dieses Setup muss als root laufen – Aufruf: sudo ./setup-coder.sh" >&2
+    47	  echo "Betreiberwerte dauerhaft in setup.conf eintragen (Vorlage: setup.conf.example);" >&2
+    48	  echo " für einen Lauf gehören Variablen hinter das sudo, sonst greifen die Defaults:" >&2
+    49	  echo "  sudo env DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh" >&2
+    50	  exit 1
+    51	fi
+    52	
+    53	# Zielplattform vor jeder Serveränderung prüfen. Die Docker-APT-Quelle unten
+    54	# übernimmt VERSION_CODENAME aus /etc/os-release; ohne Guard könnte ein Lauf
+    55	# auf Ubuntu oder Debian 12 eine unpassende Quelle eintragen und Pakete
+    56	# verändern, obwohl nur Debian 13 (trixie) unterstützt wird.
+    57	if [ ! -r /etc/os-release ]; then
+    58	  echo "Fehler: /etc/os-release fehlt oder ist nicht lesbar; Zielplattform nicht prüfbar. Abbruch ohne Serveränderungen." >&2
+    59	  exit 1
+    60	fi
+    61	. /etc/os-release
+    62	if [ "${ID:-}" != "debian" ] || [ "${VERSION_CODENAME:-}" != "trixie" ]; then
+    63	  printf 'Fehler: nicht unterstützte Zielplattform (ID=%s, VERSION_CODENAME=%s). Erwartet wird Debian 13 (trixie). Abbruch vor Serveränderungen.\n' \
+    64	    "${ID:-unbekannt}" "${VERSION_CODENAME:-unbekannt}" >&2
+    65	  exit 1
+    66	fi
+    67	
+    68	# Das Setup schreibt Compose- und Wartungsskripte und startet den Stack.
+    69	# Ein paralleler Wartungslauf könnte Dateien während ihrer Ausführung
+    70	# überschreiben. Vor diesen Konfigurations- und Stack-Änderungen nimmt das
+    71	# Setup denselben flock wie die Wartungsskripte: er hängt am Deskriptor 8
+    72	# dieses Prozesses und bleibt gesperrt, bis alle Prozesse ihn geerbt haben,
+    73	# beendet sind. Alle Aufrufe hier sind kurzlebig, kein Dauerläufer erbt ihn.
+    74	ENV_TMP=""
+    75	MANAGED_TMP=""
+    76	setup_cleanup() {
+    77	  local rc=$?
+    78	  for _tmp in "${ENV_TMP}" "${MANAGED_TMP}"; do
+    79	    [ -n "${_tmp}" ] && rm -f -- "${_tmp}" 2>/dev/null || true
+    80	  done
+    81	  return "${rc}"
+    82	}
+    83	
+    84	mkdir -p /opt/coder
+    85	sh -c 'umask 077; : >> /opt/coder/.maintenance.lock; chown root:root /opt/coder/.maintenance.lock; chmod 600 /opt/coder/.maintenance.lock'
+    86	exec 8>>/opt/coder/.maintenance.lock
+    87	if ! flock -w 300 8; then
+    88	  echo "Fehler: gemeinsamer Wartungs-Lock nach 300 s nicht erhalten; Setup abgebrochen (Exit 75)." >&2
+    89	  exit 75
+    90	fi
+    91	export CODER_MAINTENANCE_LOCK_HELD=1
+    92	trap setup_cleanup EXIT
+    93	
+    94	# Alle Werte lassen sich beim Aufruf per Umgebungsvariable überschreiben,
+    95	# ohne diese Datei zu ändern, z.B.:
+    96	#   DOMAIN_CODER=andere-domain.de ./setup-coder.sh
+    97	# A5: Persistente Betreiberwerte aus setup.conf (neben dem Skript, gitignored).
+    98	# Ohne sie würde ein späterer Re-Run ohne "sudo env ..." die Defaults zurück-
+    99	# setzen – z.B. die Admin-IP aus fail2ban ignorip. Vorrang:
+   100	#   Umgebungsvariable (aktueller Lauf) > setup.conf > eingebauter Default.
+   101	# Nur die vier freigegebenen Schlüssel werden gelesen, alles andere (auch
+   102	# Syntaxfehler) überschreibt nichts und bricht den Lauf nicht ab; danach
+   103	# bricht die Domain-Prüfung bei ungültigem DOMAIN_CODER hart ab.
+   104	if [ -f "${SETUP_DIR}/setup.conf" ]; then
+   105	  while IFS='=' read -r _sk _sv || [ -n "${_sk}" ]; do
+   106	    case "${_sk}" in ''|\#*) continue ;; esac
+   107	    # Werte wörtlich übernehmen wäre schädlich: CRLF (Windows-Editor) landet
+   108	    # als \r in Domain/Jail/Compose, umschließende Anführungszeichen in der
+   109	    # fail2ban- oder Caddyfile-Konfiguration. Beides hier strippen.
+   110	    _sv="${_sv%$'\r'}"
+   111	    case "${_sv}" in
+   112	      \"*\") _sv="${_sv#\"}"; _sv="${_sv%\"}" ;;
+   113	      \'*\') _sv="${_sv#\'}"; _sv="${_sv%\'}" ;;
+   114	    esac
+   115	    case "${_sk}" in
+   116	      DOMAIN_CODER)       [ -n "${DOMAIN_CODER+x}" ] || DOMAIN_CODER="${_sv}" ;;
+   117	      ACME_EMAIL)         [ -n "${ACME_EMAIL+x}" ] || ACME_EMAIL="${_sv}" ;;
+   118	      ACME_CA)            [ -n "${ACME_CA+x}" ] || ACME_CA="${_sv}" ;;
+   119	      FAIL2BAN_IGNORE_IP) [ -n "${FAIL2BAN_IGNORE_IP+x}" ] || FAIL2BAN_IGNORE_IP="${_sv}" ;;
+   120	    esac
+   121	  done < "${SETUP_DIR}/setup.conf"
+   122	fi
+   123	# ":=" setzt den Default nur, wenn die Variable noch nicht (von außen oder
+   124	# über setup.conf) gesetzt wurde.
+   125	: "${DOMAIN_CODER:=coder.ghse-unterricht.de}"
+   126	: "${ACME_EMAIL:=hert@ghse.de}"
+   127	# Domain hart prüfen, bevor sie in Caddyfile/Compose wandert: Leerzeichen,
+   128	# Anführungszeichen, \r oder Grossbuchstaben würden die Konfiguration oder
+   129	# die TLS-Ausstellung brechen.
+   130	if ! [[ "${DOMAIN_CODER}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+   131	  echo "Fehler: DOMAIN_CODER='${DOMAIN_CODER}' ist keine gültige Domain (erlaubt: klein, a-z, 0-9, '.', '-'; kein Leerzeichen/Anführung/\\r)." >&2
+   132	  echo "In setup.conf oder als Umgebungsvariable korrigieren, dann Setup erneut." >&2
+   133	  exit 1
+   134	fi
+   135	# Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt, CADDY bewusst nur
+   136	# minor-gepinnt (z. B. "2.11") – TLS-taugliche Patch-Updates sollen über
+   137	# "docker compose pull" ankommen; postgres:18-alpine analog (Major-Tag).
+   138	# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.37.3). Am 2026-09-28 und
+   139	# erneut am 2026-10-03 gegen die Registry geprüft: ghcr.io/coder/coder:2.36.6
+   140	# und :2.37.3 -> HTTP 404, mit "v" (v2.36.6/v2.37.3) -> 200; die Release-
+   141	# Notes nennen das Tag teils ohne "v" (falsch, das bricht Schritt 3 ab).
+   142	# Vor jeder Versionserhöhung IMMER per "docker pull"
+   143	# gegen die Registry belegen, nicht nach dem Wortlaut der Notes. Für einen
+   144	# bit-genauen, reproduzierbaren Pin bräuchte man ein Image-Digest (sha256:...).
+   145	# Stand 2026-10-03 (Upstream-Stable geprüft: releases/latest bzw.
+   146	# prerelease-Flags): Coder v2.37.3 (v2.36.6 war die Vorgängerlinie),
+   147	# Caddy 2.11 (2.11.7 released), Prometheus v3.15.0, Grafana 12.4.12
+   148	# (12.x-Security-Backports; Major 13 bewusst nicht), node-exporter
+   149	# v1.12.1 = aktuell, Postgres 19 nur Beta -> 18-alpine bleibt.
+   150	: "${CODER_VERSION:=v2.37.3}"              # https://github.com/coder/coder/releases prüfen
+   151	: "${CADDY_VERSION:=2.11}"                # https://hub.docker.com/_/caddy/tags
+   152	: "${PROMETHEUS_VERSION:=v3.15.0}"        # https://github.com/prometheus/prometheus/releases
+   153	: "${GRAFANA_VERSION:=12.4.12}"           # https://github.com/grafana/grafana/releases
+   154	: "${NODE_EXPORTER_VERSION:=v1.12.1}"     # https://github.com/prometheus/node_exporter/releases
+   155	# Admin-Adressen, die fail2ban nie sperren darf – NUR echte Admin-Plätze hier
+   156	# eintragen, ausdrücklich NICHT die geteilte Schul-NAT: Rateversuche aus
+   157	# dem Schulnetz sollen nach 5 Fehlversuchen sperren. Bewusst akzeptiert:
+   158	# die gemeinsame NAT-IP kann dann gesperrt sein (Recovery: anderes Netz
+   159	# oder Proxmox-Konsole). Default bleibt loopback.
+   160	: "${FAIL2BAN_IGNORE_IP:=127.0.0.1/8 ::1}"
+   161	
+   162	# ---- Wirksam gewesene Version + Downgrade-Schutz (A5) ---------------------
+   163	# Gepinnt und geschützt wird nur CODER_VERSION: allein Coder führt
+   164	# DB-Schema-Migrationen aus, ein stilles Zurücksetzen wäre dort irreversibel.
+   165	# Caddy/Prometheus/node-exporter sind beim Restarten zustandslos, ihr
+   166	# Versionswechsel ist ein bewusster Compose-Tag-Eintrag; Grafana-Downgrades
+   167	# sind wegen der lokalen SQLite-Daten bewusste Manuellearbeit (Release-Notes
+   168	# lesen). POSTGRES_VERSION wird gar nicht verwaltet: Postgres-Major nur
+   169	# manuell ändern, immer mit frischem Backup.
+   170	# Versions.env: nur Version, keine Geheimnisse -> 644, ohne sudo lesbar.
+   171	# Downgrade-Versuch hart abgebrochen, sofern nicht ausdrücklich
+   172	# CODER_ALLOW_DOWNGRADE=yes gesetzt ist (bewusster Rollback, siehe
+   173	# RESTORE.md). Eine Änderung NACH oben (Upgrade) bleibt ohne Rückfrage.
+   174	VERSIONS_FILE="/opt/coder/versions.env"
+   175	VERSION_VARS="CODER_VERSION"
+   176	VERSIONS_PREV="$(cat "${VERSIONS_FILE}" 2>/dev/null || true)"
+   177	for _vv in ${VERSION_VARS}; do
+   178	  _vnew="${!_vv:-}"
+   179	  _vprev="$(printf '%s\n' "${VERSIONS_PREV}" | awk -F= -v k="${_vv}" '$1 == k {print substr($0, index($0, "=") + 1); exit}')"
+   180	  _vprev_sort="${_vprev#v}"
+   181	  _vnew_sort="${_vnew#v}"
+   182	  if [ -n "${_vprev_sort}" ] && [ -n "${_vnew_sort}" ] && [ "${_vprev_sort}" != "${_vnew_sort}" ] \
+   183	    && [ "$(printf '%s\n%s\n' "${_vprev_sort}" "${_vnew_sort}" | sort -V | head -n 1)" = "${_vnew_sort}" ]; then
+   184	    echo "Fehler: Downgrade erkannt – ${_vv} würde von ${_vprev} auf ${_vnew} zurückgesetzt." >&2
+   185	    echo "Ein Downgrade kann bei Coder eine bereits ausgeführte DB-Schema-Migration" >&2
+   186	    echo "nicht rückgängig machen und die Installation unbrauchbar machen." >&2
+   187	    if [ "${CODER_ALLOW_DOWNGRADE:-}" = "yes" ]; then
+   188	      echo "CODER_ALLOW_DOWNGRADE=yes gesetzt – bewusstes Downgrade wird durchgeführt." >&2
+   189	    else
+   190	      echo "Abbruch, nichts wurde verändert. Bewusstes Downgrade (mit verifiziertem" >&2
+   191	      echo "Dump, siehe RESTORE.md):" >&2
+   192	      echo "  sudo env CODER_ALLOW_DOWNGRADE=yes CODER_VERSION=... ./setup-coder.sh" >&2
+   193	      exit 1
+   194	    fi
+   195	  fi
+   196	done
+   197	# Persistierung steht NICHT hier (A1/A7): /opt/coder gibt es an dieser Stelle
+   198	# noch nicht (erst ab Schritt 2), und eine Version darf erst eingetragen
+   199	# werden, wenn sie wirklich läuft. Siehe direkt nach "docker compose up -d".
+   200	
+   201	# ---- Hilfsfunktionen für die Zusammenfassung ab Schritt 4 -----------------
+   202	declare -a SUMMARY=()
+   203	ERROR_COUNT=0
+   204	ok()   { echo "  [OK]     $1"; SUMMARY+=("[OK]     $1"); }
+   205	warn() { echo "  [WARNUNG] $1"; SUMMARY+=("[WARNUNG] $1"); }
+   206	fail() { echo "  [FEHLER] $1"; SUMMARY+=("[FEHLER] $1"); ERROR_COUNT=$((ERROR_COUNT + 1)); }
+   207	
+   208	check_container_running() {
+   209	  local name="$1"
+   210	  local label="$2"
+   211	  if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || echo false)" = "true" ]; then
+   212	    ok "${label} läuft"
+   213	  else
+   214	    fail "${label} läuft NICHT – prüfen mit: sudo docker logs ${name}"
+   215	  fi
+   216	}
+   217	
+   218	# Das Setup ist deklarativer Besitzer der generierten Dateien, das
+   219	# Überschreiben von Handänderungen ist in README/OPERATIONS dokumentiert.
+   220	# Was zählt: Temp schreiben, validieren, atomar ersetzen.
+   221	
+   222	# Atomar eine vom Setup verwaltete Datei schreiben. Die temporäre Datei liegt
+   223	# im Zielverzeichnis, damit mv dieselbe Dateisystem-Grenze nicht überschreitet.
+   224	# Bei identischem Inhalt bleibt der Ziel-Inode unangetastet; das vermeidet
+   225	# unnötige Reloads und schützt laufende Leser. Modus wird nachgezogen.
+   226	# MANAGED_TMP wird vom EXIT-Cleanup entfernt, falls der Lauf vor
+   227	# dem mv abbricht.
+   228	# A2: Optionaler Validierer ($4, Funktionsname) läuft auf der TEMP-Datei, VOR
+   229	# dem Austausch der Live-Datei. Bei Fehlschlag bleibt die vorhandene Datei
+   230	# unangetastet und der Lauf bricht ab – eine ungültige Konfiguration landet
+   231	# damit nie auf der Platte und könnte den nächsten Reboot nicht überleben.
+   232	write_managed() { # $1=Pfad $2=Modus $3=Referenz-Label (Reserve, ungenutzt) [$4=Validierer]; Inhalt via stdin
+   233	  local file="$1" mode="$2" validator="${4:-}" dir base
+   234	  dir="${file%/*}"
+   235	  base="${file##*/}"
+   236	  MANAGED_TMP=$(mktemp "${dir}/.${base}.tmp.XXXXXX")
+   237	  if ! cat > "${MANAGED_TMP}"; then
+   238	    rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
+   239	    MANAGED_TMP=""
+   240	    return 1
+   241	  fi
+   242	  case "${file}" in
+   243	    *.sh)
+   244	      if ! bash -n "${MANAGED_TMP}"; then
+   245	        echo "Fehler: generiertes Skript ist syntaktisch ungültig: ${file}; vorhandene Datei bleibt erhalten." >&2
+   246	        rm -f -- "${MANAGED_TMP}"
+   247	        MANAGED_TMP=""
+   248	        return 1
+   249	      fi
+   250	      ;;
+   251	  esac
+   252	  if [ -n "${validator}" ]; then
+   253	    # mktemp legt 600 an; promtool laeuft im Container als nobody und darf die
+   254	    # Temp-Datei dann nicht lesen (live gefunden 2026-10-01). Vor dem
+   255	    # Validieren auf den spaeteren Endmodus heben, danach chmod "${mode}".
+   256	    chmod 644 -- "${MANAGED_TMP}"
+   257	    if ! "${validator}" "${MANAGED_TMP}"; then
+   258	      echo "Fehler: Validierung fehlgeschlagen (${validator}): ${file} – Live-Datei bleibt unverändert, Lauf abgebrochen." >&2
+   259	      rm -f -- "${MANAGED_TMP}" 2>/dev/null || true
+   260	      MANAGED_TMP=""
+   261	      return 1
+   262	    fi
+   263	  fi
+   264	  chmod "${mode}" "${MANAGED_TMP}"
+   265	  if cmp -s -- "${MANAGED_TMP}" "${file}"; then
+   266	    chmod "${mode}" "${file}"
+   267	    rm -f -- "${MANAGED_TMP}"
+   268	  else
+   269	    mv -f -- "${MANAGED_TMP}" "${file}"
+   270	  fi
+   271	  MANAGED_TMP=""
+   272	}
+   273	
+   274	# B-013: Retry max. 3 mit Schlaf + Ursachen-Log (Schulnetz!). Keine endlosen
+   275	# Retries, keine Retry-Logik um LE-Ausstellung (Budget) – nur apt/curl/pull.
+   276	# Gibt den finalen Exit-Code zurück (set -e bricht danach wie bisher ab).
+   277	retry3() {
+   278	  local attempt=1
+   279	  while true; do
+   280	    if "$@"; then
+   281	      return 0
+   282	    elif [ "${attempt}" -ge 3 ]; then
+   283	      echo "FEHLER nach 3 Versuchen: $* – Ursache prüfen (Netz/DNS/Registry), dann Setup erneut." >&2
+   284	      return 1
+   285	    else
+   286	      echo "Versuch ${attempt} fehlgeschlagen ($*), warte 10 s vor Wiederholung ..." >&2
+   287	      sleep 10
+   288	      attempt=$((attempt + 1))
+   289	    fi
+   290	  done
+   291	}
+   292	
+   293	# A2: Validierer für write_managed – prüfen die TEMP-Datei (Pfad $1), bevor die
+   294	# Live-Datei ausgetauscht wird. Die caddy-/promtool-Präfixe brauchen die
+   295	# Images, deshalb wird vor dem Schreiben dieser Dateien gepullt (siehe unten).
+   296	# caddy:2.11 hat KEINEN ENTRYPOINT (nur CMD ["caddy","run",...]) – ohne
+   297	# --entrypoint würde "validate" selbst als Binary ausgeführt und scheitern
+   298	# mit 'executable file not found in $PATH'.
+   299	validate_compose() {
+   300	  docker compose -f "$1" config --quiet
+   301	}
+   302	validate_caddyfile() {
+   303	  docker run --rm --entrypoint caddy -v /opt/coder/caddy:/etc/caddy:ro "caddy:${CADDY_VERSION}" \
+   304	    validate --config "/etc/caddy/$(basename "$1")" --adapter caddyfile
+   305	}
+   306	validate_prom_rules() {
+   307	  docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" \
+   308	    check rules "/etc/prometheus/rules/$(basename "$1")"
+   309	}
+   310	validate_prom_config() {
+   311	  docker run --rm --entrypoint /bin/promtool -v /opt/coder/prometheus:/etc/prometheus:ro "prom/prometheus:${PROMETHEUS_VERSION}" \
+   312	    check config "/etc/prometheus/$(basename "$1")"
+   313	}
+   314	
+   315	# A10: Alle SSH-Vorbedingungen HIER, vor Docker-Installation und Stack-Start.
+   316	# Die Firewall-Regel unten setzt die hier erkannten sshd-Ports; ohne lesbare
+   317	# sshd-Konfiguration wäre unklar, welchen Port "ufw enable" noch offen lässt –
+   318	# deshalb hart abbrechen, bevor irgendetwas installiert oder verändert wird
+   319	# (Zugriff dann nur noch über Konsolenzugang des Hosts).
+   320	if ! command -v sshd > /dev/null 2>&1; then
+   321	  echo "Fehler: sshd nicht gefunden – openssh-server fehlt; ohne SSH-Zugang würde die Firewall-Änderung den Host absperren." >&2
+   322	  echo "openssh-server installieren (apt install openssh-server), dann Setup erneut." >&2
+   323	  exit 1
+   324	fi
+   325	if ! SSHD_EFFECTIVE_CONFIG="$(sshd -T 2>/dev/null)"; then
+   326	  echo "Fehler: sshd-Konfiguration konnte nicht gelesen werden – Abbruch vor jeder Serveränderung." >&2
+   327	  exit 1
+   328	fi
+   329	SSHD_PORTS="$(printf '%s\n' "${SSHD_EFFECTIVE_CONFIG}" | awk '/^port /{print $2}' | sort -u | xargs echo 2>/dev/null || true)"
+   330	if [ -z "${SSHD_PORTS}" ]; then
+   331	  echo "Fehler: sshd -T lieferte keinen Port – Abbruch vor jeder Serveränderung." >&2
+   332	  exit 1
+   333	fi
+   334	
+   335	echo "############################################################"
+   336	echo "# [1/7] Docker Engine installieren"
+   337	echo "############################################################"
+   338	# C1: Alle Cron-Zeiten dieses Skripts (Backup 01:00, Reboot 03:00)
+   339	# gelten in LOCALTIME. Neue VMs laufen oft auf UTC, dann läuft das
+   340	# Backup um 03:00 statt 01:00 Berlin und der Reboot mitten in der Nacht.
+   341	# Explizit setzen statt raten; idempotenter No-Op, wenn schon Berlin.
+   342	if command -v timedatectl >/dev/null 2>&1; then
+   343	  _tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+   344	  if [ "${_tz}" != "Europe/Berlin" ]; then
+   345	    if timedatectl set-timezone Europe/Berlin; then
+   346	      echo "Zeitzone '${_tz:-unbekannt}' -> Europe/Berlin gesetzt (C1): Backup 01:00 und Reboot 03:00 laufen in lokaler Zeit."
+   347	    else
+   348	      echo "Hinweis: Zeitzone konnte nicht gesetzt werden – Cron-Zeiten gelten in '${_tz:-unbekannt}' (C1)." >&2
+   349	    fi
+   350	  fi
+   351	fi
+   352	# C7: Paketinstallationen nicht-interaktiv und konform. Ohne
+   353	# DEBIAN_FRONTEND=noninteractive können Pakete bei vorhandener
+   354	# modifizierter Konfigurationsdatei (z.B. nach operatorseitiger Anpassung)
+   355	# auf Nachfragen warten und das Skript hängen; "--force-confold" behält in
+   356	# dem Fall die vorhandene Datei, statt eine neue Version zu überschreiben.
+   357	# Die Variable gilt nur für diesen einen Aufruf (env, kein export).
+   358	apt_install() {
+   359	  retry3 env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+   360	    -o Dpkg::Options::=--force-confold "$@"
+   361	}
+   362	retry3 apt-get update
+   363	apt_install ca-certificates curl gnupg openssl cron logrotate
+   364	install -m 0755 -d /etc/apt/keyrings
+   365	# --batch --yes: existiert die Datei bereits (jeder zweite Lauf), fragt gpg
+   366	# beim Überschreiben per /dev/tty nach – ohne TTY (ssh ohne -t, nohup) kommt
+   367	# "cannot open '/dev/tty'" mit exit 2 und set -e beendet den Lauf in Schritt 1.
+   368	curl -fsSL --retry 3 --retry-delay 5 https://download.docker.com/linux/debian/gpg | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+   369	chmod a+r /etc/apt/keyrings/docker.gpg
+   370	
+   371	# K1/F-018 (billige Hälfte, kein Digest-Pin): Fingerprint des Docker-GPG-Keys
+   372	# gegen den öffentlich dokumentierten Wert prüfen
+   373	# (https://docs.docker.com/engine/install/debian/).
+   374	# Bei Fehlschlag: Fingerprint dort neu abgleichen (Rotation), nicht einfach
+   375	# übernehmen.
+   376	DOCKER_FPR=$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.gpg 2>/dev/null | awk -F: '/^fpr:/ {print $10; exit}' || true)
+   377	if [ "${DOCKER_FPR}" != "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ]; then
+   378	  echo "Fehler: Docker-GPG-Fingerprint unerwartet ('${DOCKER_FPR:-leer}'). Mögliche Rotation – Fingerprint unter https://docs.docker.com/engine/install/debian/ abgleichen, dann Setup erneut laufen lassen." >&2
+   379	  exit 1
+   380	fi
+   381	
+   382	echo \
+   383	  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+   384	  ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+   385	
+   386	retry3 apt-get update
+   387	apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+   388	
+   389	# C2: Loggrößen begrenzen. Ohne Limit wächst das json-file-Logging der
+   390	# Standard-Installation bis die Root-Partition voll ist (Plattenkiller Nr. 1);
+   391	# eine projektweite compose-"logging:"-Anker-Datei deckte nur die eigenen
+   392	# Container ab, nicht z.B. "docker run"-Experimente oder spätere Projekte
+   393	# (Anker entfernt; daemon.json ist die einzige Quelle).
+   394	# Deshalb hier die daemon-weite Vorgabe – und KEINE Fremdkonfiguration anfassen: eine
+   395	# vorhandene daemon.json ohne unsere Log-Schlüssel wird weder überschrieben
+   396	# (insecure-registries, live-restore, mirrors gingen verloren) noch still
+   397	# gemergt (kein jq/python3 als Abhängigkeit), sondern der Lauf bricht mit
+   398	# Reparaturanleitung ab. Fremddatei MIT den Schlüsseln: in Ruhe lassen.
+   399	DAEMON_JSON="/etc/docker/daemon.json"
+   400	DOCKER_DAEMON_CHANGED=0
+   401	if [ -f "${DAEMON_JSON}" ]; then
+   402	  if grep -q '"max-size"' "${DAEMON_JSON}" && grep -q '"max-file"' "${DAEMON_JSON}"; then
+   403	    echo "daemon.json vorhanden und enthält bereits max-size/max-file – wird nicht überschrieben."
+   404	  else
+   405	    echo "Fehler: ${DAEMON_JSON} existiert, enthält aber kein Log-Limit (max-size/max-file)." >&2
+   406	    echo "Das Setup schreibt fremde Docker-Konfigurationen nicht um und kann sie ohne jq nicht mergen." >&2
+   407	    echo "Von Hand ergänzen (bestehende Schlüssel behalten):" >&2
+   408	    echo '  {"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}' >&2
+   409	    echo "danach: sudo systemctl restart docker ; Setup erneut ausführen." >&2
+   410	    exit 1
+   411	  fi
+   412	else
+   413	  install -d -m 0755 /etc/docker
+   414	  cat > "${DAEMON_JSON}" <<'EOF'
+   415	{
+   416	  "log-driver": "json-file",
+   417	  "log-opts": {
+   418	    "max-size": "10m",
+   419	    "max-file": "3"
+   420	  }
+   421	}
+   422	EOF
+   423	  chmod 644 "${DAEMON_JSON}"
+   424	  DOCKER_DAEMON_CHANGED=1
+   425	fi
+   426	# Die Optionen liest der Daemon nur beim Start. Neu starten nur, wenn WIR die
+   427	# Datei gerade geschrieben haben – und nur, wenn GAR KEINE Container laufen
+   428	# (auch fremde Dienste hängen am Daemon). Läuft schon etwas, ist das
+   429	# ein ungefragter Ausfall; dann greift die Änderung erst beim nächsten
+   430	# geplanten Neustart und das wird hier ausdrücklich gewarnt, statt es still
+   431	# hinzunehmen.
+   432	if [ "${DOCKER_DAEMON_CHANGED}" -eq 1 ]; then
+   433	  if [ -n "$(docker ps -q 2>/dev/null || true)" ]; then
+   434	    warn "daemon.json geschrieben, aber es laufen Container – Docker wird NICHT neu gestartet. Log-Limit greift erst nach 'sudo systemctl restart docker' (C2)"
+   435	  else
+   436	    systemctl restart docker
+   437	    echo "Docker-Daemon neu gestartet – Log-Limit (10m x 3) gilt ab jetzt."
+   438	  fi
+   439	fi
+   440	
+   441	# GID der docker-Gruppe merken – wird gleich für den Docker-Socket-Zugriff
+   442	# des Coder-Containers gebraucht (offizielles Coder-Docker-Setup verlangt das).
+   443	# pipefail würde einen fehlenden Group-Eintrag sonst als stillen Abbruch ohne
+   444	# Meldung beenden (cut läuft trotzdem, Pipeline-Status != 0) – hier laut.
+   445	DOCKER_GID=$(getent group docker | cut -d: -f3 || true)
+   446	if ! [[ "${DOCKER_GID:-}" =~ ^[0-9]+$ ]]; then
+   447	  echo "Fehler: docker-GID nicht ermittelt oder keine Zahl (getent group docker lieferte '${DOCKER_GID:-leer}'). .env wird nicht angefasst." >&2
+   448	  exit 1
+   449	fi
+   450	
+   451	# Optional: eigenen Benutzer der docker-Gruppe hinzufügen, damit du Docker
+   452	# ohne sudo bedienen kannst (danach einmal neu einloggen).
+   453	# sudo usermod -aG docker "$USER"
+   454	
+   455	echo "############################################################"
+   456	echo "# [2/7] Verzeichnis und Konfigurationsdateien anlegen"
+   457	echo "############################################################"
+   458	mkdir -p /opt/coder/backups
+   459	chmod 700 /opt/coder/backups
+   460	cd /opt/coder
+   461	
+   462	# Geheimnisse nur beim ersten Lauf erzeugen, damit ein erneutes Ausführen
+   463	# des Skripts nicht die bestehende Datenbank-Anmeldung zerstört.
+   464	# F-006 (mit P-011): atomar über Temp-Datei schreiben, vorhandene
+   465	# .env auf Vollständigkeit prüfen. Eine unvollständige .env wird NIEMALS
+   466	# still neu gewürfelt (das würde die DB-Anmeldung zerstören) – stattdessen
+   467	# Abbruch mit Reparaturanleitung. mktemp legt die Temp-Datei als 0600 an
+   468	# (root-owned) – kein zusätzliches install/chown/chmod nötig.
+   469	if [ ! -f /opt/coder/.env ]; then
+   470	  # A5/P-011: fehlt die .env NUR teilweise, bricht das Skript unten ab. Fehlt
+   471	  # sie ganz, würde dieser Zweig frische Passwörter würfeln, während
+   472	  # coder_postgres_data die alten behält – sonst käme Coder nicht an die DB
+   473	  # (Crashloop) und nichts würde warnen. Also vor dem Würfeln prüfen, ob die
+   474	  # Datenbank-Volume schon existiert; im Zweifel abbrechen statt zerstören.
+   475	  DOCKER_VOLUMES="$(docker volume ls -q 2>/dev/null || true)"
+   476	  if grep -qx 'coder_postgres_data' <<< "${DOCKER_VOLUMES}"; then
+   477	    echo "Fehler: /opt/coder/.env fehlt, aber das Volume coder_postgres_data existiert." >&2
+   478	    echo "Abbruch ohne Änderung – neu gewürfelte Passwörter würden die bestehende" >&2
+   479	    echo "Datenbank-Anmeldung zerstören." >&2
+   480	    echo "Reparatur: Ein SQL-Backup enthält die .env und ihre Passwörter NICHT." >&2
+   481	    echo "Eine separat gesicherte .env wiederherstellen oder nach RESTORE.md mit" >&2
+   482	    echo "neuen Zugangsdaten neu aufsetzen; Volume NICHT löschen." >&2
+   483	    exit 1
+   484	  fi
+   485	  # hex statt base64: garantiert nur 0-9a-f, kann also nie ein "/", "+" oder
+   486	  # "=" enthalten, das in der Postgres-Connection-URL (postgres://user:PASS@host)
+   487	  # die URL zerlegen bzw. falsch interpretiert werden würde.
+   488	  POSTGRES_PASSWORD=$(openssl rand -hex 24)
+   489	  GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)
+   490	
+   491	  ENV_TMP=$(mktemp /opt/coder/.env.tmp.XXXXXX)
+   492	  cat > "$ENV_TMP" <<EOF
+   493	POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+   494	GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+   495	EOF
+   496	  mv "$ENV_TMP" /opt/coder/.env
+   497	  ENV_TMP=""
+   498	
+   499	  echo "------------------------------------------------------------"
+   500	  echo "Grafana-Admin-Passwort wurde in /opt/coder/.env (Modus 600) gespeichert."
+   501	  echo "Bei Bedarf gezielt abrufen: sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env"
+   502	  echo "Das interne Postgres-Passwort bleibt ebenfalls in /opt/coder/.env."
+   503	  echo "------------------------------------------------------------"
+   504	elif grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
+   505	  && grep -qE '^GRAFANA_ADMIN_PASSWORD=[^[:space:]]+' /opt/coder/.env; then
+   506	  echo "/opt/coder/.env existiert bereits und ist vollständig – wird nicht überschrieben."
+   507	  # B2-003: Newline/NUL im .env-Wert hart abweisen, bevor der Werteparitäts-
+   508	  # Check grün meldet. Ein Hand-Edit kann den Wert über eine zweite Zeile
+   509	  # fortsetzen; grep/cut und docker compose lesen dann nur die erste Zeile.
+   510	  if [ "$(sh -c 'LC_ALL=C tr -d -c "\000" < /opt/coder/.env | wc -c')" -ne 0 ] \
+   511	    || grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=|^#|^$' /opt/coder/.env; then
+   512	    echo "Fehler: .env-Wert enthält Newline/NUL – wird nicht still getrimmt." >&2
+   513	    echo "Reparatur: fehlerhafte .env-Zeile manuell korrigieren (einzeiliger Wert je Schlüssel), danach Setup erneut." >&2
+   514	    exit 1
+   515	  fi
+   516	  # B-014/B2-003: Hex-Validierung bleibt fail-closed (auch im Setup-Re-Run),
+   517	  # Nicht-Hex-Werte brechen die Postgres-Connection-URL. Das
+   518	  # GRAFANA_ADMIN_PASSWORD wird manuell in .env neu gesetzt (danach Grafana
+   519	  # neu starten); POSTGRES_PASSWORD muss manuell in DB und .env abgeglichen
+   520	  # werden (TROUBLESHOOTING.md A4).
+   521	  if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
+   522	    || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
+   523	    echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter." >&2
+   524	    echo "Reparatur: siehe TROUBLESHOOTING.md (A4), danach Setup erneut." >&2
+   525	    exit 1
+   526	  fi
+   527	else
+   528	  echo "Fehler: /opt/coder/.env existiert, ist aber unvollständig (mindestens ein Schlüssel fehlt/leer)." >&2
+   529	  echo "Abbruch ohne Änderung – Passwörter werden NICHT neu gewürfelt (neu würfeln würde die Datenbank-Anmeldung zerstören)." >&2
+   530	  echo "Reparatur: fehlende Schlüssel in /opt/coder/.env ergänzen (vorhandene Werte behalten) oder bei Totalverlust Restore nach Runbook; danach Setup erneut laufen lassen." >&2
+   531	  exit 1
+   532	fi
+   533	
+   534	# docker-compose.yml
+   535	# WICHTIG: \${...} bleibt hier absichtlich für Docker Compose stehen (wird aus
+   536	# /opt/coder/.env aufgelöst); ${DOMAIN_CODER} etc. werden dagegen jetzt von
+   537	# der Shell eingesetzt.
+   538	# P-007: Log-Limit kommt daemon-weit aus /etc/docker/daemon.json (C2, 10m x 3)
+   539	# und deckt damit auch fremde Container; ein eigenes compose-logging wäre nur
+   540	# eine zweite Quelle fuer denselben Wert.
+   541	# C9: Fester Projektname. Sonst leitet compose den Projektnamen aus dem
+   542	# Verzeichnis ab (/opt/coder -> "coder") – ein Umbenennen/Umziehen des
+   543	# Verzeichnisses würde die laufenden Container als fremd behandeln und einen
+   544	# zweiten Stack nebenan aufbauen. Gleichzeitig ist der Name damit unabhängig
+   545	# davon, von wo aus compose aufgerufen wird.
+   546	write_managed "/opt/coder/docker-compose.yml" 644 "docker-compose.yml" validate_compose <<EOF
+   547	name: coder
+   548	
+   549	services:
+   550	  postgres:
+   551	    image: postgres:18-alpine
+   552	    container_name: coder-postgres
+   553	    restart: unless-stopped
+   554	    # B-011: längere Shutdown-Gnade nur für Postgres (längere Checkpoint-/
+   555	    # WAL-Phase bei Reboot 03:00). Keine pauschale Grace für alle Services.
+   556	    stop_grace_period: 30s
+   557	    environment:
+   558	      POSTGRES_DB: coder
+   559	      POSTGRES_USER: coder
+   560	      POSTGRES_PASSWORD: "\${POSTGRES_PASSWORD}"
+   561	    volumes:
+   562	      # PostgreSQL 18 Layout (docker-library/postgres #1259): ab Major 18
+   563	      # liegen die Daten unter /var/lib/postgresql/<major>/; das alte Mount
+   564	      # /var/lib/postgresql/data laesst das 18er-Image absichtlich nicht
+   565	      # starten (Fehler "data in unused mount"). Weiterhin gleicher Volume-
+   566	      # Name, also gleicher Rollback-/Reset-Pfad.
+   567	      - postgres_data:/var/lib/postgresql
+   568	    healthcheck:
+   569	      test: ["CMD-SHELL", "pg_isready -U coder -d coder"]
+   570	      interval: 5s
+   571	      timeout: 5s
+   572	      retries: 5
+   573	
+   574	  coder:
+   575	    image: ghcr.io/coder/coder:${CODER_VERSION}
+   576	    container_name: coder
+   577	    restart: unless-stopped
+   578	    depends_on:
+   579	      postgres:
+   580	        condition: service_healthy
+   581	    # Gibt dem Coder-Container Schreibrechte auf den gemounteten Docker-Socket
+   582	    # des Hosts (offizielles Setup, siehe coder.com/docs/install/docker).
+   583	    # Die aktuelle GID wird hier direkt eingetragen (kein .env-Umweg): der
+   584	    # Wert muss beim Schreiben stimmen, ein Hand-Edit der .env würde sonst
+   585	    # still wirkungslos bleiben. Ein erneuter Setup-Lauf gleicht ihn an.
+   586	    group_add:
+   587	      - "${DOCKER_GID}"
+   588	    environment:
+   589	      - CODER_PG_CONNECTION_URL=postgres://coder:\${POSTGRES_PASSWORD}@postgres:5432/coder?sslmode=disable
+   590	      - CODER_HTTP_ADDRESS=0.0.0.0:3000
+   591	      - CODER_ACCESS_URL=https://${DOMAIN_CODER}
+   592	      - CODER_WILDCARD_ACCESS_URL=*.${DOMAIN_CODER}
+   593	      - CODER_PROMETHEUS_ENABLE=true
+   594	      - CODER_PROMETHEUS_COLLECT_AGENT_STATS=true
+   595	      - CODER_PROMETHEUS_ADDRESS=0.0.0.0:2112
+   596	      # B6: Telemetrie an Coder, Inc. bewusst aus – unabhängig davon, was der
+   597	      # Build aktuell standardmäßig tut.
+   598	      - CODER_TELEMETRY_ENABLE=false
+   599	      # A8: Coder sitzt hinter Caddy und sieht ohne diese Werte nur die
+   600	      # Container-IP des Proxys – Audit-Log und IP-Rate-Limits würden überall
+   601	      # dieselbe Adresse zeigen. Vertrauen nur Docker-Netz (172.16.0.0/12,
+   602	      # Compose-Default-Subnetze) und Loopback; Header nur X-Forwarded-For.
+   603	      - CODER_PROXY_TRUSTED_HEADERS=X-Forwarded-For
+   604	      - CODER_PROXY_TRUSTED_ORIGINS=172.16.0.0/12,127.0.0.1/8
+   605	    volumes:
+   606	      - /var/run/docker.sock:/var/run/docker.sock
+   607	
+   608	  caddy:
+   609	    image: caddy:${CADDY_VERSION}
+   610	    container_name: coder-caddy
+   611	    restart: unless-stopped
+   612	    ports:
+   613	      - "80:80"
+   614	      - "443:443"
+   615	      - "443:443/udp"  # HTTP/3 (QUIC) - Caddy nutzt das automatisch, wenn der Port da ist
+   616	    volumes:
+   617	      # Verzeichnis statt Einzeldatei: docker bindet eine Datei beim Container-
+   618	      # start an deren Inode. write_managed ersetzt sie per mv – der Container
+   619	      # sähe sonst bis zum Recreate die ALTE Datei, während validate/reload im
+   620	      # Container die neue bestätigen würden. Ein Verzeichnis-Mount zeigt auf
+   621	      # den jeweils aktuellen Inode.
+   622	      - ./caddy:/etc/caddy:ro
+   623	      - caddy_data:/data
+   624	      - caddy_config:/config
+   625	    depends_on:
+   626	      - coder
+   627	
+   628	  prometheus:
+   629	    image: prom/prometheus:${PROMETHEUS_VERSION}
+   630	    container_name: coder-prometheus
+   631	    restart: unless-stopped
+   632	    command:
+   633	      - --config.file=/etc/prometheus/prometheus.yml
+   634	      - --storage.tsdb.path=/prometheus
+   635	      # Explizit statt sich auf den (aktuell gleichen) Standardwert zu
+   636	      # verlassen: begrenzt, wie weit die Prometheus-Datenbank auf der
+   637	      # kleinen Schul-VM anwachsen kann.
+   638	      - --storage.tsdb.retention.time=15d
+   639	    volumes:
+   640	      # Dasselbe Prinzip wie oben bei caddy: Verzeichnis-Mount, damit eine per
+   641	      # mv ersetzte prometheus.yml den laufenden Container wirklich erreicht.
+   642	      # Die Alarmregeln liegen darunter (./prometheus/rules) und brauchen keinen
+   643	      # eigenen Mount mehr; Schritt 3 sendet SIGHUP nur bei tatsächlicher
+   644	      # Änderung (Konfiguration + Regeln werden erst neu geladen).
+   645	      - ./prometheus:/etc/prometheus:ro
+   646	      - prometheus_data:/prometheus
+   647	    # Nur lokal erreichbar (kein öffentlicher Port, kein Login vorhanden)
+   648	    ports:
+   649	      - "127.0.0.1:9090:9090"
+   650	
+   651	  node-exporter:
+   652	    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
+   653	    container_name: coder-node-exporter
+   654	    restart: unless-stopped
+   655	    pid: host
+   656	    # Nur lesend eingebunden, damit Host-Metriken (u.a. freier Speicherplatz)
+   657	    # in Prometheus/Grafana sichtbar werden - bisher hing der fertige
+   658	    # Monitoring-Stack nur an Coders eigenen App-Metriken, ohne jede Sicht auf
+   659	    # den Host selbst.
+   660	    volumes:
+   661	      - /proc:/host/proc:ro
+   662	      - /sys:/host/sys:ro
+   663	      - /:/rootfs:ro,rslave
+   664	      # C1: textfile-collector. backup.sh schreibt nach jedem erfolgreichen Lauf
+   665	      # /opt/coder/node-textfile/coder_backup.prom (mode 644, atomar). Read-only
+   666	      # ist hier richtig: geschrieben wird vom Host, der Container liest nur.
+   667	      - ./node-textfile:/var/lib/node-exporter/textfile:ro
+   668	    command:
+   669	      - --path.procfs=/host/proc
+   670	      - --path.sysfs=/host/sys
+   671	      - --path.rootfs=/rootfs
+   672	      - --collector.textfile.directory=/var/lib/node-exporter/textfile
+   673	      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)(\$\$|/)
+   674	    ports:
+   675	      - "127.0.0.1:9100:9100"
+   676	
+   677	  grafana:
+   678	    image: grafana/grafana:${GRAFANA_VERSION}
+   679	    container_name: coder-grafana
+   680	    restart: unless-stopped
+   681	    environment:
+   682	      # Wirkt nur beim allerersten Start (leere grafana_data). Passwort danach
+   683	      # in /opt/coder/.env (GRAFANA_ADMIN_PASSWORD) ändern und Grafana neu
+   684	      # starten (siehe OPERATIONS.md).
+   685	      - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
+   686	      # Kein GF_SERVER_ROOT_URL nötig – Zugriff per IP (Schulnetz oder
+   687	      # SSH-Tunnel), nicht über eine eigene Domain.
+   688	      # Telemetrie/Update-Checks an Grafana Inc. aus: passt zur
+   689	      # bewusst telemetriefreien Haltung des Stacks (siehe CODER_TELEMETRY).
+   690	      - GF_ANALYTICS_REPORTING_ENABLED=false
+   691	      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+   692	    # NICHT auf allen Interfaces und
+   693	    # NICHT per ufw-Quellregeln schützen. Docker-published Ports umgehen den
+   694	    # ufw-INPUT-Pfad (IPv4-DNAT, Docker-Doku), und RFC1918-Quellen
+   695	    # (10/8, 172.16/12, 192.168/16) sind keine Präzisionsgrenze für "unser
+   696	    # Schulnetz" – 172.16/12 enthält sogar die Docker-Netze selbst.
+   697	    # Bindung auf Loopback wie Prometheus/node-exporter: Zugriff per
+   698	    # SSH-Tunnel (ssh -L 3001:127.0.0.1:3001 …), LAN und WAN sehen 3001 nicht.
+   699	    ports:
+   700	      - "127.0.0.1:3001:3000"
+   701	    volumes:
+   702	      # C3: Datasource-Quittung (provisioniert, statt manuell im UI einzutragen).
+   703	      # Nur das Unterverzeichnis gemountet, damit der Rest von
+   704	      # /etc/grafana/provisioning des Images erhalten bleibt.
+   705	      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+   706	      # Dashboards als eigenes Unterverzeichnis – gleiche Begründung.
+   707	      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+   708	      - grafana_data:/var/lib/grafana
+   709	    depends_on:
+   710	      - prometheus
+   711	
+   712	volumes:
+   713	  postgres_data:
+   714	  caddy_data:
+   715	  caddy_config:
+   716	  prometheus_data:
+   717	  grafana_data:
+   718	EOF
+   719	
+   720	# A2/B-013: Bilder JETZT ziehen, bevor die Container-Dateien geschrieben
+   721	# werden – die Validierer für Caddyfile/Prometheus brauchen die Images, und
+   722	# ein fehlender/falscher Tag (z.B. coder/coder:2.36.6 ohne "v") soll vor
+   723	# jedem weiteren Schritt klar scheitern. Daemon-Check gehört hierher, weil
+   724	# "pull" der erste Docker-Aufruf nach der Installation ist.
+   725	if ! docker info > /dev/null 2>&1; then
+   726	  echo "Fehler: Docker-Daemon antwortet nicht (docker info). Erst Daemon heilen, dann Setup erneut." >&2
+   727	  exit 1
+   728	fi
+   729	retry3 docker compose pull
+   730	
+   731	# Caddyfile – echtes, öffentlich vertrauenswürdiges Let's-Encrypt-Zertifikat,
+   732	# inklusive Wildcard-Subdomain für Coder-Workspace-Apps (Port-Forwarding,
+   733	# code-server-Vorschau etc. laufen über eigene Subdomains).
+   734	#
+   735	# Wildcard-Zertifikate lassen sich nicht per normaler HTTP-01-Challenge
+   736	# ausstellen (die validiert immer nur EINEN konkreten Hostnamen). Caddys
+   737	# On-Demand-TLS holt das Zertifikat beim ersten Aufruf einer neuen Subdomain
+   738	# (5-30 s länger beim allerersten Aufruf). "Echte" Wildcard-Zertifikate ohne
+   739	# diese Verzögerung bräuchten einen eigenen Caddy-Build mit DNS-Provider-
+   740	# Plugin (z.B. Cloudflare/Route53) – dafür fehlt ein API-Token (D-TLS).
+   741	#
+   742	# Aufbau (B1):
+   743	#   - Global: On-Demand-TLS mit ask-Endpunkt auf 127.0.0.1:9123.
+   744	#   - :9123: der ask-Endpunkt selbst. REIN innerhalb des Containers (der Port
+   745	#     steht nicht in "ports:" der compose-Datei), also ohne ufw-Regel und von
+   746	#     außen nicht erreichbar. Antwort 200 = Zertifikat erlaubt, 404 = verboten.
+   747	#   - Apex (${DOMAIN_CODER}): OHNE on_demand – Zertifikat beim Start über
+   748	#     HTTP-01, Erneuerung durch Caddy. Berührt das On-Demand-Budget nicht.
+   749	#   - Wildcard (*.${DOMAIN_CODER}): MIT on_demand, der ask-Endpunkt prüft das
+   750	#     Muster. Ein Angreifer bekommt damit kein Zertifikat für beliebige
+   751	#     Namen; für Namen IM Muster kann er es weiterhin auslösen – das Muster
+   752	#     ist ein grober Filter, kein Budget-Schutz (P-005, Dokumentation in
+   753	#     SECURITY.md). Wochenbudget 50/Woche pro registrierter Domain bleibt bis
+   754	#     D-TLS (DNS-01-Wildcard ohne On-Demand) das Thema.
+   755	#     Eine automatische Budget-Überwachung gibt es nicht (manuelle
+   756	#     Sichtprüfung) – Erschöpfung fällt als HTTPS-Fehler auf;
+   757	#     Gegenmittel ist DNS-01, sobald Zone/Token geklärt sind (D-TLS).
+   758	#
+   759	# Muster (Quelle: Coder-Quellcode coderd/workspaceapps/appurl/appurl.go,
+   760	# Format "{PORT/APP_SLUG}[--{AGENT_NAME}]--{WORKSPACE_NAME}--{USERNAME}":
+   761	#     8080--main--myworkspace--john.${DOMAIN_CODER}         (App/Port-Forward)
+   762	#     33295s--agent--workspace--user--apps.${DOMAIN_CODER}  (HTTPS-Port)
+   763	# Erste Label muss also mindestens zwei "--"-Trenner tragen und nur aus
+   764	# Buchstaben/Ziffern/Einfach-Bindestrich bestehen. Punkte in der ersten Label
+   765	# sind ausgeschlossen – damit bleiben "evil.${DOMAIN_CODER}",
+   766	# "a.b.${DOMAIN_CODER}" und der Apex selbst draußen. Richtige Warnung bei
+   767	# unbekannter Coder-Version: Muster gegen die Coder-Doku prüfen, nicht den
+   768	# Code raten lassen.
+   769	# DOMAIN_CODER_REGEX enthaelt KEINE Backslashes in den Punktgruppen ([.]
+   770	# statt "\.") und KEIN "$"-Escaping-Probleme, weil CEL-Strings in Caddy dort
+   771	# keine Escape-Sequenzen kennen – deshalb die Klammern-Variante.
+   772	DOMAIN_CODER_ESC="$(printf '%s' "${DOMAIN_CODER}" | sed 's/\./[.]/g')"
+   773	DOMAIN_CODER_REGEX="^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*(--[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*){2,}[.]${DOMAIN_CODER_ESC}\$"
+   774	# C9: Optionaler eigener ACME-Endpunkt (ACME_CA), z.B. um gegen das
+   775	# Let's-Encrypt-Staging zu testen, ohne das Wochenbudget der Produktions-CA zu
+   776	# verbrauchen. Leer = Caddys Standard. Die Zeile entsteht nur, wenn gesetzt –
+   777	# ein leeres "acme_ca" ohne Argument wäre ungültig. Gehört in den GLOBALen
+   778	# Block, nicht in "issuer acme { }": dort ist "acme_ca" kein gültiges
+   779	# Property (mit caddy:2.11 nachgeprüft: "unrecognized ACME issuer property"),
+   780	# während die globale Option in beide Issuer (Apex + On-Demand) durchschlägt.
+   781	CADDY_ACME_CA=""
+   782	if [ -n "${ACME_CA:-}" ]; then
+   783	  CADDY_ACME_CA="    acme_ca ${ACME_CA}"
+   784	fi
+   785	# Lauf-Status VOR Schritt 3 (Reload/Neustart-Entscheidung unten). Pfad der
+   786	# Caddyfile unter /opt/coder/caddy, weil die compose-Datei das Verzeichnis
+   787	# statt der Einzeldatei bindet.
+   788	CADDY_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
+   789	# write_managed legt Verzeichnisse nicht an (Vorbild: rules/grafana unten).
+   790	install -d -m 0755 /opt/coder/caddy
+   791	write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" validate_caddyfile <<EOF
+   792	{
+   793	${CADDY_ACME_CA}
+   794	    email ${ACME_EMAIL}
+   795	    on_demand_tls {
+   796	        # Caddy 2.9+ empfiehlt permission; ask ist deprecated.
+   797	        permission http http://127.0.0.1:9123/ask
+   798	    }
+   799	}
+   800	
+   801	:9123 {
+   802	    @askOK expression \`{http.request.uri.path} == "/ask" && matches({http.request.uri.query.domain}, '${DOMAIN_CODER_REGEX}')\`
+   803	    handle @askOK {
+   804	        respond "ok" 200
+   805	    }
+   806	    handle {
+   807	        respond "not found" 404
+   808	    }
+   809	}
+   810	
+   811	${DOMAIN_CODER} {
+   812	    reverse_proxy coder:3000
+   813	}
+   814	
+   815	*.${DOMAIN_CODER} {
+   816	    reverse_proxy coder:3000
+   817	    tls {
+   818	        on_demand
+   819	    }
+   820	}
+   821	EOF
+   822	
+   823	# Prometheus bekommt SIGHUP bei jedem Lauf, solange es läuft –
+   824	# Reload statt Neustart (P-025), ohne Hash-Vergleich: ein SIGHUP auf
+   825	# unveränderte Regeln ist ein No-Op (braucht kein --web.enable-lifecycle).
+   826	# Nur Grafana hat keine Reload-API und braucht weiterhin den Hash – dessen
+   827	# Neustart ist invasiv und bleibt an die tatsächliche Änderung gebunden.
+   828	# Grafana liest Provisioning-Dateien nur beim Start.
+   829	# Ganzer Provisioning-Baum (Datasource + Dashboards): find+sort+sha256,
+   830	# damit auch ein neu hinzugekommener Dashboards-Ordner den Hash ändert.
+   831	# Verzeichnisse vorab anlegen: auf dem Erstlauf existieren sie noch nicht
+   832	# (die install -d unten kommen erst nach dieser Stelle), "find" gäbe dann
+   833	# Exit 1 und pipefail+set -e brächen hier ohne Meldung ab. "|| true" fängt
+   834	# jeden weiteren Pipeline-Fehler ab: falscher Hash bedeutet nur einen
+   835	# zusätzlichen Grafana-Neustart, kein Setup-Abbruch.
+   836	install -d -m 0755 /opt/coder/grafana/provisioning/datasources \
+   837	                  /opt/coder/grafana/provisioning/dashboards
+   838	GRAFANA_PROV_BEFORE=$(find /opt/coder/grafana/provisioning -type f 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1 || true)
+   839	# Lauf-Status VOR dem Schreiben (gleiche Idee wie CADDY_WAS_RUNNING): nur ein
+   840	# Container, der schon mit der alten Datei lief, braucht danach einen Neustart.
+   841	PROM_CFG_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-prometheus 2>/dev/null || echo false)
+   842	GRAFANA_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-grafana 2>/dev/null || echo false)
+   843	
+   844	# A2: Erst die Alarmregeln schreiben (eigener Validierer), dann
+   845	# prometheus.yml – der Config-Validierer lädt die rule_files mit und sieht
+   846	# so die frisch geschriebenen Regeln.
+   847	# C3: Alarmregeln (einzige Alarmkanäle ohne Alertmanager: Prometheus-eigenen
+   848	# /alerts + Grafana). Drei Regeln, alle mit messbarer Grundlage:
+   849	#   1. Coder-Target down  2. Root-Partition <10% frei  3. letztes Backup >25h
+   850	# Kein "absent()"-Zweig für Regel 3: fehlende Metrik = seit Aufsetzen noch
+   851	# kein Backup gelaufen, das meldet ohnehin das erste erfolgreiche Laufdatum;
+   852	# ehrlicher als ein Alarm direkt nach der Installation.
+   853	install -d -m 0755 /opt/coder/prometheus/rules
+   854	write_managed "/opt/coder/prometheus/rules/coder-alerts.yml" 644 - validate_prom_rules <<'EOF'
+   855	groups:
+   856	  - name: coder
+   857	    rules:
+   858	      - alert: CoderTargetDown
+   859	        expr: up{job="coder"} == 0
+   860	        for: 2m
+   861	        labels:
+   862	          severity: critical
+   863	        annotations:
+   864	          summary: "Coder-Metriken werden seit 2 min nicht mehr abgefragt"
+   865	          description: "Prometheus erreicht coder:2112 nicht – Coder-Container prüfen: docker ps / docker logs coder"
+   866	      - alert: RootPartitionFillingUp
+   867	        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
+   868	        for: 5m
+   869	        labels:
+   870	          severity: warning
+   871	        annotations:
+   872	          summary: "Root-Partition unter 10% frei"
+   873	          description: "Backups, Images und Container-Logs liegen auf derselben Platte: df -h /"
+   874	      - alert: BackupStale
+   875	        expr: time() - coder_backup_last_success_timestamp_seconds > 90000
+   876	        for: 10m
+   877	        labels:
+   878	          severity: critical
+   879	        annotations:
+   880	          summary: "Kein erfolgreiches Backup seit über 25 Stunden"
+   881	          description: "Letzter Erfolg siehe /opt/coder/node-textfile/coder_backup.prom, Log: /var/log/coder-backup.log"
+   882	EOF
+   883	
+   884	# prometheus.yml (komplettes Verzeichnis gemountet, siehe compose)
+   885	install -d -m 0755 /opt/coder/prometheus
+   886	write_managed "/opt/coder/prometheus/prometheus.yml" 644 "prometheus.yml" validate_prom_config <<'EOF'
+   887	global:
+   888	  scrape_interval: 15s
+   889	
+   890	rule_files:
+   891	  - /etc/prometheus/rules/*.yml
+   892	
+   893	scrape_configs:
+   894	  - job_name: 'coder'
+   895	    static_configs:
+   896	      - targets: ['coder:2112']
+   897	  - job_name: 'node'
+   898	    static_configs:
+   899	      - targets: ['node-exporter:9100']
+   900	EOF
+   901	
+   902	# C3: Datasource für Grafana provisioning statt manuelle UI-Konfigurations-
+   903	# Eintragung. Betrifft nur den Beginn der Container-Welt; ob provisioniert
+   904	# wurde, sieht der erste Start in den Grafana-Logs.
+   905	install -d -m 0755 /opt/coder/grafana/provisioning/datasources
+   906	write_managed "/opt/coder/grafana/provisioning/datasources/prometheus.yml" 644 - <<'EOF'
+   907	apiVersion: 1
+   908	
+   909	datasources:
+   910	  - name: Prometheus
+   911	    uid: coder-prometheus
+   912	    type: prometheus
+   913	    access: proxy
+   914	    url: http://prometheus:9090
+   915	    isDefault: true
+   916	    editable: false
+   917	EOF
+   918	
+   919	# C3/Dashboards: Dashboard „Server-Last" (Gesamtlast des Servers über die Zeit:
+   920	# CPU, Arbeitsspeicher, Load-Average, Wurzelpartition) als Anbieter + JSON
+   921	# provisionieren. Weitere Dashboards: JSON in dasselbe Verzeichnis legen.
+   922	install -d -m 0755 /opt/coder/grafana/provisioning/dashboards
+   923	write_managed "/opt/coder/grafana/provisioning/dashboards/dashboards.yml" 644 - <<'EOF'
+   924	apiVersion: 1
+   925	
+   926	providers:
+   927	  - name: coder
+   928	    orgId: 1
+   929	    folder: ""
+   930	    type: file
+   931	    disableDeletion: false
+   932	    updateIntervalSeconds: 30
+   933	    options:
+   934	      path: /etc/grafana/provisioning/dashboards
+   935	EOF
+   936	
+   937	write_managed "/opt/coder/grafana/provisioning/dashboards/server-load.json" 644 - <<'EOF'
+   938	{
+   939	  "id": null,
+   940	  "uid": "server-load",
+   941	  "title": "Server-Last",
+   942	  "tags": ["coder"],
+   943	  "timezone": "browser",
+   944	  "schemaVersion": 39,
+   945	  "version": 0,
+   946	  "editable": true,
+   947	  "graphTooltip": 1,
+   948	  "refresh": "1m",
+   949	  "time": { "from": "now-6h", "to": "now" },
+   950	  "panels": [
+   951	    {
+   952	      "id": 1,
+   953	      "type": "timeseries",
+   954	      "title": "CPU-Auslastung",
+   955	      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+   956	      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+   957	      "fieldConfig": {
+   958	        "defaults": { "unit": "percent", "min": 0, "max": 100,
+   959	          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } },
+   960	        "overrides": []
+   961	      },
+   962	      "options": {
+   963	        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+   964	        "tooltip": { "mode": "single", "sort": "none" }
+   965	      },
+   966	      "targets": [
+   967	        { "refId": "A", "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "Gesamt" }
+   968	      ]
+   969	    },
+   970	    {
+   971	      "id": 2,
+   972	      "type": "timeseries",
+   973	      "title": "Arbeitsspeicher belegt",
+   974	      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+   975	      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+   976	      "fieldConfig": {
+   977	        "defaults": { "unit": "percent", "min": 0, "max": 100,
+   978	          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } },
+   979	        "overrides": []
+   980	      },
+   981	      "options": {
+   982	        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+   983	        "tooltip": { "mode": "single", "sort": "none" }
+   984	      },
+   985	      "targets": [
+   986	        { "refId": "A", "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))", "legendFormat": "belegt" }
+   987	      ]
+   988	    },
+   989	    {
+   990	      "id": 3,
+   991	      "type": "timeseries",
+   992	      "title": "Load-Average",
+   993	      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+   994	      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+   995	      "fieldConfig": {
+   996	        "defaults": { "unit": "short", "min": 0,
+   997	          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0 } },
+   998	        "overrides": []
+   999	      },
+  1000	      "options": {
+  1001	        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+  1002	        "tooltip": { "mode": "multi", "sort": "none" }
+  1003	      },
+  1004	      "targets": [
+  1005	        { "refId": "A", "expr": "node_load1", "legendFormat": "1 Min" },
+  1006	        { "refId": "B", "expr": "node_load5", "legendFormat": "5 Min" },
+  1007	        { "refId": "C", "expr": "node_load15", "legendFormat": "15 Min" }
+  1008	      ]
+  1009	    },
+  1010	    {
+  1011	      "id": 4,
+  1012	      "type": "timeseries",
+  1013	      "title": "Wurzelpartition belegt",
+  1014	      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+  1015	      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+  1016	      "fieldConfig": {
+  1017	        "defaults": { "unit": "percent", "min": 0, "max": 100,
+  1018	          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } },
+  1019	        "overrides": []
+  1020	      },
+  1021	      "options": {
+  1022	        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+  1023	        "tooltip": { "mode": "single", "sort": "none" }
+  1024	      },
+  1025	      "targets": [
+  1026	        { "refId": "A", "expr": "100 * (1 - (node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"}))", "legendFormat": "/" }
+  1027	      ]
+  1028	    }
+  1029	  ]
+  1030	}
+  1031	EOF
+  1032	
+  1033	# C1: Zielverzeichnis der Backup-Metrik. MUSS 0755 sein: backup.sh läuft mit
+  1034	# "umask 077" und würde das Verzeichnis sonst anlegen, wenn es fehlt – dann
+  1035	# könnte node-exporter die Datei nicht lesen und die Metrik bliebe tot.
+  1036	install -d -m 0755 /opt/coder/node-textfile
+  1037	
+  1038	GRAFANA_PROV_AFTER=$(find /opt/coder/grafana/provisioning -type f 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1 || true)
+  1039	
+  1040	# Wartungsskripte am Ende von Schritt 2 schreiben, VOR dem Stack-Start:
+  1041	# Schritt 3 verlangt bei vorhandenem DB-Volume /opt/coder/backup.sh und bricht
+  1042	# sonst als "inkonsistente Installation" ab – läge die Schleife noch in
+  1043	# Schritt 5, würde eine Unterbrechung zwischen "up -d" und Schritt 5 den
+  1044	# Re-Run genau dort aufbrechen. write_managed prueft *.sh per bash -n und
+  1045	# schreibt atomar.
+  1046	for _src in "${SETUP_DIR}"/scripts/*.sh; do
+  1047	  _src_base="$(basename "${_src}")"
+  1048	  write_managed "/opt/coder/${_src_base}" 755 "${_src_base}" < "${_src}"
+  1049	done
+  1050	# Alten TLS-Check-Bestand (check-tls.sh, Cron, Metrik, Log) still entfernen –
+  1051	# Caddy betreibt ACME selbst, eine eigene Zählung gibt es nicht (D-TLS);
+  1052	# jeweils idempotenter No-Op.
+  1053	rm -f /etc/cron.d/coder-tlscheck /opt/coder/check-tls.sh \
+  1054	      /var/log/coder-tls.log /opt/coder/node-textfile/coder_tls.prom
+  1055	
+  1056	echo "############################################################"
+  1057	echo "# [3/7] Docker-Stack starten"
+  1058	echo "############################################################"
+  1059	cd /opt/coder
+  1060	
+  1061	# B-013: volle Platte endete sonst in set -e-Tod mit Roh-Fehlermeldung.
+  1062	# Platte WARN ab 1 GB (grober Hinweis, kein Ersatz für D-Monitoring); der
+  1063	# Daemon-Fail liegt vor dem Pull in Schritt 2.
+  1064	if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' '); then
+  1065	  if [ "${_avail}" -lt 1073741824 ]; then
+  1066	    warn "Wenig Platte unter /opt/coder (${_avail} < 1 GB, grober Hinweis) – Images/Backups brauchen Luft"
+  1067	  fi
+  1068	fi
+  1069	
+  1070	# KEIN Upgrade ohne frisches
+  1071	# Backup. Schritt 3 zieht Bilder und "up -d" kann eine Coder-DB-Schema-
+  1072	# Migration ausführen – ohne Dump wäre danach kein Rollback möglich.
+  1073	# Entscheidend ist der BESTAND (DB-Volume), nicht ob der postgres-Container
+  1074	# zufällig gerade läuft: gestoppter Container + vorhandenes Volume + erneuter
+  1075	# Setup-Lauf würde sonst ohne Dump in eine mögliche Migration starten.
+  1076	# Erstlauf ohne Volume braucht kein Backup; Volume ohne backup.sh ist eine
+  1077	# inkonsistente Installation und bricht hart ab (die Schleife steht seit
+  1078	# Schritt 2). Gesichert wird nur bei VersionsWECHSEL gegen versions.env –
+  1079	# nur dann läuft beim "up -d" eine DB-Migration; bei unveränderter Version
+  1080	# deckt der tägliche Cron-Lauf die Sicherung ab. Der Wartungs-Lock hängt
+  1081	# schon an diesem Prozess (CODER_MAINTENANCE_LOCK_HELD=1), backup.sh
+  1082	# erwirbt keinen zweiten. Fehlschlag bricht vor "up -d" ab, nichts ist
+  1083	# verändert. Gestopptes Postgres wird vor dem Dump gestartet (gepinntes
+  1084	# Major-Image, vorhandenes Volume – keine Coder-Migration, der läuft erst
+  1085	# mit dem Coder-Container in Schritt 3).
+  1086	if [ -n "$(docker volume ls -q --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null | head -n1)" ]; then
+  1087	  if [ ! -x /opt/coder/backup.sh ]; then
+  1088	    echo "FEHLER: DB-Volume vorhanden, aber /opt/coder/backup.sh fehlt – inkonsistente Installation, kein Upgrade ohne Backup-Möglichkeit." >&2
+  1089	    echo "scripts/backup.sh aus dem Repo nach /opt/coder/ kopieren (755), dann Setup erneut." >&2
+  1090	    exit 1
+  1091	  fi
+  1092	  # versions.env fehlt oder nennt eine andere Version (Erst-Upgrade,
+  1093	  # manueller Eingriff) => Backup laufen lassen. -Fqx: wörtlich, ganze Zeile.
+  1094	  if grep -Fqx "CODER_VERSION=${CODER_VERSION}" "${VERSIONS_FILE}" 2>/dev/null; then
+  1095	    echo "Coder-Version unverändert (${CODER_VERSION}) – Pre-Upgrade-Backup entfällt, keine DB-Migration erwartet (Cron sichert täglich)."
+  1096	  else
+  1097	    if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || echo false)" != "true" ]; then
+  1098	      echo "Postgres-Container läuft nicht, DB-Volume ist aber da – starte Postgres für das Pre-Upgrade-Backup ..."
+  1099	      docker compose up -d postgres
+  1100	      _pg_ready=false
+  1101	      for _ in $(seq 1 30); do
+  1102	        if docker exec coder-postgres pg_isready -U coder > /dev/null 2>&1; then
+  1103	          _pg_ready=true
+  1104	          break
+  1105	        fi
+  1106	        sleep 2
+  1107	      done
+  1108	      if [ "${_pg_ready}" != "true" ]; then
+  1109	        echo "FEHLER: Postgres wird nach 60 s nicht bereit – kein Dump möglich, Abbruch vor 'docker compose up -d'." >&2
+  1110	        exit 1
+  1111	      fi
+  1112	    fi
+  1113	    echo "Ziehe Pre-Upgrade-Backup vor möglicher DB-Migration (Version ${CODER_VERSION} neu gegenüber ${VERSIONS_FILE}) ..."
+  1114	    if ! env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
+  1115	      echo "FEHLER: Pre-Upgrade-Backup fehlgeschlagen – Abbruch vor 'docker compose up -d'." >&2
+  1116	      echo "Ursache prüfen (Platte/Postgres), Backup laufen lassen, dann Setup erneut." >&2
+  1117	      exit 1
+  1118	    fi
+  1119	  fi
+  1120	fi
+  1121	
+  1122	# A2: Compose/Caddyfile/Prometheus wurden in Schritt 2 bereits validiert, BEVOR
+  1123	# sie die Live-Platte erreicht haben – hier wird nur noch gestartet.
+  1124	docker compose up -d
+  1125	
+  1126	# Die wirksam
+  1127	# gewesene Version wird bewusst SOFORT nach "up -d" persistiert, nicht erst
+  1128	# nach den Health-Checks. Grund: die DB-Migration läuft beim Start der neuen
+  1129	# Coder-Version, nicht erst bei "gesund" – würde erst nach Healthcheck
+  1130	# geschrieben, bliebe nach einem Crash die ALTE Version eingetragen, obwohl
+  1131	# die DB schon migriert ist, und der Downgrade-Schutz ließe genau den
+  1132	# gefährlichen Rollback zu. "wirksam" heißt hier "kann migriert haben",
+  1133	# nicht "ist gesund" – Gesundheit meldet Schritt 7. "install -d" sichert
+  1134	# den Pfad, falls dieser Block je früher stünde (A1: cat legt keine
+  1135	# Verzeichnisse an).
+  1136	install -d -m 0755 /opt/coder
+  1137	write_managed "${VERSIONS_FILE}" 644 - <<VERSIONSEOF
+  1138	# Von setup-coder.sh erzeugt – wirksam gewesene Version des letzten Laufs.
+  1139	# Kein Geheimnis, daher 644 (unten ohne sudo lesbar).
+  1140	CODER_VERSION=${CODER_VERSION}
+  1141	VERSIONSEOF
+  1142	
+  1143	# A2/C4: Reload bei JEDEM Lauf, solange Caddy lief – die Datei ist beim
+  1144	# Schreiben bereits validiert (write_managed + validate_caddyfile), ein
+  1145	# erneutes validate vor dem Reload wäre derselbe Prüfpfad mit demselben
+  1146	# Ergebnis. Reload geht über die Admin-API (verbindungserhaltend – P-025
+  1147	# verbietet nur Restarts), ist bei unveränderter Datei ein No-Op. Schlägt
+  1148	# er fehl (z.B. Admin-API weg), behält Caddy automatisch die laufende
+  1149	# Konfiguration – "restart" ist bewusst KEIN Fallback (C4). Erstlauf ohne
+  1150	# laufendes Caddy braucht kein Reload – "up -d" hat den Container gerade
+  1151	# mit der Datei gestartet.
+  1152	if [ "${CADDY_WAS_RUNNING}" = "true" ]; then
+  1153	  if docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
+  1154	    ok "Caddy reload OK (ohne Verbindungsabbruch, gevaliderte Datei) (C4)"
+  1155	  else
+  1156	    warn "caddy reload fehlgeschlagen – Caddy läuft weiter mit der ALTEN Konfiguration. Manuell prüfen: sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
+  1157	  fi
+  1158	else
+  1159	  echo "Caddy lief vorher nicht (Erstlauf) – kein Reload nötig, up -d startet ihn mit der Datei."
+  1160	fi
+  1161	
+  1162	# C3: Prometheus-Dateien und Grafana-Provisioning liegen als Bind-Mounts im
+  1163	# Container – "docker compose up -d" erkennt deren Inhalt NICHT.
+  1164	if [ "${PROM_CFG_WAS_RUNNING}" = "true" ]; then
+  1165	  if docker kill -s HUP coder-prometheus > /dev/null 2>&1; then
+  1166	    ok "Prometheus per SIGHUP neu geladen (Konfiguration und Alarmregeln) (C3)"
+  1167	  else
+  1168	    warn "Prometheus konnte SIGHUP nicht laden – Konfiguration manuell prüfen: sudo docker logs coder-prometheus"
+  1169	  fi
+  1170	else
+  1171	  echo "Prometheus lief vorher nicht – kein SIGHUP (läuft mit der neuen Datei)."
+  1172	fi
+  1173	if [ "${GRAFANA_PROV_BEFORE}" = "${GRAFANA_PROV_AFTER}" ]; then
+  1174	  echo "Grafana-Provisioning unverändert – kein Neustart."
+  1175	elif [ "${GRAFANA_WAS_RUNNING}" != "true" ]; then
+  1176	  echo "Grafana-Provisioning neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
+  1177	elif docker restart coder-grafana > /dev/null 2>&1; then
+  1178	  ok "Grafana neu gestartet, damit Provisioning (Datasource/Dashboards) greift (C3)"
+  1179	else
+  1180	  warn "Neustart von coder-grafana fehlgeschlagen – Provisioning manuell nachziehen: sudo docker restart coder-grafana (C3)"
+  1181	fi
+  1182	
+  1183	docker compose ps
+  1184	
+  1185	echo "############################################################"
+  1186	echo "# [4/7] Firewall (ufw) + SSH-Schutz einrichten"
+  1187	echo "############################################################"
+  1188	apt_install ufw fail2ban
+  1189	
+  1190	# Der sshd-Port-Check steht im Preflight (vor Schritt 1) – A10: Vorbedingungen
+  1191	# gehören vor die Installation, nicht erst vor der ersten Firewall-Änderung.
+  1192	#
+  1193	# B11/D-SSH: kein Quellbeschränkungs-Pfad und kein Rate-Limit in der Firewall.
+  1194	# Die Netzgrenze (SSH nur aus dem Schulnetz) liegt am Router; fail2ban ist der
+  1195	# Brute-Force-Schutz. ufw limit (6 Verbindungen/30 s je Quell-IP) würde die
+  1196	# geteilte Schul-NAT-IP drosseln – alle dahinter zahlen mit. Invarianten:
+  1197	#   - Ohne lesbaren ufw-Status wird NICHTS geaendert (Abbruch).
+  1198	#   - Nichts wird geloescht, außer der eigenen alten limit-Regel frueherer
+  1199	#     Laeufe (erst allow setzen, dann loeschen – niemals ein Fenster ohne
+  1200	#     SSH-Regel). Quellregeln und fremde Regeln bleiben unangetastet.
+  1201	if ! UFW_OUT="$(ufw status numbered 2>/dev/null)"; then
+  1202	  fail "ufw-Status nicht lesbar – Abbruch vor jeder Regel-/Policy-Änderung (SSH-Schutz)."
+  1203	  exit 1
+  1204	fi
+  1205	if grep -qi 'Status:[[:space:]]*inactive' <<< "${UFW_OUT}"; then
+  1206	  warn "ufw ist inaktiv (Status: inactive) – Firewall wird jetzt eingerichtet"
+  1207	fi
+  1208	
+  1209	# Regelanwendung: einfache feste Folge. Reihenfolge erst Policy, dann
+  1210	# SSH-Regeln; "allow" ist idempotent ("Skipping adding existing rule").
+  1211	ufw default deny incoming
+  1212	ufw default allow outgoing
+  1213	# SSH: allow für die im Preflight erkannten sshd-Ports (funktioniert auch
+  1214	# bei einem Nicht-22-Port).
+  1215	for _ssh_p in ${SSHD_PORTS}; do
+  1216	  ufw allow "${_ssh_p}/tcp"
+  1217	done
+  1218	# Eigene Altregel aus der limit-Ära entfernen – allow steht bereits, also
+  1219	# kein Augenblick ohne SSH-Regel. Nicht vorhanden = stiller No-Op.
+  1220	ufw --force delete limit 22/tcp > /dev/null 2>&1 || true
+  1221	
+  1222	# Nur die Nicht-Defaults setzen. Debian liefert selbst [sshd] enabled=true,
+  1223	# backend=systemd und journalmatch in jail.d/defaults-debian.conf sowie
+  1224	# maxretry=5/findtime=10m in jail.conf (am Test-Host geprueft 2026-10-03);
+  1225	# die Schluessel bleiben in unserer .local also aus, weil fail2ban sektionen-
+  1226	# uebergreifend pro Schluessel fusioniert. Fehlt die Debian-Datei, merkt der
+  1227	# Abschlusscheck "fail2ban-client status sshd" das (Jail antwortet nicht).
+  1228	# port traegt die im Preflight erkannten sshd-Ports (anders als Debian-Default
+  1229	# "ssh" = nur 22 wuerde ein Nicht-22-Port nie beobachtet).
+  1230	# B7: Eigene Jails in einen Drop-In unter jail.d/ legen.
+  1231	# Lese-Reihenfolge von fail2ban (man jail.conf):
+  1232	#   jail.conf -> jail.d/*.conf -> jail.local -> jail.d/*.local
+  1233	# Unser Dateiname faellt unter "jail.d/*.local" und hat damit VORRANG vor
+  1234	# einer Hand-angelegten jail.local – dort geschriebene Jails greifen also
+  1235	# NICHT. Deshalb WARN, solange jail.local existiert, statt sie still
+  1236	# anzutasten (ohne Produktion gibt es keine setup-eigene Alt-Datei).
+  1237	JAIL_DROPIN="/etc/fail2ban/jail.d/10-coder-sshd.local"
+  1238	if [ -f /etc/fail2ban/jail.local ]; then
+  1239	  warn "Vorgefunden: /etc/fail2ban/jail.local – unser Drop-In ${JAIL_DROPIN} hat laut Lese-Reihenfolge Vorrang, dort geschriebene Jails greifen nicht. Eigene Werte in den Drop-In übernehmen und jail.local entfernen."
+  1240	fi
+  1241	mkdir -p /etc/fail2ban/jail.d
+  1242	# bantime.increment verlängert Wiederholungssperren. ignoreip enthält NUR
+  1243	# Admin-Plätze (Default loopback); die Schul-NAT wird bewusst NICHT
+  1244	# eingetragen: Rateversuche aus dem
+  1245	# Schulnetz sollen sperren. Werte dauerhaft in setup.conf eintragen
+  1246	# (Schlüssel FAIL2BAN_IGNORE_IP, siehe setup.conf.example).
+  1247	write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<EOF
+  1248	[sshd]
+  1249	port     = ${SSHD_PORTS// /,}
+  1250	bantime  = 1h
+  1251	bantime.increment = true
+  1252	ignoreip = ${FAIL2BAN_IGNORE_IP}
+  1253	EOF
+  1254	# B13/A7e: hart starten, dann reloaden – die alte Annahme "restart verwirft
+  1255	# aktive Bans" war falsch: fail2ban stellt Bans beim (Neu-)Start aus seiner
+  1256	# SQLite-DB (Debian-Default dbfile aktiv) wieder her. Nach "enable --now"
+  1257	# braucht der Client einen Moment, deshalb wird der Reload bis 15 s wiederholt.
+  1258	systemctl enable --now fail2ban
+  1259	F2B_RELOADED=false
+  1260	for _ in $(seq 1 15); do
+  1261	  if fail2ban-client reload > /dev/null 2>&1; then
+  1262	    F2B_RELOADED=true
+  1263	    break
+  1264	  fi
+  1265	  sleep 1
+  1266	done
+  1267	if [ "${F2B_RELOADED}" = "false" ]; then
+  1268	  fail "fail2ban-Client antwortet nach 15 s nicht – prüfen mit: sudo fail2ban-client ping"
+  1269	  exit 1
+  1270	fi
+  1271	
+  1272	# B-007/A7b: Docker trägt für "ports:"-veröffentlichte Container-Ports
+  1273	# (80/443 von Caddy) eigene iptables-Regeln ein, die ufw für Zugriffe von
+  1274	# AUSSEN umgehen – dort bringen diese Regeln nichts. Für Zugriffe vom
+  1275	# Docker-Netz auf die Host-IP (z.B. Workspace-Agent -> CODER_ACCESS_URL) und
+  1276	# für IPv6 laufen sie aber über INPUT/docker-proxy und werden gebraucht,
+  1277	# deshalb bleiben sie stehen. Bindungsregel: neue "ports:"-Einträge NUR als
+  1278	# "127.0.0.1:<port>:<port>" – öffentliche Ports bleiben Caddy (80/443)
+  1279	# vorbehalten, Prometheus/node-exporter UND Grafana sind nur an 127.0.0.1
+  1280	# gebunden. SSH gilt nicht als Docker-Port: sshd ist ein Host-Dienst,
+  1281	# ufw/fail2ban greifen hier.
+  1282	ufw allow 80/tcp
+  1283	ufw allow 443/tcp
+  1284	ufw allow 443/udp
+  1285	# Grafana 3001: alte Quellregeln aus der "Schulnetz via ufw"-Ära entfernen
+  1286	# (Grafana ist loopback-gebunden,
+  1287	# eine ufw-Regel wäre nur noch eine Lug-Regel). Idempotent: nicht vorhanden =
+  1288	# stiller No-Op. Reihenfolge: Regeln löschen, dann unten "enable".
+  1289	for _spec in \
+  1290	  "from 10.0.0.0/8 to any port 3001 proto tcp" \
+  1291	  "from 172.16.0.0/12 to any port 3001 proto tcp" \
+  1292	  "from 192.168.0.0/16 to any port 3001 proto tcp" \
+  1293	  "3001/tcp"; do
+  1294	  # shellcheck disable=SC2086 # Wortaufteilung der ufw-Spezifikation ist Absicht
+  1295	  ufw --force delete allow ${_spec} > /dev/null 2>&1 || true
+  1296	done
+  1297	ufw --force enable
+  1298	ufw status verbose
+  1299	if grep -q '^IPV6=yes' /etc/default/ufw 2>/dev/null; then
+  1300	  ok "ufw-IPv6-Pfad deklariert: IPV6=yes (gleiche Policy für v4+v6)"
+  1301	else
+  1302	  warn "ufw-IPv6-Pfad unklar (kein IPV6=yes in /etc/default/ufw) – Dual-Stack-Annahme gilt nicht, prüfen mit: grep IPV6 /etc/default/ufw"
+  1303	fi
+  1304	
+  1305	UFW_STATUS="$(ufw status)"
+  1306	if grep -q "Status: active" <<< "${UFW_STATUS}"; then
+  1307	  ok "ufw ist aktiv"
+  1308	else
+  1309	  fail "ufw ist NICHT aktiv"
+  1310	fi
+  1311	# SSH: die im Preflight erkannten Ports müssen als ALLOW (Anywhere) stehen;
+  1312	# eine LIMIT-Regel erfüllt diesen Check nicht (D-SSH: ufw limit würde die geteilte
+  1313	# Schul-NAT drosseln, fail2ban ist der Brute-Force-Schutz) und Quellregeln
+  1314	# allein zahlen auch nicht – diese Firewall soll den Zugang nur nicht
+  1315	# versehentlich verschließen, die Netzgrenze liegt am Router.
+  1316	UFW_SSH_MISSING=""
+  1317	for _p in ${SSHD_PORTS}; do
+  1318	  if grep -qE "^${_p}/tcp[[:space:]]+ALLOW[[:space:]]+Anywhere" <<< "${UFW_STATUS}"; then
+  1319	    ok "SSH-Port ${_p}/tcp steht als ALLOW in ufw"
+  1320	  else
+  1321	    UFW_SSH_MISSING="${UFW_SSH_MISSING} ${_p}"
+  1322	  fi
+  1323	done
+  1324	if [ -n "${UFW_SSH_MISSING}" ]; then
+  1325	  fail "SSH-ALLOW-Regel fehlt in ufw für Port(s):${UFW_SSH_MISSING} – prüfen mit: sudo ufw status"
+  1326	fi
+  1327	# B13: ein einziger Check statt is-active/ping/Total-failed – "status sshd"
+  1328	# liefert nur Exit 0, wenn Dienst UND Jail antworten (der Reload-Retry oben
+  1329	# hat dem Client schon Zeit zum Hochfahren gegeben).
+  1330	if fail2ban-client status sshd > /dev/null 2>&1; then
+  1331	  ok "fail2ban-Jail 'sshd' antwortet (fail2ban-client status sshd Exit 0)"
+  1332	else
+  1333	  fail "fail2ban-Client oder Jail 'sshd' antwortet nicht – prüfen mit: sudo fail2ban-client status"
+  1334	fi
+  1335	# D-SSH/Policy: Passwort-Login für
+  1336	# normale Benutzer ausdrücklich erlaubt, root bleibt bei Schlüssel. Das
+  1337	# "von überall" hält die ufw-ALLOW-Regel oben; hier wird die sshd-Seite
+  1338	# aktiv gesetzt statt nur beobachtet. Validierung: sshd -T über die GESAMTE
+  1339	# Konfiguration (ein einzelner Drop-In ist kein vollständiger Config-Check).
+  1340	# Bei Fehlschlag: alten Inhalt wiederherstellen und abbrechen – nie mit
+  1341	# ungetesteter Datei neu laden.
+  1342	# Reihenfolge: sshd nimmt pro Keyword den ERSTEN Wert, Drop-ins werden
+  1343	# alphabetisch gelesen. 01-coder.conf schlägt jede 50-* -Datei (z.B.
+  1344	# cloud-init), das Härtungs-Snippet 00-coder-hardening.conf schlägt 01-coder
+  1345	# (Ziffernvergleich, keine Sonderzeichen-Abhängigkeit).
+  1346	SSHD_DROPIN="/etc/ssh/sshd_config.d/01-coder.conf"
+  1347	_SSHD_DROPIN_OLD="$(cat "${SSHD_DROPIN}" 2>/dev/null || true)"
+  1348	install -d -m 755 /etc/ssh/sshd_config.d
+  1349	write_managed "${SSHD_DROPIN}" 644 - <<'EOF'
+  1350	# Von setup-coder.sh erzeugt (D-SSH): SSH-Policy dieses Coder-Servers.
+  1351	# Passwort-Login für normale Benutzer ist bewusst erlaubt; Schutz gegen
+  1352	# Brute-Force: fail2ban (Jail sshd) plus ufw-allow (kein limit, Netzgrenze
+  1353	# am Router). Root nur per Schlüssel.
+  1354	PasswordAuthentication yes
+  1355	KbdInteractiveAuthentication yes
+  1356	PermitRootLogin prohibit-password
+  1357	EOF
+  1358	# Alt-Format 99-coder.conf: 99 sortierte hinter allem (50-cloud-init.conf
+  1359	# gewann), die Effekt-Checks unten hätten jeden Lauf rot. Nur unser eigenes
+  1360	# Alt-Drop-In entfernen (Markierung im Header), fremde 99-coder.conf nicht.
+  1361	if [ -f /etc/ssh/sshd_config.d/99-coder.conf ] \
+  1362	  && grep -qF 'Von setup-coder.sh erzeugt (D-SSH)' /etc/ssh/sshd_config.d/99-coder.conf; then
+  1363	  rm -f /etc/ssh/sshd_config.d/99-coder.conf
+  1364	  echo "Eigenes Alt-Drop-In 99-coder.conf entfernt (Neformat: 01-coder.conf)."
+  1365	fi
+  1366	if ! _SSHD_T_OUT="$(sshd -T 2>&1)"; then
+  1367	  echo "Fehler: sshd-Konfiguration nach dem Schreiben von ${SSHD_DROPIN} ist ungültig:" >&2
+  1368	  printf '%s\n' "${_SSHD_T_OUT}" >&2
+  1369	  if [ -n "${_SSHD_DROPIN_OLD}" ]; then
+  1370	    printf '%s\n' "${_SSHD_DROPIN_OLD}" > "${SSHD_DROPIN}"
+  1371	    echo "Alter Inhalt von ${SSHD_DROPIN} wiederhergestellt." >&2
+  1372	  else
+  1373	    rm -f "${SSHD_DROPIN}"
+  1374	    echo "${SSHD_DROPIN} entfernt (vorher nicht vorhanden)." >&2
+  1375	  fi
+  1376	  echo "Abbruch vor dem Reload – die laufende SSH-Sitzung bleibt unberührt." >&2
+  1377	  exit 1
+  1378	fi
+  1379	if systemctl is-active --quiet ssh; then
+  1380	  systemctl reload ssh
+  1381	else
+  1382	  warn "ssh-Dienst nicht aktiv – Drop-In geschrieben, Reload entfällt (lädt beim nächsten ssh-Start)"
+  1383	fi
+  1384	# Effekt-Check gegen die NEU geladene Konfiguration, nicht den Preflight-
+  1385	# Snapshot – sonst würde der Check die alte Welt bewerten.
+  1386	SSHD_EFFECTIVE_CONFIG="$(sshd -T 2>/dev/null || true)"
+  1387	ok "sshd-Policy gesetzt (${SSHD_DROPIN}: Passwort ja, KbdInteractive ja, root nur Schlüssel) und neu geladen"
+  1388	if grep -qi '^passwordauthentication yes' <<< "${SSHD_EFFECTIVE_CONFIG}" \
+  1389	  && grep -qi '^kbdinteractiveauthentication yes' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
+  1390	  ok "SSH-Passwort-Login erlaubt (PasswordAuthentication/KbdInteractiveAuthentication yes)"
+  1391	else
+  1392	  fail "SSH-Passwort-Login NICHT aktiv (erwartet yes in ${SSHD_DROPIN}) – prüfen mit: sudo sshd -T | grep -iE 'passwordauthentication|kbdinteractive' (Vorrang anderer Drop-Ins?)"
+  1393	fi
+  1394	# root per Passwort von ueberall waere ein Upgrade-Pfad jeden
+  1395	# Brute-Forces – unser Drop-In schreibt prohibit-password; Warnung fängt
+  1396	# Vorrang fremder Drop-Ins/Altkonfiguration ab.
+  1397	if grep -qi '^permitrootlogin yes' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
+  1398	  warn "PermitRootLogin yes wirkt (Vorrang vor ${SSHD_DROPIN}) – bei Passwort-SSH von überall nicht tragbar. Andere Drop-Ins unter /etc/ssh/sshd_config.d prüfen, prohibit-password durchsetzen, sshd -t, reload."
+  1399	else
+  1400	  ok "PermitRootLogin erlaubt kein root-Passwort-Login (prohibit-password/without-password)"
+  1401	fi
+  1402	# Anker ^ am Zeilenanfang: "443/tcp" soll nicht "8443/tcp" treffen, und die
+  1403	# Spaltenabfolge verhindert, dass "22/tcp" von einer ganz anderen Regel kommt.
+  1404	if grep -qE '^80/tcp[[:space:]]' <<< "${UFW_STATUS}"; then
+  1405	  ok "Port 80/tcp ist in ufw freigegeben"
+  1406	else
+  1407	  fail "Port 80/tcp fehlt in ufw"
+  1408	fi
+  1409	if grep -qE '^443/tcp[[:space:]]' <<< "${UFW_STATUS}"; then
+  1410	  ok "Port 443/tcp ist in ufw freigegeben"
+  1411	else
+  1412	  fail "Port 443/tcp fehlt in ufw"
+  1413	fi
+  1414	if grep -qE '^443/udp[[:space:]]' <<< "${UFW_STATUS}"; then
+  1415	  ok "Port 443/udp ist in ufw freigegeben (HTTP/3)"
+  1416	else
+  1417	  fail "Port 443/udp fehlt in ufw"
+  1418	fi
+  1419	# Grafana 3001: bewusst KEINE
+  1420	# ufw-Regel – Loopback-Bindung ist der Schutz; eine stehengebliebene Altregel
+  1421	# wäre eine Lug-Regel (behauptet "Schulnetz-Schutz", den Docker ohnehin
+  1422	# umgeht) und wird oben bereits idempotent gelöscht.
+  1423	if grep -qE '^3001/tcp[[:space:]]' <<< "${UFW_STATUS}"; then
+  1424	  warn "Altregel 3001/tcp steht noch in ufw (Löschen oben fehlgeschlagen?) – überflüssig, Grafana ist nur an 127.0.0.1 gebunden. Prüfen: sudo ufw status"
+  1425	else
+  1426	  ok "keine ufw-Regel für 3001 (Grafana nur 127.0.0.1, per SSH-Tunnel erreichbar)"
+  1427	fi
+  1428	
+  1429	echo "############################################################"
+  1430	echo "# [5/7] Automatische Sicherheitsupdates einrichten"
+  1431	echo "############################################################"
+  1432	apt_install unattended-upgrades
+  1433	
+  1434	# Nicht-interaktive Aktivierung statt "dpkg-reconfigure -plow" (Dialog).
+  1435	# Schreibt /etc/apt/apt.conf.d/20auto-upgrades.
+  1436	echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections
+  1437	dpkg-reconfigure -f noninteractive unattended-upgrades
+  1438	
+  1439	# Eigene Datei statt Änderung an der von dpkg verwalteten 50unattended-upgrades
+  1440	# (die würde beim nächsten Paket-Update sonst zu einem Konflikt-Dialog führen).
+  1441	write_managed "/etc/apt/apt.conf.d/52-coder-reboot" 644 "52-coder-reboot" <<'EOF'
+  1442	// Automatischer Neustart bei Kernel-Updates, nachts um 03:00 Uhr.
+  1443	// B-011/D-Reboot-Fenster: 03:00 ist Default, kein abgestimmtes Betriebsfenster.
+  1444	// Vor Produktionsfreigabe mit Schulbetrieb abstimmen + im Wartungsplan
+  1445	// hinterlegen (laufende Workspaces/Sessions werden abgerissen).
+  1446	Unattended-Upgrade::Automatic-Reboot "true";
+  1447	Unattended-Upgrade::Automatic-Reboot-Time "03:00";
+  1448	EOF
+  1449	
+  1450	APT_UU_CONFIG="$(apt-config dump 2>/dev/null || true)"
+  1451	# unattended-upgrades ist auf Debian ein oneshot-Service, den
+  1452	# apt-daily-upgrade.timer anstößt – geprüft wird der Timer (aktiv +
+  1453	# enabled), dazu die APT::Periodic-Zeile oben.
+  1454	if systemctl is-active --quiet apt-daily-upgrade.timer \
+  1455	  && systemctl is-enabled --quiet apt-daily-upgrade.timer; then
+  1456	  ok "apt-daily-upgrade.timer aktiv und enabled (stößt unattended-upgrades an)"
+  1457	else
+  1458	  fail "apt-daily-upgrade.timer läuft nicht/enabled fehlt – automatische Updates greifen nicht (systemctl status apt-daily-upgrade.timer)"
+  1459	fi
+  1460	if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && \
+  1461	   grep -qF 'APT::Periodic::Unattended-Upgrade "1";' <<< "${APT_UU_CONFIG}"; then
+  1462	  ok "Automatische Update-Prüfung ist aktiviert"
+  1463	else
+  1464	  fail "Automatische Update-Prüfung (20auto-upgrades) fehlt oder ist deaktiviert"
+  1465	fi
+  1466	if grep -qF 'Unattended-Upgrade::Automatic-Reboot "true";' <<< "${APT_UU_CONFIG}" && grep -qF 'Unattended-Upgrade::Automatic-Reboot-Time "03:00";' <<< "${APT_UU_CONFIG}"; then
+  1467	  ok "Automatischer Neustart um 03:00 Uhr ist konfiguriert"
+  1468	else
+  1469	  fail "Reboot-Konfiguration (52-coder-reboot) fehlt"
+  1470	fi
+  1471	
+  1472	echo "############################################################"
+  1473	echo "# [6/7] Tägliches Datenbank-Backup einrichten"
+  1474	echo "############################################################"
+  1475	
+  1476	# F-009(a): ohne Cron-Daemon läuft nie ein Backup, das Setup meldete trotzdem
+  1477	# [OK]. Das Paket wurde bereits in Schritt 1 installiert; hier werden die
+  1478	# geordneten Eintraege aktiviert.
+  1479	# "enable --now": enable ist idempotent, start ist No-Op wenn aktiv (kein
+  1480	# Ban-Verlust wie bei fail2ban-restart, P-025 betrifft nur fail2ban).
+  1481	systemctl enable --now cron
+  1482	
+  1483	# /etc/cron.d/ statt "crontab -l | ... | crontab -": eine einzelne,
+  1484	# nachvollziehbare Datei statt fragilem Parsen/Überschreiben der gesamten
+  1485	# Root-Crontab (Risiko, versehentlich andere Einträge zu verlieren). Das
+  1486	# Format braucht hier zusätzlich das Benutzerfeld ("root") vor dem Befehl.
+  1487	# B-001: KEIN äußeres flock in der Cron-Zeile – backup.sh hält seine beiden
+  1488	# Locks selbst und wartet darauf bis zu 300 s. Ein äußeres
+  1489	# "flock" auf derselben Datei würde den inneren Lauf bis zum Timeout sperren
+  1490	# (Exit 75, kein Backup). Absolute Pfade (P-017).
+  1491	write_managed "/etc/cron.d/coder-backup" 644 "coder-backup-Cron" <<'EOF'
+  1492	0 1 * * * root /opt/coder/backup.sh >> /var/log/coder-backup.log 2>&1
+  1493	EOF
+  1494	
+  1495	# P-007: Backup-Log ohne Rotation wächst als Root-Log unbegrenzt.
+  1496	write_managed "/etc/logrotate.d/coder-backup" 644 "coder-backup-logrotate" <<'EOF'
+  1497	/var/log/coder-backup.log {
+  1498	    weekly
+  1499	    rotate 8
+  1500	    compress
+  1501	    missingok
+  1502	    notifempty
+  1503	    copytruncate
+  1504	}
+  1505	EOF
+  1506	
+  1507	# C4/Update: überflüssige Logrotate-Datei entfernen (coder-backup.log hat
+  1508	# eine eigene Datei).
+  1509	rm -f /etc/logrotate.d/coder-logs
+  1510	
+  1511	if systemctl is-active --quiet cron; then
+  1512	  ok "Cron-Daemon läuft (sonst liefe nie ein Backup)"
+  1513	else
+  1514	  fail "Cron-Daemon läuft NICHT – Backups würden still nie laufen"
+  1515	fi
+  1516	if logrotate -d /etc/logrotate.conf >/dev/null 2>&1; then
+  1517	  ok "Logrotate-Konfiguration ist syntaktisch gültig"
+  1518	else
+  1519	  fail "Logrotate-Konfiguration ist ungültig – prüfen mit: sudo logrotate -d /etc/logrotate.conf"
+  1520	fi
+  1521	
+  1522	# B21: Testlauf nur, solange noch KEIN Backup existiert – bei Re-Run lief das
+  1523	# Pre-Upgrade-Backup (Schritt 3) bereits, ein zweiter Voll-Dump pro Lauf ist
+  1524	# überflüssig. Erstmaliger Aufbau testet also, jeder spätere Lauf nicht.
+  1525	if ls /opt/coder/backups/coder_*.sql.gz > /dev/null 2>&1; then
+  1526	  echo "Vorhandene Backups unter /opt/coder/backups – Backup-Testlauf übersprungen."
+  1527	else
+  1528	  echo "Teste Backup einmal direkt..."
+  1529	  # Zusätzliche Absicherung: "condition: service_healthy" in der
+  1530	  # docker-compose.yml sorgt zwar schon dafür, dass "docker compose up -d" in
+  1531	  # Schritt 3 auf einen gesunden Postgres wartet, bevor es zurückkehrt - falls
+  1532	  # das auf einer sehr langsamen Platte trotzdem einmal nicht reicht, wartet
+  1533	  # diese Schleife hier zusätzlich bis zu 60 Sekunden, statt einen falschen
+  1534	  # Alarm zu melden.
+  1535	  for _ in $(seq 1 30); do
+  1536	    [ "$(docker inspect -f '{{.State.Health.Status}}' coder-postgres 2>/dev/null)" = "healthy" ] && break
+  1537	    sleep 2
+  1538	  done
+  1539	  if env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
+  1540	    LATEST_BACKUP=$(ls -t /opt/coder/backups/coder_*.sql.gz 2>/dev/null | head -n1 || true)
+  1541	    if [ -n "${LATEST_BACKUP:-}" ]; then
+  1542	      ok "Testlauf erfolgreich, Backup-Datei angelegt: ${LATEST_BACKUP}"
+  1543	    else
+  1544	      fail "backup.sh lief ohne Fehler, aber es wurde keine Backup-Datei gefunden"
+  1545	    fi
+  1546	  else
+  1547	    fail "Testlauf von backup.sh ist fehlgeschlagen (z. B. weil Postgres noch nicht bereit war)"
+  1548	  fi
+  1549	fi
+  1550	
+  1551	# B-008: Runbook auf dem Server ablegen, damit Verweise ("/opt/coder" auf dem
+  1552	# Server) dort auflösen. SETUP_DIR ist vor dem cd nach /opt/coder berechnet.
+  1553	if [ -f "${SETUP_DIR}/RESTORE.md" ]; then
+  1554	  cp -a "${SETUP_DIR}/RESTORE.md" /opt/coder/RESTORE.md
+  1555	  chmod 644 /opt/coder/RESTORE.md
+  1556	  ok "Runbook nach /opt/coder/RESTORE.md abgelegt"
+  1557	else
+  1558	  warn "RESTORE.md liegt nicht neben setup-coder.sh – kein Runbook auf Server abgelegt"
+  1559	fi
+  1560	
+  1561	echo "############################################################"
+  1562	echo "# [7/7] Abschlusscheck & Zusammenfassung"
+  1563	echo "############################################################"
+  1564	
+  1565	# Alte Hashstore-Datei aus der Drift-Ära (B-012, entfernt 2026-10-03)
+  1566	# still entfernen – kein Verfahren hängt mehr daran.
+  1567	rm -f /opt/coder/.generated-hashes
+  1568	
+  1569	check_container_running "coder-postgres" "Postgres-Container"
+  1570	check_container_running "coder" "Coder-Container"
+  1571	check_container_running "coder-caddy" "Caddy-Container"
+  1572	check_container_running "coder-prometheus" "Prometheus-Container"
+  1573	check_container_running "coder-node-exporter" "Node-Exporter-Container"
+  1574	check_container_running "coder-grafana" "Grafana-Container"
+  1575	
+  1576	# F-007/P-012: "Container läuft" beweist keinen Socket-Zugriff. Host-seitige
+  1577	# Probe (kein Tool im Coder-Image vorausgesetzt): GroupAdd des Containers muss
+  1578	# die aktuelle docker-GID enthalten, sonst "Permission denied" auf
+  1579	# /var/run/docker.sock und keine Workspace-Provisionierung. Volltreffer in
+  1580	# JSON-Schreiben ("999"), kein Teilsting-Match: 99 dürfte nicht auf "999"
+  1581	# passen und fälschlich [OK] melden.
+  1582	if CODER_GROUPS=$(docker inspect --format '{{json .HostConfig.GroupAdd}}' coder 2>/dev/null); then
+  1583	  if [ -n "${DOCKER_GID:-}" ] && grep -q "\"${DOCKER_GID}\"" <<< "${CODER_GROUPS}"; then
+  1584	    ok "Coder-Container hat docker-GID ${DOCKER_GID} (Socket-Zugriff konfiguriert)"
+  1585	  else
+  1586	    fail "Coder-Container GroupAdd (${CODER_GROUPS}) enthält docker-GID ${DOCKER_GID:-?} NICHT – Socket-Zugriff prüfen (F-007)"
+  1587	  fi
+  1588	else
+  1589	  warn "Socket-Probe nicht möglich (coder-Container nicht inspizierbar)"
+  1590	fi
+  1591	
+  1592	# A7: Zwei getrennte Proben, damit ein Misserfolg eindeutig zugeordnet werden
+  1593	# kann. Beide laufen immer (Zuweisung jeweils DIREKT in der if-Bedingung –
+  1594	# nur dort greift set -e nicht; eine eigene "VAR=$(curl ...)"-Zeile davor
+  1595	# hätte das Skript beim ersten Fehlschlag beendet).
+  1596	#
+  1597	# (a) LOKALER Pfad: --resolve zwingt die Verbindung auf 127.0.0.1 und macht
+  1598	#     die Probe damit unabhängig von öffentlichem DNS und Hairpin-NAT – sie
+  1599	#     prüft präzise das, was auf diesem Host läuft (Caddy-TLS, Reverse-Proxy,
+  1600	#     Coder). 6 Versuche à max. 10 s mit 5 s Pause (curl-Budget 60 s,
+  1601	#     schlimmstenfalls 85 s), weil Caddy beim Erstlauf noch ein Zertifikat
+  1602	#     beantragen muss und das nicht in der ersten Sekunde fertig ist.
+  1603	#     Die Wiederholung bricht ab, sobald 200 kam oder lokal kein DNS-Eintrag
+  1604	#     existiert (dann ist nichts zu wiederholen – die Diagnose unten greift).
+  1605	#     /healthz statt der Startseite: dedizierter, dokumentierter Endpunkt.
+  1606	# (b) ÖFFENTLICHER Pfad: nur EIN Versuch, ohne --resolve, also über den
+  1607	#     echten DNS-Eintrag und den echten, von außen beschrittenen Weg.
+  1608	#     Lief (a) grün und (b) nicht, ist die Ursache Netz, nicht Code:
+  1609	#     Portweiterleitung/Reverse-Proxy im Schulnetz oder Hairpin-NAT – deshalb
+  1610	#     WARN statt Fail (Kopfprinzip: das Setup startet trotzdem).
+  1611	_try=0
+  1612	HTTP_CODE="000"
+  1613	while [ "${_try}" -lt 6 ] && [ "${HTTP_CODE}" != "200" ]; do
+  1614	  _try=$((_try + 1))
+  1615	  if HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+  1616	      --resolve "${DOMAIN_CODER}:443:127.0.0.1" "https://${DOMAIN_CODER}/healthz" 2>/dev/null); then
+  1617	    : # Antwort kam an, der HTTP-Code steht in HTTP_CODE
+  1618	  else
+  1619	    HTTP_CODE="000"
+  1620	  fi
+  1621	  if [ "${HTTP_CODE}" = "200" ] || [ "${_try}" -ge 6 ]; then
+  1622	    break
+  1623	  fi
+  1624	  if ! getent hosts "${DOMAIN_CODER}" > /dev/null 2>&1; then
+  1625	    break
+  1626	  fi
+  1627	  sleep 5
+  1628	done
+  1629	LOCAL_CODE="${HTTP_CODE}"
+  1630	
+  1631	if [ "${LOCAL_CODE}" = "200" ]; then
+  1632	  if PUB_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://${DOMAIN_CODER}/healthz" 2>/dev/null); then
+  1633	    : # Antwort kam an
+  1634	  else
+  1635	    PUB_CODE="000"
+  1636	  fi
+  1637	  if [ "${PUB_CODE}" = "200" ]; then
+  1638	    ok "https://${DOMAIN_CODER}/healthz antwortet lokal UND öffentlich mit HTTP 200 – Let's-Encrypt-Zertifikat ausgestellt, Coder erreichbar"
+  1639	  else
+  1640	    warn "https://${DOMAIN_CODER}/healthz antwortet auf dem Server (127.0.0.1) mit 200, über den öffentlichen Weg aber nicht (Code: ${PUB_CODE}). Das ist kein Skriptfehler: Portweiterleitung 80/443 oder Reverse-Proxy im Schulnetz fehlt, oder der eingehende Weg wird von einem Hairpin-NAT geblockt. Prüfen mit: getent hosts ${DOMAIN_CODER}; von außen: curl -sI https://${DOMAIN_CODER}/healthz"
+  1641	  fi
+  1642	elif getent hosts "${DOMAIN_CODER}" > /dev/null 2>&1; then
+  1643	  warn "${DOMAIN_CODER} löst lokal auf, aber https://${DOMAIN_CODER}/healthz antwortet nicht mit HTTP 200 (lokaler Pfad, Code: ${LOCAL_CODE} nach ${_try} Versuchen). Mögliche Ursachen: Portweiterleitung 80/443 fehlt noch, oder Zertifikat noch nicht ausgestellt. Prüfen mit: sudo docker compose -f /opt/coder/docker-compose.yml logs caddy"
+  1644	else
+  1645	  warn "DNS: ${DOMAIN_CODER} löst noch nicht auf. Normal, solange DNS-Eintrag und Portweiterleitung/Reverse Proxy im Schulnetz noch nicht stehen – Skript nach der Einrichtung einfach erneut laufen lassen."
+  1646	fi
+  1647	
+  1648	# B-019: Wildcard-Probe getrennt von Apex, immer WARN (nie Fail – Setup soll bei
+  1649	# fehlender Weiterleitung starten, Kopfprinzip). Nur DNS-Resolve einer zufälligen
+  1650	# Subdomain (kein TLS-Handshake, kein LE-Budget). Limit: lokaler Resolver statt
+  1651	# autoritativem Server (kein dig garantiert); Negativprobe: fehlt Wildcard, kommt
+  1652	# WARN statt grünem Gesamt-OK. App-Smoke (T-124) erst nach erstem Workspace.
+  1653	WILDCARD_PROBE="setup-probe-${RANDOM}.${DOMAIN_CODER}"
+  1654	if getent hosts "${WILDCARD_PROBE}" > /dev/null 2>&1; then
+  1655	  ok "Wildcard-DNS löst auf (*.${DOMAIN_CODER} via ${WILDCARD_PROBE})"
+  1656	else
+  1657	  warn "Wildcard-DNS fehlt (*.${DOMAIN_CODER} löst nicht auf, Probe ${WILDCARD_PROBE}) – Workspace-Apps/Port-Forwarding scheitern, Apex-OK gilt NICHT für Apps. DNS-Wildcard-Eintrag setzen, dann Setup erneut."
+  1658	fi
+  1659	
+  1660	# B2: rein lesend, KEINE Nutzer-Erzwinge-Erstellung. Coder vergibt dem ersten
+  1661	# menschlichen Konto automatisch Owner-Rechte, das ist so vorgesehen – ein
+  1662	# "create-admin-user" erzwungen durch das Setup wäre versionseitig fragil und
+  1663	# würde bei Re-Runs auf einem schon benutzten Server nichts ändern (können).
+  1664	# Geprüft wird nur, ob ein menschliches Konto existiert; "prebuilds" und
+  1665	# künftige Systemkonten sind per COALESCE-Ausschluss keine Treffer.
+  1666	HUMAN_USERS="$(docker exec coder-postgres psql -U coder -d coder -tAc \
+  1667	  "SELECT count(*) FROM users AS u WHERE NOT COALESCE((to_jsonb(u)->>'is_system')::boolean,false) AND NOT COALESCE((to_jsonb(u)->>'is_service_account')::boolean,false) AND NOT COALESCE((to_jsonb(u)->>'deleted')::boolean,false)" 2>/dev/null || true)"
+  1668	# B1: optional die Erstanlage DURCH DAS SETUP, solange kein Konto existiert –
+  1669	# sonst würde der erste zufällige Aufrufer der Anmeldeseite Owner. Nur aktiv,
+  1670	# wenn der Betreiber E-Mail und Benutzername setzt (sonst unverändertes
+  1671	# Verhalten). A4: das Passwort kommt NIEMALS auf die Kommandozeile (sonst
+  1672	# läge es in bash_history, sudo-Log und ps): ohne gesetzte Variable wird es
+  1673	# hier interaktiv abgefragt (read -rs), Übergabe in den Container läuft
+  1674	# weiterhin per stdin (derselbe Weg wie der ALTER-USER unten).
+  1675	if [ "${HUMAN_USERS}" = "0" ] \
+  1676	  && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
+  1677	  && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
+  1678	  && [ -z "${CODER_FIRST_USER_PASSWORD:-}" ] \
+  1679	  && [ -t 0 ]; then
+  1680	  read -rs -p "Erstkonto: Passwort für '${CODER_FIRST_USER_USERNAME}' eingeben (leer lassen = im Browser anlegen): " \
+  1681	    CODER_FIRST_USER_PASSWORD || CODER_FIRST_USER_PASSWORD=""
+  1682	  echo ""
+  1683	fi
+  1684	if [ "${HUMAN_USERS}" = "0" ] \
+  1685	  && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
+  1686	  && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
+  1687	  && [ -n "${CODER_FIRST_USER_PASSWORD:-}" ]; then
+  1688	  if FIRST_OUT=$(printf '%s\n' "${CODER_FIRST_USER_PASSWORD}" | \
+  1689	      docker exec -i \
+  1690	        -e CODER_CONFIG_DIR=/tmp/coder-firstuser \
+  1691	        -e CODER_FIRST_USER_EMAIL="${CODER_FIRST_USER_EMAIL}" \
+  1692	        -e CODER_FIRST_USER_USERNAME="${CODER_FIRST_USER_USERNAME}" \
+  1693	        -e CODER_FIRST_USER_FULL_NAME="${CODER_FIRST_USER_FULL_NAME:-}" \
+  1694	        coder sh -c 'IFS= read -r P
+  1695	          export CODER_FIRST_USER_PASSWORD="$P"
+  1696	          exec coder login http://127.0.0.1:3000 --first-user-trial=false ${CODER_FIRST_USER_FULL_NAME:+--first-user-full-name "$CODER_FIRST_USER_FULL_NAME"}' 2>&1); then
+  1697	    ok "Erstkonto (Owner) angelegt: ${CODER_FIRST_USER_USERNAME}"
+  1698	  else
+  1699	    warn "Erstkonto NICHT angelegt: $(printf '%s' "${FIRST_OUT}" | tr '\n' ' ' | tail -c 300) – Konto manuell auf der Anmeldeseite anlegen, bevor die URL weitergegeben wird"
+  1700	  fi
+  1701	  # Das CLI-Session-Token liegt in diesem isolierten Config-Verzeichnis.
+  1702	  # Nach Erfolg wie Fehler entfernen; der bestehende Coder-Config-Ordner bleibt
+  1703	  # unberuehrt.
+  1704	  docker exec coder rm -rf -- /tmp/coder-firstuser >/dev/null 2>&1 || \
+  1705	    warn "Temporäres Coder-Login-Verzeichnis konnte nicht entfernt werden; manuell löschen: docker exec coder rm -rf /tmp/coder-firstuser"
+  1706	fi
+  1707	case "${HUMAN_USERS}" in
+  1708	  '')
+  1709	    warn "Nutzeranzahl nicht lesbar (coder-postgres/psql nicht erreichbar) – B2-Check übersprungen" ;;
+  1710	  0)
+  1711	    echo ""
+  1712	    echo "HINWEIS: Noch kein Nutzerkonto vorhanden. Der erste Anmeldende"
+  1713	    echo "wird automatisch Owner (Administrator) dieses Coder-Servers – die"
+  1714	    echo "Anmeldeseite daher nicht unkontrolliert weitergeben, bevor das erste"
+  1715	    echo "Konto angelegt ist. Danach ein zweites Owner-Konto anlegen, damit die"
+  1716	    echo "Administration nicht an einem Zugang hängt (siehe OPERATIONS.md)."
+  1717	    echo "" ;;
+  1718	  *)
+  1719	    ok "${HUMAN_USERS} Nutzerkonto/-konten vorhanden" ;;
+  1720	esac
+  1721	
+  1722	echo ""
+  1723	echo "============================================================"
+  1724	echo " Zusammenfassung"
+  1725	echo "============================================================"
+  1726	for line in "${SUMMARY[@]}"; do
+  1727	  echo "  ${line}"
+  1728	done
+  1729	echo "============================================================"
+  1730	echo ""
+  1731	echo "Coder-URL (sobald DNS + Portweiterleitung stehen): https://${DOMAIN_CODER}"
+  1732	echo "Workspace-Apps/Port-Forwarding brauchen zusätzlich den Wildcard-DNS-Eintrag"
+  1733	echo "*.${DOMAIN_CODER} -> öffentliche Server-IP (siehe README.md)."
+  1734	echo "Neue Releases: Pin in setup-coder.sh (Versions-Variablen) ändern und"
+  1735	echo "das Setup erneut ausführen. Docker-Engine-Updates sind separat und manuell."
+  1736	echo "Grafana: nur 127.0.0.1:3001 (Login admin), Zugang per SSH-Tunnel: ssh -L 3001:127.0.0.1:3001 <user>@<server>, dann http://127.0.0.1:3001"
+  1737	
+  1738	if [ "${ERROR_COUNT}" -gt 0 ]; then
+  1739	  echo ""
+  1740	  echo "${ERROR_COUNT} [FEHLER]-Eintrag/-Einträge in der Zusammenfassung oben – bitte prüfen."
+  1741	  exit 1
+  1742	fi
+===== scripts/backup.sh =====
+     1	#!/bin/bash
+     2	# Tägliches Postgres-Backup (F-005/F-008/F-009, mit P-013/P-017-Korrekturen).
+     3	# Aufruf: /opt/coder/backup.sh (direkt, per Cron, aus dem Setup-Pre-Upgrade-
+     4	# bzw. Test-Lauf oder aus reset-coder.sh).
+     5	# Gleichzeitige Läufe werden per flock serialisiert: der zweite Lauf WARTET
+     6	# bis zu 300 s und fertigt danach ein eigenes Backup an, statt die Datei des
+     7	# ersten per ">" zu trunkieren (F-009). Läuft der Vorgänger länger, gibt es
+     8	# Exit 75 (EX_TEMPFAIL) statt des alten Exit 0.
+     9	# A3: Exit 0 war der Fehler – "übersprungen" wurde als Erfolg gewertet und
+    10	# ein Update/Reset lief trotz fehlendem Backup weiter. Heute liefern alle
+    11	# Ausstiege (Lock-Timeout, Wartungs-Lock, Postgres nicht bereit) ≠0; die
+    12	# Aufrufer (Setup, reset-coder.sh) brechen bei ≠0 mit set -e bzw. eigener
+    13	# Prüfung korrekt ab.
+    14	# Der gemeinsame Lock unten verhindert, dass ein eigenständiges Backup mit
+    15	# Update, Passwortwechsel oder Reset überlappt. pg_dump selbst liefert zudem
+    16	# einen konsistenten Snapshot.
+    17	set -euo pipefail
+    18	umask 077
+    19	# Cron-PATH ist minimal (/usr/bin:/bin): explizit setzen (P-017), damit
+    20	# docker/gzip/date/flock/logger/df/stat gefunden werden.
+    21	export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    22	BACKUP_DIR="/opt/coder/backups"
+    23	TIMESTAMP=$(date +%Y-%m-%d_%H%M%S)
+    24	mkdir -p "${BACKUP_DIR}"
+    25	
+    26	# Gemeinsamer Wartungs-Lock: ein eigenständiges Backup wartet ebenfalls auf
+    27	# Update/Passwortwechsel/Reset. Von diesen Skripten geerbtes FD 8 hält den
+    28	# Lock bereits; das Marker-Env verhindert einen Selbst-Deadlock beim Backup-
+    29	# Aufruf aus einem Wartungsskript. Der separate Backup-Lock schützt weiterhin
+    30	# zwei Backup-Aufrufe.
+    31	if [ "${CODER_MAINTENANCE_LOCK_HELD:-}" != "1" ]; then
+    32	  (umask 077; : >> /opt/coder/.maintenance.lock)
+    33	  chown root:root /opt/coder/.maintenance.lock
+    34	  chmod 600 /opt/coder/.maintenance.lock
+    35	  exec 8>>/opt/coder/.maintenance.lock
+    36	  if ! flock -w 300 8; then
+    37	    echo "backup.sh: gemeinsamer Wartungs-Lock nach 300 s nicht erhalten; kein Backup angelegt." >&2
+    38	    logger -t coder-backup "Wartungs-Lock-Timeout nach 300 s, kein Backup angelegt" || true
+    39	    exit 75
+    40	  fi
+    41	  export CODER_MAINTENANCE_LOCK_HELD=1
+    42	fi
+    43	
+    44	# Zusätzlicher Selbst-Lock (.backup.lock, B-001): schützt Cron-, Setup-
+    45	# Pre-Backup- und manuelle Läufe gemeinsam. Der Wartungs-Lock oben verhindert
+    46	# zusätzlich Kollisionen mit verändernden Abläufen. Die Cron-Zeile enthält bewusst
+    47	# KEIN äußeres flock auf derselben Datei (würde den inneren Lauf bis zum
+    48	# Timeout sperren -> Exit 75 ohne Backup).
+    49	exec 9>"${BACKUP_DIR}/.backup.lock"
+    50	if ! flock -w 300 9; then
+    51	  LATEST_SKIP=$(ls -t "${BACKUP_DIR}"/coder_*.sql.gz 2>/dev/null | head -n1 || true)
+    52	  if [ -n "${LATEST_SKIP:-}" ]; then
+    53	    echo "backup.sh: Lock nach 300 s nicht erhalten, kein Backup angelegt (Lock ${BACKUP_DIR}/.backup.lock). Letztes gültiges Backup: ${LATEST_SKIP} ($(stat -c %y "${LATEST_SKIP}" 2>/dev/null || echo unbekannt))." >&2
+    54	    logger -t coder-backup "Lock-Timeout nach 300 s, kein neues Backup; letztes gültiges Backup: ${LATEST_SKIP}" || true
+    55	  else
+    56	    echo "backup.sh: Lock nach 300 s nicht erhalten, kein Backup angelegt (Lock ${BACKUP_DIR}/.backup.lock). KEIN gültiges Backup vorhanden!" >&2
+    57	    logger -t coder-backup "Lock-Timeout nach 300 s, KEIN gültiges Backup vorhanden" || true
+    58	  fi
+    59	  # 75 = EX_TEMPFAIL: kein Erfolg, kein Datenverlust – aber die Aufrufer
+    60	  # (Setup, reset-coder.sh) sollen EXPLIZIT abbrechen.
+    61	  exit 75
+    62	fi
+    63	
+    64	# B-016: stale Orphan-Sweep (nur eigenes Muster, älter als 24 h). SIGKILL/Reboot
+    65	# umgehen trap EXIT – ohne Sweep blieben .tmp.*-Orphans (600/root) ewig liegen.
+    66	find "${BACKUP_DIR}" -maxdepth 1 \( -name 'coder_*.sql.gz.tmp.*' -o -name 'coder.env.tmp.*' \) -mmin +1440 -delete 2>/dev/null || true
+    67	
+    68	# .env-Kopie (alle Passwörter) mit ins Backup-Verzeichnis: ohne sie wäre nur
+    69	# Pfad B (Neuaufbau mit neuen Passwörtern) möglich. Atomar ersetzt, 600 im
+    70	# 700er Verzeichnis – geschützter als die Original-.env im 755er /opt/coder.
+    71	# Kein Zeitstempel im Namen: der aktuelle Stand reicht, Rotation entfällt.
+    72	if [ -f /opt/coder/.env ]; then
+    73	  install -m 600 /opt/coder/.env "${BACKUP_DIR}/coder.env.tmp.$$"
+    74	  mv -f "${BACKUP_DIR}/coder.env.tmp.$$" "${BACKUP_DIR}/coder.env"
+    75	else
+    76	  echo "Warnung: /opt/coder/.env fehlt – keine .env-Kopie in ${BACKUP_DIR} angelegt." >&2
+    77	fi
+    78	
+    79	# Mindestplatz vor dem Dump (P-007/B-015): klar abbrechen statt partieller Datei.
+    80	# 500-MB-Bodenwert ist konservativ, aber UNVERMESSEN (kein Ersatz für
+    81	# Platten-Monitoring; retention.size/check.sh erst nach Messung, D-Monitoring).
+    82	# df selbst schlägt fehl -> ABBRUCH,
+    83	# nicht stumm weiter (sonst läuft der Dump ohne Platzprüfung in die ENOSPC).
+    84	MIN_FREE_BYTES=524288000
+    85	if FREE_BYTES=$(df --output=avail -B1 "${BACKUP_DIR}" 2>/dev/null | tail -n1 | tr -d ' '); then
+    86	  if [ "${FREE_BYTES}" -lt "${MIN_FREE_BYTES}" ]; then
+    87	    echo "backup.sh: zu wenig freier Platz in ${BACKUP_DIR} (${FREE_BYTES} < ${MIN_FREE_BYTES} Bytes), Abbruch ohne Datei." >&2
+    88	    logger -t coder-backup "FEHLGESCHLAGEN: zu wenig Platz (${FREE_BYTES} Bytes frei)" || true
+    89	    exit 1
+    90	  fi
+    91	else
+    92	  echo "backup.sh: freier Platz in ${BACKUP_DIR} konnte nicht ermittelt werden (df fehlgeschlagen), Abbruch ohne Datei." >&2
+    93	  logger -t coder-backup "FEHLGESCHLAGEN: df konnte freien Platz nicht ermitteln" || true
+    94	  exit 1
+    95	fi
+    96	
+    97	FINAL="${BACKUP_DIR}/coder_${TIMESTAMP}.sql.gz"
+    98	TMP="${FINAL}.tmp.$$"
+    99	# Räumt bei Abbruch (inkl. ENOSPC mitten im Stream) auf: nie partielle
+   100	# Finaldatei (F-005). Gleiche Partition, daher atomares mv unten.
+   101	cleanup() { rm -f "${TMP}"; }
+   102	trap cleanup EXIT
+   103	
+   104	if docker exec coder-postgres pg_dump -U coder coder | gzip > "${TMP}"; then
+   105	  :
+   106	else
+   107	  echo "backup.sh: pg_dump-Pipeline fehlgeschlagen, keine Finaldatei angelegt." >&2
+   108	  logger -t coder-backup "FEHLGESCHLAGEN: pg_dump-Pipeline" || true
+   109	  exit 1
+   110	fi
+   111	chmod 600 "${TMP}"
+   112	
+   113	# Verifikation (F-005, mit P-013/B-010): gzip-Integrität ist hart (Fail).
+   114	# B-010: leeres stdin oder pg_dump-Fehlertext nach stdout ergibt valides gzip
+   115	# ohne SQL-Semantik – daher SQL-Header als Fail-Kriterium (kein hartes
+   116	# Größenlimit: frische/verkleinerte DB darf nicht scheitern).
+   117	if ! gzip -t "${TMP}"; then
+   118	  echo "backup.sh: gzip-Integritätstest fehlgeschlagen, keine Finaldatei angelegt." >&2
+   119	  logger -t coder-backup "FEHLGESCHLAGEN: gzip -t" || true
+   120	  exit 1
+   121	fi
+   122	# B2-001: Kopf in Variable lesen – direkte Pipe (zcat|head|grep) gäbe unter
+   123	# pipefail Exit 141 (SIGPIPE) bei Dumps > ~64 KB und damit falschen Fail.
+   124	HEADER="$(zcat "${TMP}" 2>/dev/null | head -c 4000 || true)"
+   125	if ! grep -q "PostgreSQL database dump" <<< "${HEADER}"; then
+   126	  echo "backup.sh: FEHLGESCHLAGEN: kein SQL-Dump-Header (leer oder Fehlertext), keine Finaldatei angelegt." >&2
+   127	  logger -t coder-backup "FEHLGESCHLAGEN: kein SQL-Dump-Header" || true
+   128	  exit 1
+   129	fi
+   130	DUMP_SIZE=$(stat -c %s "${TMP}")
+   131	if [ "${DUMP_SIZE}" -lt 512 ]; then
+   132	  echo "backup.sh: Warnung: Backup ungewöhnlich klein (${DUMP_SIZE} Bytes) – ggf. leere DB, bitte prüfen." >&2
+   133	fi
+   134	# B-010: Vorwert-Vergleich als Warnung (kein Fail): halbierte Größe gegenüber
+   135	# letztem gültigem Dump deutet auf Teilverlust, legitime Verkleinerung bleibt grün.
+   136	PREV_DUMP=$(ls -t "${BACKUP_DIR}"/coder_*.sql.gz 2>/dev/null | head -n1 || true)
+   137	if [ -n "${PREV_DUMP:-}" ]; then
+   138	  PREV_SIZE=$(stat -c %s "${PREV_DUMP}" 2>/dev/null || echo 0)
+   139	  if [ "${PREV_SIZE}" -gt 0 ] && [ "${DUMP_SIZE}" -lt "$((PREV_SIZE / 2))" ]; then
+   140	    echo "backup.sh: Warnung: Backup deutlich kleiner als Vorgänger (${DUMP_SIZE} < ${PREV_SIZE}/2 Bytes) – bitte prüfen, kein Fail." >&2
+   141	    logger -t coder-backup "Warnung: Dump stark verkleinert (${DUMP_SIZE} vs. ${PREV_SIZE} Bytes)" || true
+   142	  fi
+   143	fi
+   144	
+   145	mv "${TMP}" "${FINAL}"
+   146	# mv hat übernommen, trap muss nichts mehr räumen.
+   147	trap - EXIT
+   148	chmod 600 "${FINAL}"
+   149	logger -t coder-backup "Backup OK: ${FINAL} (${DUMP_SIZE} Bytes)" || true
+   150	
+   151	# C1: Zeitstempel des letzten ERFOLGREICHEN Laufs als Prometheus-Metrik
+   152	# (textfile-collector von node-exporter). Erst hier, nach der Finaldatei –
+   153	# ein abgebrochener Lauf darf keinen frischen Zeitstempel hinterlassen,
+   154	# sonst täuscht die Metrik (und die BackupStale-Alarmregel) Gesundheit vor.
+   155	# Atomar: erst eine temporäre Datei mit 644 (umask 077 des Skripts umgehen,
+   156	# sonst kann der Container-Einzug der Metrik nicht lesen) per mv umbenennen.
+   157	# Fehlschlag darf das Backup nicht zum Fehler machen – Warnung reicht, das
+   158	# Verzeichnis legt das Setup mit 0755 an.
+   159	TF_DIR="/opt/coder/node-textfile"
+   160	if TF_TMP=$(mktemp "${TF_DIR}/.coder_backup.prom.XXXXXX" 2>/dev/null); then
+   161	  {
+   162	    echo "# HELP coder_backup_last_success_timestamp_seconds Unix-Zeitpunkt (Sekunden) des letzten erfolgreichen coder-Backups."
+   163	    echo "# TYPE coder_backup_last_success_timestamp_seconds gauge"
+   164	    echo "coder_backup_last_success_timestamp_seconds $(date +%s)"
+   165	  } > "${TF_TMP}"
+   166	  chmod 644 "${TF_TMP}"
+   167	  mv "${TF_TMP}" "${TF_DIR}/coder_backup.prom"
+   168	else
+   169	  echo "Warnung: Backup erfolgreich, aber Metrik ${TF_DIR}/coder_backup.prom nicht schreibbar (Verzeichnis fehlt/ist nicht 0755)." >&2
+   170	  logger -t coder-backup "Warnung: Backup OK, Metrik-Datei konnte nicht angelegt werden" || true
+   171	fi
+   172	
+   173	# Rotation nach ALTER mit Mindestbestand: reine Stückzahl-
+   174	# rotation verdrängt bei mehreren Wartungsläufen am selben Tag die täglichen
+   175	# Backups – die Historie wird kürzer als 14 Tage. Gelöscht wird nur, was
+   176	# älter als 14 Tage ist; dazu nie die 7 neuesten Dateien, damit auch nach
+   177	# langen Cron-Lücken (alle Dumps > 14 Tage) nie der Bestand auf Null fällt.
+   178	KEEP_MIN=7
+   179	RETENTION_SECONDS=1209600
+   180	mapfile -t NEWEST < <(ls -t "${BACKUP_DIR}"/coder_*.sql.gz 2>/dev/null || true)
+   181	NOWS=$(date +%s)
+   182	for IDX in "${!NEWEST[@]}"; do
+   183	  if [ "${IDX}" -lt "${KEEP_MIN}" ]; then
+   184	    continue
+   185	  fi
+   186	  # || continue muss AUSSERhalb der $( ) stehen: dort beendet es nur die
+   187	  # Subshell, die Schleife liefe mit leerem MT weiter und rm -fete trotzdem.
+   188	  MT=$(stat -c %Y "${NEWEST[$IDX]}" 2>/dev/null) || continue
+   189	  if [ $((NOWS - MT)) -gt "${RETENTION_SECONDS}" ]; then
+   190	    rm -f "${NEWEST[$IDX]}"
+   191	  fi
+   192	done
+===== scripts/reset-coder.sh =====
+     1	#!/bin/bash
+     2	# Setzt die Coder-Installation zurück, als wäre sie neu installiert:
+     3	# Datenbank, Grafana-Dashboards, generierte Passwörter (.env) und
+     4	# versions.env werden gelöscht. Backups unter /opt/coder/backups bleiben erhalten.
+     5	# Caddys Zertifikate (caddy_data/caddy_config) bleiben ABSICHTLICH erhalten:
+     6	# ein Reset während der Testphase soll nicht bei jedem Mal ein neues Let's-
+     7	# Encrypt-Zertifikat anfordern und so das Wochen-Rate-Limit pro Domain
+     8	# riskieren. Betrifft NUR den Coder-Stack, nicht den Server selbst
+     9	# (SSH/Firewall/OS bleiben unverändert).
+    10	#
+    11	# Ablauf (F-011/P-019): Inventar (hart: Nicht-Compose-Container = Abbruch)
+    12	# -> Backup -> Bestätigung erst nach
+    13	# Backup-Ergebnis -> Löschung. Mit --force bei Backup-Fehlschlag zusätzlich
+    14	# Zweitbestätigung mit Anzeige des neuesten Backups.
+    15	# Nutzung: sudo /opt/coder/reset-coder.sh [--force]
+    16	#   --force: Reset auch durchführen, wenn das Sicherheits-Backup fehlschlägt
+    17	#            (ohne --force bricht das Skript in diesem Fall ab, statt
+    18	#            möglicherweise die einzige Datenrettung zu verlieren).
+    19	#            B-020/Break-Glass: --force ist KEIN Komfort-Flag, sondern die
+    20	#            bewusste Freigabe zur Zerstörung ohne Netz (Backup defekt oder
+    21	#            kein Backup vorhanden). Wer: nur der dokumentierte Betreiber nach
+    22	#            Kenntnisnahme des neuesten verfügbaren Backups (wird angezeigt).
+    23	#            Nachweis: zweite Eingabe 'RESET-OHNE-BACKUP' (immer interaktiv,
+    24	#            P-019 verweigert Pipe auch mit --force).
+    25	#            Andere Argumente werden abgelehnt (kein stilles Ignorieren von
+    26	#            Tippfehlern). --force ersetzt NICHT das Fremd-Container-Gate.
+    27	# Danach: im Repo-Verzeichnis (setup-coder.sh liegt nicht in /opt/coder)
+    28	# sudo ./setup-coder.sh erneut ausführen, um alles neu aufzubauen.
+    29	set -euo pipefail
+    30	cd /opt/coder
+    31	
+    32	# Wartungs-Lock vor Inventar/Backup/Bestätigung halten, damit kein Update,
+    33	# Passwortwechsel oder Backup zwischen Sicherung und destruktivem Reset läuft.
+    34	(umask 077; : >> /opt/coder/.maintenance.lock)
+    35	chown root:root /opt/coder/.maintenance.lock
+    36	chmod 600 /opt/coder/.maintenance.lock
+    37	exec 8>>/opt/coder/.maintenance.lock
+    38	if ! flock -w 300 8; then
+    39	  echo "reset-coder.sh: Wartungs-Lock nach 300 s nicht erhalten; Reset abgebrochen." >&2
+    40	  exit 75
+    41	fi
+    42	export CODER_MAINTENANCE_LOCK_HELD=1
+    43	
+    44	FORCE=false
+    45	# Kleine CLI: erlaubt sind genau keine
+    46	# Argumente oder --force. Ein Tippfehler darf nicht still als "ohne --force"
+    47	# weiterlaufen, und Extra-Argumente werden nicht geschluckt.
+    48	if [ "$#" -gt 1 ] || { [ "$#" -ge 1 ] && [ "$1" != "--force" ]; }; then
+    49	  echo "Fehler: unbekanntes Argument '$*' – erlaubt: sudo /opt/coder/reset-coder.sh [--force]" >&2
+    50	  exit 1
+    51	fi
+    52	if [ "${1:-}" = "--force" ]; then
+    53	  FORCE=true
+    54	fi
+    55	
+    56	# P-019: Destruktiver Reset braucht IMMER ein Terminal, auch mit --force –
+    57	# --force ersetzt nur das Backup-Gate, nicht die bewusste Bestätigung.
+    58	# Ein per Pipe eingespeistes "RESET" oder "RESET-OHNE-BACKUP" ist keine
+    59	# bewusste Bestätigung.
+    60	if [ ! -t 0 ]; then
+    61	  echo "Fehler: stdin ist kein Terminal (Pipe/CI erkannt). Destruktiver Reset wird verweigert." >&2
+    62	  echo "Interaktiv aufrufen: sudo /opt/coder/reset-coder.sh [--force]" >&2
+    63	  exit 1
+    64	fi
+    65	
+    66	# Compose-Projektname determinieren (F-004/P-016): Default = Verzeichnisname
+    67	# (/opt/coder -> "coder"), aber per -p/Env überstimmbar – daher aus
+    68	# "docker compose config" lesen, nie raten. Leer/Fehler = Abbruch.
+    69	PROJECT=$(docker compose config | awk '/^name:/ {print $2; exit}' || true)
+    70	if [ -z "${PROJECT:-}" ]; then
+    71	  echo "Fehler: Compose-Projektname unklar (docker compose config liefert kein 'name:'). Abbruch, nichts wurde verändert." >&2
+    72	  exit 1
+    73	fi
+    74	
+    75	echo "############################################################"
+    76	echo "Inventar VOR dem Reset – Harte Regel:"
+    77	echo "es darf KEINE Nicht-Compose-Container geben. Workspace-Container"
+    78	echo "entstehen über den Docker-Socket, nicht über docker-compose.yml –"
+    79	echo "'down' erfasst sie nicht; mit gelöschter DB liefen sie verwaist"
+    80	echo "weiter (Namens-/Port-Konflikte beim Neuaufbau). Labels sind dabei"
+    81	echo "egal: ALLE Nicht-Compose-Container sind ZUERST von Hand entfernen."
+    82	FOREIGN_LIST="$(docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}' \
+    83	  | awk -v p="${PROJECT}" -F'\t' '$3 != p {print "  fremd: " $1 " (" $2 ")"}' || true)"
+    84	if [ -n "${FOREIGN_LIST}" ]; then
+    85	  printf '%s\n' "${FOREIGN_LIST}"
+    86	fi
+    87	echo "(Compose-eigene Container mit project=${PROJECT} sind oben nicht gelistet.)"
+    88	echo "############################################################"
+    89	if [ -n "${FOREIGN_LIST}" ]; then
+    90	  echo "Fehler: Nicht-Compose-Container vorhanden (Inventar oben) – Reset abgebrochen, nichts wurde verändert." >&2
+    91	  echo "Zuerst aufräumen, dann Reset erneut starten:" >&2
+    92	  printf '%s\n' "${FOREIGN_LIST}" >&2
+    93	  echo "  Inhalt vorher ansehen (docker inspect <name>), dann: docker rm -f <name>" >&2
+    94	  echo "  --force hebt diese Klemme NICHT auf – sie schützt vor verwaisten Containern." >&2
+    95	  exit 1
+    96	fi
+    97	echo "############################################################"
+    98	echo "WARNUNG: Das löscht unwiderruflich:"
+    99	echo "  - Datenbank (alle Nutzer, Workspaces, Templates)"
+   100	echo "  - Grafana-Dashboards/-Einstellungen"
+   101	echo "  - Prometheus-Metrikverlauf"
+   102	echo "  - generierte Passwörter (.env) und versions.env"
+   103	echo "Backups unter /opt/coder/backups bleiben erhalten."
+   104	echo "Caddys Let's-Encrypt-Zertifikate bleiben erhalten (kein Rate-Limit-Risiko)."
+   105	echo "Server-Einstellungen (SSH, Firewall, Docker) bleiben unverändert."
+   106	echo "############################################################"
+   107	
+   108	echo "Versuche ein letztes Backup vor dem Reset..."
+   109	BACKUP_OK=false
+   110	if /opt/coder/backup.sh; then
+   111	  BACKUP_OK=true
+   112	fi
+   113	
+   114	if [ "${BACKUP_OK}" != "true" ]; then
+   115	  if [ "${FORCE}" = "true" ]; then
+   116	    echo "------------------------------------------------------------"
+   117	    echo "Backup fehlgeschlagen, --force gesetzt. Neuestes VERFÜGBARES Backup:"
+   118	    LATEST=$(ls -t /opt/coder/backups/coder_*.sql.gz 2>/dev/null | head -n1 || true)
+   119	    if [ -n "${LATEST:-}" ]; then
+   120	      stat -c '  Datei: %n, Größe: %s Bytes, geändert: %y' "${LATEST}"
+   121	      if gzip -t "${LATEST}" 2>/dev/null; then
+   122	        echo "  Integrität: gzip -t OK (kein Ersatz für Restore-Test, siehe RESTORE.md)"
+   123	      else
+   124	        echo "  Integrität: gzip -t FEHLGESCHLAGEN – dieses Backup ist defekt!"
+   125	      fi
+   126	    else
+   127	      echo "  KEIN Backup vorhanden – nach dem Reset gibt es keinen Rückweg!"
+   128	    fi
+   129	    echo "------------------------------------------------------------"
+   130	    read -r -p "Trotzdem löschen? Zum Fortfahren 'RESET-OHNE-BACKUP' eingeben: " CONFIRM2
+   131	    if [ "${CONFIRM2}" != "RESET-OHNE-BACKUP" ]; then
+   132	      echo "Abgebrochen, nichts wurde verändert."
+   133	      exit 1
+   134	    fi
+   135	  else
+   136	    echo "Fehler: Backup vor dem Reset fehlgeschlagen. Abbruch, ohne etwas zu löschen." >&2
+   137	    echo "Zum Reset trotzdem erzwingen: sudo /opt/coder/reset-coder.sh --force" >&2
+   138	    exit 1
+   139	  fi
+   140	else
+   141	  read -r -p "Backup erfolgreich. Zum Fortfahren 'RESET' eingeben: " CONFIRM
+   142	  if [ "${CONFIRM}" != "RESET" ]; then
+   143	    echo "Abgebrochen, nichts wurde verändert."
+   144	    exit 1
+   145	  fi
+   146	fi
+   147	
+   148	echo "Ermittle Datenbank-, Grafana- und Prometheus-Volumes (Projekt: ${PROJECT})..."
+   149	# F-004/P-016: Filter um project-Label eingeschränkt (generische volume-Namen
+   150	# kollidieren sonst mit jedem zweiten Stack), Treffer anzeigen, zeilenweise
+   151	# löschen, Allowlist als Guard. Leer-Fall = harter Abbruch VOR rm .env.
+   152	VOLUMES_TO_DELETE=""
+   153	for VOL_LABEL in postgres_data grafana_data prometheus_data; do
+   154	  case "${VOL_LABEL}" in
+   155	    postgres_data|grafana_data|prometheus_data) ;;
+   156	    *) echo "Fehler: unerwartetes Volume-Label '${VOL_LABEL}' (Allowlist). Abbruch." >&2; exit 1 ;;
+   157	  esac
+   158	  while IFS= read -r VOL_NAME; do
+   159	    [ -n "${VOL_NAME}" ] || continue
+   160	    echo "  gefunden: ${VOL_NAME} (${VOL_LABEL})"
+   161	    VOLUMES_TO_DELETE="${VOLUMES_TO_DELETE}${VOL_NAME}"$'\n'
+   162	  done < <(docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT}" --filter "label=com.docker.compose.volume=${VOL_LABEL}")
+   163	done
+   164	
+   165	if [ -z "${VOLUMES_TO_DELETE//[$'\n ']/}" ]; then
+   166	  echo "Fehler: kein einziges Compose-Volume für project=${PROJECT} gefunden (Label-Mismatch?)." >&2
+   167	  echo "Abbruch – nichts angefasst: Stack läuft weiter, Volumes und .env sind unverändert." >&2
+   168	  exit 1
+   169	fi
+   170	
+   171	# B-016/B-020-Pre-Check + B2-006 (lesend, VOR dem 'down'): hängt an einem zu
+   172	# löschenden Volume noch ein Container (fremder Workspace, paralleler Lauf),
+   173	# bricht "volume rm" unter set -e mitten in der Teillöschung ab – weder alt
+   174	# noch neu lauffähig. Vor v2 stand "down" VOR diesem Check: bei Treffer war der
+   175	# Stack bereits halb zerlegt (Container weg, Netz weg, Cron-Backup im Fenster
+   176	# rot), obwohl Daten und .env intakt waren. Jetzt bricht das Skript ab, solange
+   177	# ALLES noch läuft – Erwartung: belegtes Volume -> Abbruch vor 'down', alle
+   178	# Container laufen weiter.
+   179	# Projekt-eigene Container zählen NICHT als Beleg: 'down' stoppt sie selbst,
+   180	# sie sind kein Hindernis für die spätere volume rm. Geprüft werden nur
+   181	# Nicht-Projekt-Container (fremde Workspaces), die das Volume auch nach 'down'
+   182	# weiterhin halten würden. Ohne diese Einschränkung würde jeder Re-Run auf
+   183	# laufendem Stack abbrechen, weil coder-postgres postgres_data hält (gemessen:
+   184	# "docker ps -a --filter volume=<name>" findet laufende Container). "-q"
+   185	# fehlt absichtlich neben "--format": docker ignoriert --format bei -q
+   186	# ("Ignoring custom format, because both --format and --quiet are set"), das
+   187	# Label käme nie an und auch Projekt-Container würden als Beleg zählen.
+   188	while IFS= read -r VOL_NAME; do
+   189	  [ -n "${VOL_NAME}" ] || continue
+   190	  if USERS=$(docker ps -a --filter "volume=${VOL_NAME}" \
+   191	      --format '{{.ID}} {{.Label "com.docker.compose.project"}}' 2>/dev/null \
+   192	      | awk -v p="${PROJECT}" '$2 != p {print $1}') && [ -n "${USERS:-}" ]; then
+   193	    echo "Fehler: Volume ${VOL_NAME} wird noch von Container(n) benutzt: $(echo "${USERS}" | tr '\n' ' ')" >&2
+   194	    echo "Abbruch VOR 'docker compose down' – nichts angefasst: alle Container laufen weiter, Volumes und .env sind unverändert (fremde Container erst aufräumen, dann Reset erneut)." >&2
+   195	    exit 1
+   196	  fi
+   197	done <<< "${VOLUMES_TO_DELETE}"
+   198	
+   199	echo "Stoppe Container (caddy_data/caddy_config bleiben unangetastet)..."
+   200	echo "(Das Inventar oben war leer – Nicht-Compose-/Workspace-Container sind"
+   201	echo "per harter Regel vorher entfernt worden.)"
+   202	docker compose down --remove-orphans
+   203	
+   204	while IFS= read -r VOL_NAME; do
+   205	  [ -n "${VOL_NAME}" ] || continue
+   206	  docker volume rm "${VOL_NAME}"
+   207	done <<< "${VOLUMES_TO_DELETE}"
+   208	
+   209	echo "Entferne generierte Passwörter (.env) und versions.env..."
+   210	# versions.env mit: die Datei hält den wirksam gewesenen Versions-Stand, der
+   211	# den Downgrade-Guard im Setup steuert – nach einem Reset ist die DB frisch,
+   212	# ein restlicher Stand würde einen Neuaufbau mit niedrigerer Version blockieren.
+   213	rm -f .env versions.env
+   214	
+   215	echo "------------------------------------------------------------"
+   216	echo "Reset abgeschlossen. Zum Neuaufbau (im Repo-Verzeichnis – das Setup"
+   217	echo "liegt nicht in /opt/coder):"
+   218	echo "  sudo ./setup-coder.sh"
+   219	echo "(erzeugt neue Passwörter und versions.env, startet den Stack komplett neu)"
+   220	echo "(Workspace-/fremde Container gab es vorher nicht – harte Regel oben.)"
+   221	echo "------------------------------------------------------------"

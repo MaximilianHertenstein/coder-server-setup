@@ -2,7 +2,8 @@
 # B2-003 / Hex-Migration: Setup-Gate bleibt fail-closed; .env-Werte werden
 # per Guards geschuetzt (Newline/NUL, Hex, Vollstaendigkeit).
 # Beweist (nur /tmp, kein Docker, keine Produktion):
-#  1. Setup-Gate: Nicht-Hex -> ROT mit woertlichem Reparaturtext (kein Pingpong).
+#  1. Setup-Gate: POSTGRES-Nicht-Hex -> ROT mit woertlichem Reparaturtext
+#     (kein Pingpong); GRAFANA_ADMIN_PASSWORD ist vom Hex-Zwang ausgenommen.
 #  2. Newline/NUL-Guard und Vollstaendigkeits-Check der .env greifen.
 #  3. Das Erstkonto-Passwort geht per stdin an den Container, nicht in docker-argv.
 #  4. Die .env traegt kein DOCKER_GID mehr; die GID steht fest in der Compose-Datei.
@@ -20,7 +21,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 # ---------- STATIK ----------
-if grep -qF -- 'Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter.' "${SETUP}" \
+if grep -qF -- 'Fehler: /opt/coder/.env: POSTGRES_PASSWORD ist nicht-hex.' "${SETUP}" \
   && grep -qF -- 'Reparatur: siehe TROUBLESHOOTING.md (A4), danach Setup erneut.' "${SETUP}"; then
   pass "Setup-Gate Ersatztext woertlich (fail-closed + A4-Verweis)"
 else
@@ -70,10 +71,21 @@ else
   fail "A4: read -rs-Prompt fuer das Erstkonto-Passwort fehlt"
 fi
 
+if grep -qF -- 'CODER_FIRST_USER_PASSWORD_FILE' "${SETUP}"; then
+  pass "A4: nicht-interaktiv per root-only Datei (CODER_FIRST_USER_PASSWORD_FILE)"
+else
+  fail "CODER_FIRST_USER_PASSWORD_FILE fehlt (nicht-interaktiv nur per argv?)"
+fi
+
+if grep -qF -- 'HUMAN_USERS=1' "${SETUP}"; then
+  pass "Erstkontosanlage setzt HUMAN_USERS (danach kein 'Noch kein Konto')"
+else
+  fail "HUMAN_USERS=1 nach der Anlage fehlt (case meldet falsch 'Noch kein Konto')"
+fi
+
 # ---------- VERHALTEN (Gate-Logik = Produktionsausdruecke auf Fixture-.env) ----------
-setup_gate_green() { # 0 = GRUEN (Hex), 1 = ROT
-  grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' "$1" \
-    && grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' "$1"
+setup_gate_green() { # 0 = GRUEN (POSTGRES hex; Grafana-Wert egal)
+  grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' "$1"
 }
 setup_complete() { # 0 = beide Schluessel da (Elif-Zweig)
   grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' "$1" \
@@ -98,13 +110,32 @@ while IFS= read -r V; do
   if printf '%s\n' "${V}" | grep -F -q -- "${V}"; then pass "${TAG}: Leak-Grep mit -- + -F findet Vollwert"; else fail "${TAG}: Leak-Grep-Mechanik defekt"; fi
 done < "${FIXT}"
 
-# Genau ein gruener Weg: migrierte Hex-.env -> Gate GRUEN.
+# Genau ein gruener Weg ueber hex: migrierte Hex-.env -> Gate GRUEN.
 ENV_NEW="${WORK}/env-new"
 printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\n' "${NEWHEX}" "${GFHEX}" > "${ENV_NEW}"
 if setup_gate_green "${ENV_NEW}" && setup_complete "${ENV_NEW}" && newline_guard_clean "${ENV_NEW}"; then
-  pass "migrierte Hex-.env: Gate GRUEN + vollstaendig (genau ein gruener Weg)"
+  pass "migrierte Hex-.env: Gate GRUEN + vollstaendig"
 else
   fail "migrierte Hex-.env: Gate nicht GRUEN"
+fi
+
+# Hexes POSTGRES + beliebiges (nicht-hexes) Grafana-Passwort -> GRUEN.
+# B2-003-Revidierung: Hex-Zwang nur noch fuer die Postgres-Connection-URL.
+ENV_GFNEW="${WORK}/env-grafana-frei"
+printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\n' "${NEWHEX}" 'Mein-Grafana-Pass! 42' > "${ENV_GFNEW}"
+if setup_gate_green "${ENV_GFNEW}" && setup_complete "${ENV_GFNEW}" && newline_guard_clean "${ENV_GFNEW}"; then
+  pass "Grafana-Passwort darf vom Hex-Zwang abweichen (nur POSTGRES ist zwingend)"
+else
+  fail "nicht-hexes Grafana-Passwort wird zu Unrecht abgelehnt"
+fi
+
+# Nicht-hexes POSTGRES auch bei hexem Grafana -> ROT (Gate-Logik trennt sauber).
+ENV_PGROT="${WORK}/env-postgres-rot"
+printf 'POSTGRES_PASSWORD=%s\nGRAFANA_ADMIN_PASSWORD=%s\n' 'Legacy$Pass!23' "${GFHEX}" > "${ENV_PGROT}"
+if setup_gate_green "${ENV_PGROT}"; then
+  fail "nicht-hexes POSTGRES mit hexem Grafana: Gate GRUEN (muss ROT)"
+else
+  pass "nicht-hexes POSTGRES mit hexem Grafana: Gate ROT"
 fi
 
 # Alte .env-Gestalt (mit DOCKER_GID-Zeile) bleibt weiterhin bedienbar.

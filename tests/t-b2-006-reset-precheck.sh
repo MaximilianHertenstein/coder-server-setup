@@ -213,6 +213,28 @@ for gone in \
   fi
 done
 
+# --- 5. Versions-Stand: frische DB, kein staler Downgrade-Guard --------------
+if grep -qF 'rm -f .env versions.env' "${WORK}/reset-coder.sh"; then
+  pass "Reset entfernt versions.env mit (sonst blockiert der Guard den Neuaufbau)"
+else
+  fail "Reset laesst versions.env stehen (blockiert Neuaufbau mit niedrigerer Version)"
+fi
+
+# --- 6. Eingabe-Checks vor dem Lock (Tippfehler/Pipe: sofort, nicht 300 s) ---
+L_ARG=$(line_of 'unbekanntes Argument' || true)
+L_TTY=$(line_of 'stdin ist kein Terminal' || true)
+L_LOCK=$(line_of 'flock -w 300 8' || true)
+if [ -n "${L_ARG}" ] && [ -n "${L_LOCK}" ] && [ "${L_ARG}" -lt "${L_LOCK}" ]; then
+  pass "Argument-Pruefung steht vor dem Wartungs-Lock"
+else
+  fail "Argument-Pruefung nicht vor dem Lock (arg=${L_ARG:-keine} lock=${L_LOCK:-keine})"
+fi
+if [ -n "${L_TTY}" ] && [ -n "${L_LOCK}" ] && [ "${L_TTY}" -lt "${L_LOCK}" ]; then
+  pass "TTY-Gate steht vor dem Wartungs-Lock (Pipe-Aufruf sofort abgewiesen)"
+else
+  fail "TTY-Gate nicht vor dem Lock (tty=${L_TTY:-keine} lock=${L_LOCK:-keine})"
+fi
+
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-006: ALLE PRUEFUNGEN BESTANDEN"
 else

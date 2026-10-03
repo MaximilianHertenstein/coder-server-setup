@@ -4,7 +4,7 @@ Installation und Wartung eines Coder-Servers auf einer Debian-13-VM: ein
 Skript (`setup-coder.sh`) baut den kompletten Stack auf – Caddy (Reverse
 Proxy + TLS), Coder, PostgreSQL, Prometheus/Grafana/node-exporter, Firewall
 (ufw + fail2ban), automatische Sicherheitsupdates, tägliche Datenbank-Backups
-und die Wartungsskripte für Backup, TLS-Zählung und Reset.
+und die Wartungsskripte für Backup und Reset.
 
 Das Repository ist die **Quelle**. Alles Laufzeit-Relevante wird beim ersten
 Lauf auf dem Server unter `/opt/coder/` erzeugt (`docker-compose.yml`,
@@ -29,12 +29,12 @@ nicht im Repository.
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-03: alle 9 Dateien in `tests/` grün (278 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
+| Lokale Tests | Stand 2026-10-03: alle 9 Dateien in `tests/` grün (294 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
 | Vollständiger Setup-Lauf auf echtem System | **zwei volle Läufe RC 0 am 2026-10-03** auf dem Test-Host `2.29.11.30` (0 Fehler; sshd-Drop-In live geprüft, Altbestand 3001/Cron aufgeräumt, Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen, Stand 2026-10-03 (Test-Host):** Prometheus `ready` 200, 3 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metrik (Backup) vorhanden |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg. **Anforderung an den Betrieb:** Backup-Kopie außerhalb des Hosts (Ziel/Rhythmus zu entscheiden, kein Automatismus im Repo) |
-| SSH-Härtung | **Entschieden (D-SSH, 2026-09-30; Regelwerk revidiert 2026-10-03):** Passwort-Login bleibt Standard; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `allow` für die erkannten sshd-Ports (kein `limit` – würde die geteilte Schul-NAT drosseln), fail2ban zusätzlich und ein eigenes SSH-Drop-In (`/etc/ssh/sshd_config.d/99-coder.conf`: Passwort-Login explizit an, `PermitRootLogin prohibit-password`; Details und Key-only-Umstellung in [SECURITY.md](SECURITY.md) §1) |
+| SSH-Härtung | **Entschieden (D-SSH, 2026-09-30; Regelwerk revidiert 2026-10-03):** Passwort-Login bleibt Standard; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `allow` für die erkannten sshd-Ports (kein `limit` – würde die geteilte Schul-NAT drosseln), fail2ban zusätzlich und ein eigenes SSH-Drop-In (`/etc/ssh/sshd_config.d/01-coder.conf`: Passwort-Login explizit an, `PermitRootLogin prohibit-password`; Details und Key-only-Umstellung in [SECURITY.md](SECURITY.md) §1) |
 | Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting und Zuständigkeit für DNS/Ports). Von den D-Entscheidungen sonst nichts offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
 
 ### Offene Punkte – wer macht was (Stand 2026-10-03)
@@ -95,10 +95,10 @@ Werte über `setup.conf` neben dem Skript (gitignored, Vorlage
 | # | Schritt | Ergebnis |
 |---|---|---|
 | 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
-| 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `caddy/Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus/prometheus.yml` + `prometheus/rules/coder-alerts.yml`, Grafana-Datasource-Provisioning, `node-textfile/` – jedes Schreiben atomar mit Validierung (Compose/Caddyfile/Prometheus-Config+Regeln), danach `docker compose pull` |
+| 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `caddy/Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus/prometheus.yml` + `prometheus/rules/coder-alerts.yml`, Grafana-Provisioning (Datasource + Dashboard „Server-Last"), `node-textfile/`, Wartungsskripte (`scripts/*.sh` → `/opt/coder/`, 755, per `write_managed`: `bash -n` + atomar) – jedes Schreiben atomar mit Validierung (Compose/Caddyfile/Prometheus-Config+Regeln), danach `docker compose pull` |
 | 3 | Docker-Stack starten | Preflights (Daemon, Platte), dann `up -d`; Caddy und Prometheus bei laufendem Container per `reload`/SIGHUP neu, Grafana nur bei geänderter Provisioning-Datei neu |
 | 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw allow` für die erkannten sshd-Ports (eigene alte `limit`-Regel wird entfernt), 80/443 frei, Altbestandsregeln für Grafana 3001 werden entfernt (Grafana nur noch 127.0.0.1, keine ufw-Regel), fail2ban-Jail `sshd`, SSH-Drop-In, Abschluss-Checks |
-| 5 | Automatische Sicherheitsupdates + Wartungsskripte | Debian-Paketupdates per unattended-upgrades (geprüft über `apt-daily-upgrade.timer`), Reboot 03:00, Schreiben aller `scripts/*.sh` nach `/opt/coder/` (755, per `write_managed`: `bash -n` + atomar); Docker Engine bleibt manuell |
+| 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades (geprüft über `apt-daily-upgrade.timer`), Reboot 03:00; Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |
 | 7 | Abschlusscheck & Zusammenfassung | Container, Socket-GID, `https://…/healthz`, Wildcard-DNS, Nutzer-/Owner-Hinweis (B2), `[FEHLER]`-Zähler → Exit 1 bei Fehlern |
 
@@ -178,6 +178,13 @@ fail2ban-Ignore-IP). Umgebungsvariablen (hinter dem sudo) überschreiben
 sudo env DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh
 ```
 
+**Einzige Passwort-Eingabe (Erstinstallation):** Existiert noch kein
+Coder-Konto und sind `CODER_FIRST_USER_EMAIL`/`CODER_FIRST_USER_USERNAME`
+gesetzt, fragt das Skript einmal **unsichtbar** das Passwort des Erstkontos
+ab (nur mit TTY; Enter ohne Eingabe = Konto später selbst im Browser
+anlegen). Ohne diese Variablen läuft der Lauf ohne jede Eingabe;
+Nicht-interaktiv-Variante in [OPERATIONS.md](OPERATIONS.md) §11.
+
 **Erfolgsdefinition**
 
 1. Exit-Code `0` (die Zusammenfassung meldet 0 Einträge `[FEHLER]`),
@@ -243,7 +250,7 @@ November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/suppo
   10 min → 1 h Sperre, `ignoreip` enthält nur Admin-Plätze – die geteilte
   Schul-NAT wird bewusst NICHT eingetragen, Rateversuche aus dem Schulnetz
   sollen sperren). Das Setup schreibt das Drop-In
-  `/etc/ssh/sshd_config.d/99-coder.conf` (Passwort-Login explizit an,
+  `/etc/ssh/sshd_config.d/01-coder.conf` (Passwort-Login explizit an,
   `sshd -T`-Validierung, Reload nur bei Änderung); Key-only/Umbau in
   [SECURITY.md](SECURITY.md) §1.
 - **Firewall**: ufw mit `default deny incoming`; 80/443 (tcp+udp) frei,
@@ -254,8 +261,9 @@ November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/suppo
 - **Docker-Socket**: Der Coder-Container hält `/var/run/docker.sock`
   schreibbar – bei Kompromittierung eines Workspaces ist der Host
   kompromittierbar. Abfederung: [templates/allowlist.md](templates/allowlist.md).
-- **Secrets**: `.env` mit 600/root, Passwörter ausschließlich hex,
-  Rotation (Grafana) manuell, Ablauf in [OPERATIONS.md](OPERATIONS.md).
+- **Secrets**: `.env` mit 600/root, generierte Passwörter hex (das Setup-Gate
+  verlangt Hex nur noch für `POSTGRES_PASSWORD`), Rotation (Grafana) manuell,
+  Ablauf in [OPERATIONS.md](OPERATIONS.md).
   Kein Secret im Repository (`.env` und `setup.conf` sind gitignored).
 - **TLS**: Caddy On-Demand-TLS mit Wildcard. Das `permission http`-Modul nutzt
   den lokalen `ask`-Endpunkt (`127.0.0.1:9123`, nur im Container erreichbar).

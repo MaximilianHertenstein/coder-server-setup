@@ -16,8 +16,20 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
 - [ ] **Erstkonto sofort beim/direkt nach dem ersten Lauf** anlegen
       (`sudo env CODER_FIRST_USER_* …`, §11 Betreiber Schritt 4),
       danach **zweites** Owner-Konto (nicht ein Zugang allein)
-- [ ] **Zweiter Lauf + Abnahme** mit den Checks aus §11/Betreiber Schritt 5
-      (`/healthz` muss 200 sein, Caddy-Logs leer, Ask-Endpoint `ok`)
+- [ ] **Zweiter Lauf + Abnahme** – `sudo ./setup-coder.sh` erneut
+      (idempotent, holt jetzt das Zertifikat), dann die Checks aus
+      [OPERATIONS §5](OPERATIONS.md) (Schritt 5):
+
+      ```bash
+      getent hosts coder.ghse-unterricht.de                       # zeigt auf den Zielserver
+      curl -s -o /dev/null -w '%{http_code}\n' https://coder.ghse-unterricht.de/healthz   # muss 200 sein
+      docker logs coder-caddy --tail=50 | grep -i 'obtaining certificate\|error'          # muss LEER bleiben (keine Zeile)
+      sudo docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=8080--main--ws--user.coder.ghse-unterricht.de'
+      ```
+
+      Ask-Endpoint muss `ok` zurückgeben (ohne `ok` = TLS/Wildcard-Problem).
+      Danach Test-Workspace anlegen und dessen App-URL **vom
+      Schulnetz-Client** öffnen (prüft Hairpin-NAT + Wildcard-DNS, A9).
 - [ ] **Test-Workspace vom Schulnetz-Client** öffnen (Hairpin-NAT, A9); danach
       die Workspace-Container-Labels prüfen, die `reset-coder.sh` braucht
       (**B-11** – ohne sie bricht der Reset hart ab, nichts wird gelöscht)

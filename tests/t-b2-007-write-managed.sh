@@ -25,7 +25,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 # --- 1. Struktur: verwaltete Dateien nutzen atomaren Schreibhelfer ----------
-# 9 direkte write_managed-Adressen.
+# 11 direkte write_managed-Adressen.
 # SSH-Drop-In und versions.env adressieren ueber Variablen und stehen nicht
 # in dieser Liste (unten separat geprueft).
 EXPECTED="/opt/coder/docker-compose.yml
@@ -33,6 +33,8 @@ EXPECTED="/opt/coder/docker-compose.yml
 /opt/coder/prometheus/rules/coder-alerts.yml
 /opt/coder/prometheus/prometheus.yml
 /opt/coder/grafana/provisioning/datasources/prometheus.yml
+/opt/coder/grafana/provisioning/dashboards/dashboards.yml
+/opt/coder/grafana/provisioning/dashboards/server-load.json
 /etc/fail2ban/jail.d/10-coder-sshd.local
 /etc/apt/apt.conf.d/52-coder-reboot
 /etc/cron.d/coder-backup
@@ -40,15 +42,15 @@ EXPECTED="/opt/coder/docker-compose.yml
 
 N_MANAGED=$(grep -c '^write_managed "/' "${SETUP}")
 echo "INFO: write_managed=${N_MANAGED}"
-[ "${N_MANAGED}" -eq 9 ] && pass "alle 9 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 9)"
+[ "${N_MANAGED}" -eq 11 ] && pass "alle 11 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 11)"
 grep -qF 'write_managed "${VERSIONS_FILE}"' "${SETUP}" && pass "versions.env nutzt ebenfalls write_managed" || fail "versions.env nutzt write_managed nicht"
 
 # SSH-Drop-In: eigene Policy-Datei,
 # per write_managed verwaltet, damit sie beim Setup-Lauf konsistent bleibt.
-grep -qF 'SSHD_DROPIN="/etc/ssh/sshd_config.d/99-coder.conf"' "${SETUP}" \
+grep -qF 'SSHD_DROPIN="/etc/ssh/sshd_config.d/01-coder.conf"' "${SETUP}" \
   && grep -qF 'write_managed "${SSHD_DROPIN}"' "${SETUP}" \
   && pass "sshd-Drop-In wird per write_managed verwaltet" \
-  || fail "sshd-Drop-In (99-coder.conf) fehlt oder nutzt write_managed nicht"
+  || fail "sshd-Drop-In (01-coder.conf) fehlt oder nutzt write_managed nicht"
 
 # 2.1: die Wartungsskripte kommen ueber eine Schleife (inkl. bash -n),
 # nicht ueber Einzel-Aufrufe oder install(1).
@@ -257,6 +259,43 @@ grep -qF 'rm -f /etc/fail2ban/jail.local' "${SETUP}" \
 grep -qF '[ "${JAIL_BEFORE}" = "${JAIL_AFTER}" ]' "${SETUP}" \
   && fail "B13: hash-basierte Reload-Entscheidung ist noch im Setup" \
   || pass "B13: keine hash-basierte Reload-Entscheidung (enable --now + reload)"
+
+# --- C3/Erstlauf: Provisioning-Hash darf pipefail nicht killen ---------------
+# Ohne Verzeichnisse liefert find Exit 1; mit pipefail+set -e endet die
+# Zuweisung in einem stillen Abbruch vor Schritt 3 (Review-Fund, Erstlauf).
+PRE_LINE=$(grep -nF 'install -d -m 0755 /opt/coder/grafana/provisioning/datasources' "${SETUP}" | head -n1 | cut -d: -f1)
+BEFORE_LINE=$(grep -nF 'GRAFANA_PROV_BEFORE=' "${SETUP}" | head -n1 | cut -d: -f1)
+if [ -n "${PRE_LINE}" ] && [ -n "${BEFORE_LINE}" ] && [ "${PRE_LINE}" -lt "${BEFORE_LINE}" ]; then
+  pass "C3: Provisioning-Verzeichnisse werden VOR GRAFANA_PROV_BEFORE angelegt"
+else
+  fail "C3: Anlage der Provisioning-Verzeichnisse fehlt vor GRAFANA_PROV_BEFORE (${PRE_LINE:-keine} vs ${BEFORE_LINE:-keine})"
+fi
+HAIRNET=$(grep -cF "cut -d' ' -f1 || true)" "${SETUP}" || true)
+if [ "${HAIRNET}" -eq 2 ]; then
+  pass "C3: beide Provisioning-Hashes mit ||-true (kein stiller pipefail-Abbruch)"
+else
+  fail "C3: || true an den Provisioning-Hashes: ${HAIRNET} statt 2"
+fi
+
+# --- Review-Runde: Crash-Loop, Projektlabel, Lock-Reihenfolge, Kommentar -----
+grep -qF -- "docker inspect --type container -f '{{.State.Status}}'" "${SETUP}" \
+  && pass "Abschlusscheck fragt State.Status ab (Restart-Loop kein fälschliches [OK])" \
+  || fail "check_container_running nutzt nicht State.Status + --type container"
+grep -qF -- 'label=com.docker.compose.project=coder' "${SETUP}" \
+  && pass "postgres_data-Filter traegt Projektlabel (fremdes Projekt trifft nicht)" \
+  || fail "Projektlabel am postgres_data-Filter fehlt"
+L_SSHD=$(grep -nF 'sshd -T lieferte keinen Port' "${SETUP}" | head -n1 | cut -d: -f1)
+L_LOCK=$(grep -nF 'exec 8>>/opt/coder/.maintenance.lock' "${SETUP}" | head -n1 | cut -d: -f1)
+L_S1=$(grep -nF '[1/7] Docker Engine installieren' "${SETUP}" | head -n1 | cut -d: -f1)
+if [ -n "${L_SSHD}" ] && [ -n "${L_LOCK}" ] && [ -n "${L_S1}" ] \
+  && [ "${L_SSHD}" -lt "${L_LOCK}" ] && [ "${L_LOCK}" -lt "${L_S1}" ]; then
+  pass "Wartungs-Lock nach sshd-Preflight und vor Schritt 1 (Meldungen sind wahr)"
+else
+  fail "Lock-Reihenfolge: sshd=${L_SSHD:-keine} lock=${L_LOCK:-keine} Schritt1=${L_S1:-keine}"
+fi
+grep -qF -- 'P-025 betrifft nur fail2ban' "${SETUP}" \
+  && fail "P-025-Kommentar widerspricht P-025 (Verbot von Restarts, nicht fail2ban)" \
+  || pass "kein widerspruechlicher P-025-Kommentar"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-007: ALLE PRUEFUNGEN BESTANDEN"

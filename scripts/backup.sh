@@ -63,7 +63,7 @@ fi
 
 # B-016: stale Orphan-Sweep (nur eigenes Muster, älter als 24 h). SIGKILL/Reboot
 # umgehen trap EXIT – ohne Sweep blieben .tmp.*-Orphans (600/root) ewig liegen.
-find "${BACKUP_DIR}" -maxdepth 1 -name 'coder_*.sql.gz.tmp.*' -mmin +1440 -delete 2>/dev/null || true
+find "${BACKUP_DIR}" -maxdepth 1 \( -name 'coder_*.sql.gz.tmp.*' -o -name 'coder.env.tmp.*' \) -mmin +1440 -delete 2>/dev/null || true
 
 # Mindestplatz vor dem Dump (P-007/B-015): klar abbrechen statt partieller Datei.
 # 500-MB-Bodenwert ist konservativ, aber UNVERMESSEN (kein Ersatz für
@@ -81,6 +81,20 @@ else
   echo "backup.sh: freier Platz in ${BACKUP_DIR} konnte nicht ermittelt werden (df fehlgeschlagen), Abbruch ohne Datei." >&2
   logger -t coder-backup "FEHLGESCHLAGEN: df konnte freien Platz nicht ermitteln" || true
   exit 1
+fi
+
+# .env-Kopie (alle Passwörter) mit ins Backup-Verzeichnis: ohne sie wäre nur
+# Pfad B (Neuaufbau mit neuen Passwörtern) möglich. Atomar ersetzt, 600 im
+# 700er Verzeichnis – geschützter als die Original-.env im 755er /opt/coder.
+# Kein Zeitstempel im Namen: der aktuelle Stand reicht, Rotation entfällt.
+# Erst NACH dem Platz-Check: bei voller Platte soll die klare Mindestplatz-
+# Meldung mit logger-Zeile kommen, nicht ein stiller install-Abbruch unter
+# set -e.
+if [ -f /opt/coder/.env ]; then
+  install -m 600 /opt/coder/.env "${BACKUP_DIR}/coder.env.tmp.$$"
+  mv -f "${BACKUP_DIR}/coder.env.tmp.$$" "${BACKUP_DIR}/coder.env"
+else
+  echo "Warnung: /opt/coder/.env fehlt – keine .env-Kopie in ${BACKUP_DIR} angelegt." >&2
 fi
 
 FINAL="${BACKUP_DIR}/coder_${TIMESTAMP}.sql.gz"

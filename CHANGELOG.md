@@ -14,6 +14,103 @@ Stand: 2026-10-03 · Basisstand dieses Eintrags: `824f1c6` auf `main`.
 
 ---
 
+## 2026-10-03 (4) – Grafana-Dashboard „Server-Last", Wartungsskripte vor dem Stack-Start, SSH-Drop-In `01-coder.conf`, Versions-Gate fürs Pre-Upgrade-Backup, `.env`-Kopie im Backup
+
+**Basisstand:** `167f378` (davor: Altstands-Phrasierungen aus Docs/Kommentaren
+entfernt, IServ-Fakten korrigiert – docs-only, ohne eigenen Eintrag).
+
+- **Umfang:** Aufträge 2026-10-03: (a) Dashboard laut Coder-Monitoring-Doku
+  mitprovisionieren (Gesamtlast des Servers als Zeitverlauf), (b) Review-Runde
+  „Punkte bewerten, umsetzen wenn zugestimmt".
+- **Umgesetzt:**
+  - Grafana-Provisioning um Dashboards erweitert (`dashboards.yml` +
+    `server-load.json`: CPU, RAM, Load-Average, Wurzelpartition), eigener
+    Container-Mount, Neustart-Trigger = Hash des gesamten Provisioning-Baums.
+  - `scripts/*.sh` werden am Ende von Schritt 2 geschrieben (vor `up -d`):
+    eine Unterbrechung zwischen Schritt 3 und 5 ließ den Re-Run vor
+    „inkonsistente Installation" (Volume ohne `backup.sh`) abbrechen.
+  - SSH-Drop-In `99-coder.conf` → `01-coder.conf`: sshd nimmt pro Keyword den
+    ersten Wert, 99 verlor gegen jede `50-*`-Datei (z. B. cloud-init); das
+    eigene Alt-Drop-In wird nur mit unserer Markierung entfernt, das
+    Härtungs-Snippet `00-coder-hardening.conf` sortiert weiterhin davor.
+  - Pre-Upgrade-Backup nur noch bei Versionswechsel gegen `versions.env`
+    (`-Fqx`-Abgleich, ohne Datei = Backup) – deckt den Code mit der längst
+    dokumentierten Erwartung („Bild-Wechsel"); Re-Runs ohne Versionssprung
+    laufen ohne Dump.
+  - `backup.sh` legt `backups/coder.env` (600, atomar, kein Zeitstempel)
+    ab; RESTORE.md nennt es als lokale `.env`-Quelle (weiterhin kein Offsite).
+  - Review-Runde „eindeutige Fehler" – 6 Funde, alle nachgeprüft und
+    umgesetzt: (1) Erstlauf-Abbruch vor `GRAFANA_PROV_BEFORE`, weil `find`
+    ohne Verzeichnis Exit 1 liefert und pipefail+set -e die Zuweisung still
+    beenden (jetzt `install -d` vor dem Hash, `|| true` an beiden Hashes);
+    (2) reset löscht `versions.env` mit – sonst blockiert der Downgrade-
+    Guard den Neuaufbau mit niedrigerer Version nach frischem Reset;
+    (3) docker-GID-Prüfung matcht jetzt als Vollstring im JSON
+    (`"99"` trifft nicht mehr `"999"`); (4) Kommentar „Fünf Regeln" auf die
+    drei realen Alarmregeln korrigiert (TLS-Regeln waren entfallen);
+    (5) Fertigstellungshinweis nennt README.md statt „Kopf des Skripts";
+    (6) reset-Hinweise nennen das Repo-Verzeichnis (setup liegt nicht in
+    `/opt/coder`).
+  - Erstkonto-Prompt bleibt bewusst (`read -rs`) und ist jetzt an den drei
+    maßgeblichen Stellen dokumentiert: Setup-Kopf, README „Schneller
+    Einstieg", OPERATIONS §11 – inkl. der Bedingungen (kein Konto,
+    EMAIL+USERNAME gesetzt, TTY) und der Browser-/Env-Variante.
+  - Review-Runde „eindeutige Fehler" (zweite Sammlung, 9 Funde, alle im Code
+    nachgeprüft und umgesetzt): (1) nach Erstkontosanlage kam zusätzlich
+    „Noch kein Nutzerkonto" – `HUMAN_USERS` wird im Erfolgszweig auf 1
+    gesetzt; (2) Hex-Zwang im .env-Gate nur noch für `POSTGRES_PASSWORD`
+    (Grafana-Passwort brach sonst den nächsten Lauf, obwohl die Doku die
+    Rotation per `grafana cli` vorschreibt – README/OPERATIONS/SECURITY/
+    TROUBLESHOOTING A4 synchronisiert); (3) Abschlusscheck liest
+    `State.Status` statt `State.Running` – im Restart-Loop meldet Docker
+    `Running=true` (auf dem Testhost gemessen), das wäre ein falsches
+    `[OK]` gewesen, dazu `--type container`; (4) nicht-interaktiver
+    Passwortweg bevorzugt über `CODER_FIRST_USER_PASSWORD_FILE` (root-only
+    Datei statt ps/History), A4-Kommentar ehrlich neu formuliert;
+    (5) `postgres_data`-Filter zusätzlich auf Projektlabel `coder`
+    (`name: coder` in der Compose-Datei) – ein fremdes Projekt-Volumen
+    löst Backup-/Startpfad nicht mehr aus; (6) P-025-Kommentar bereinigt
+    (P-025 = Restart-Verbot; die fail2ban-Behauptung war doppelt falsch);
+    (7) Wartungs-Lock wandert hinter alle read-only Preflights vor Schritt 1 –
+    „Abbruch vor jeder Serveränderung" ist dadurch wörtlich wahr und der
+    Kommentar bei der Downgrade-Guard wieder stimmt; (8) backup.sh:
+    Platz-Check vor der `.env`-Kopie (volle Platte = klare Meldung mit
+    logger statt stillem `set -e`-Abbruch); (9) reset: Argument- und
+    TTY-Prüfung vor dem Lock (Tippfehler/Pipe melden sofort, nicht nach bis
+    zu 300 s Wartezeit).
+- **Bewusst nicht umgesetzt:** Grafana-/Mail-Alerting (braucht SMTP-
+  Empfänger – offener Punkt Alarmweg; die 3 Prometheus-Regeln bleiben und
+  werden im UI gezeigt, ohne Anspruch auf Zustellung); Streichen von
+  `write_managed`-Validierung/Atomizität, Wartungs-Locks, `ok/warn/fail`-
+  Abschlusschecks, setup.conf-Parser (CRLF/Quotes/Domain-Guard),
+  `versions.env`-Downgrade-Guard, backup-Retention `KEEP_MIN`
+  (`find -mtime +14 -delete` könnte bei Cron-Lücke den ganzen Bestand
+  löschen), reset-`--force`/Volume-Gates, Erstkonto-CLI (in §11 vorgesehen),
+  Ticket-Kürzel in Kommentaren (Rückkopplung zur CHANGELOG-Disposition).
+- **Geänderte Dateien:** `setup-coder.sh`, `scripts/backup.sh`,
+  `scripts/reset-coder.sh`, `tests/t-b2-007-write-managed.sh` (11
+  `write_managed`-Adressen, 01-Pfad, Erstlauf-Hash-Guard, Status/Projektlabel/
+  Lock-Reihenfolge), `tests/t-b2-006-reset-precheck.sh` (versions.env-Löschung,
+  Checks vor dem Lock), `tests/t-b2-003-hex-migration.sh` (Gate nur noch
+  POSTGRES, Datei-Weg, `HUMAN_USERS=1`), `tests/t-071b-headercheck.sh`
+  (Reihenfolge Platz-Check/.env-Kopie), `README.md`, `OPERATIONS.md`,
+  `SECURITY.md`, `RESTORE.md`, `TROUBLESHOOTING.md`.
+- **Teststand (tatsächlich ausgeführt):** `bash -n` + `shellcheck -S warning`
+  sauber; Suite **294 PASS / 0 FAIL**; Pipefail-Mechanismus, GID-Match und
+  Restart-Loop-Zustand (`Status=restarting Running=true`) als Einzelbefunde
+  nachgestellt; Testhost `2.29.11.30`: Läufe 1–4 je RC=0 (Lauf 2:
+  „Grafana-Provisioning unverändert – kein Neustart", Version-Gate greift;
+  Lauf 3 nach sechs Fixes: 56 [OK]; Lauf 4 nach den neun Punkten: 56 [OK],
+  kein [FEHLER], deployte Positionen geprüft: Argument 40 < Lock 63 (reset),
+  sshd 322 < Lock 337 (setup), Platz-Check 73 < .env-Kopie 94 (backup),
+  `State.Status=running` liefert `[OK]`), `ls /etc/ssh/sshd_config.d/` = nur
+  `01-coder.conf`, `sshd -T` password/kbd=yes und
+  permitrootlogin=without-password, ufw aktiv (22/80/443 ALLOW), Grafana-API
+  `uid/server-load` liefert das Dashboard, 3 Alarmregeln geladen,
+  `backups/coder.env` 600 nach manuellem Backup-Lauf.
+- **Offene Punkte:** Alarmweg/Empfänger (SMTP-Kontaktpunkt), Inbetriebnahme-
+  Lauf am Zielserver.
+
 ## 2026-10-03 (3) – Versions-Bumps auf die aktuellen stabilen Upstream-Stände (Coder v2.37.3, Caddy 2.11, Prometheus v3.15.0, Grafana 12.4.12) + Verifikationslessons in AGENTS.md
 
 - **Umfang:** Auftrag „alle Versionsnummern prüfen und ggf. einbauen"

@@ -10,6 +10,12 @@
 # ablegen (Vorlage: setup.conf.example, gitignored) – die überlebt Re-Runs.
 # Für einen Lauf gilt weiterhin: sudo env DOMAIN_CODER=… ./setup-coder.sh
 # (Umgebung schlägt setup.conf, setup.conf schlägt den Default).
+# Einzige interaktive Eingabe: Erstlauf ohne vorhandenes Konto, wenn
+# CODER_FIRST_USER_EMAIL und CODER_FIRST_USER_USERNAME gesetzt und stdin ein
+# TTY sind, fragt das Skript einmal unsichtbar das Erstkonto-Passwort ab
+# (read -rs; leer lassen = Konto später im Browser anlegen). Sonst kein
+# Prompt. Nicht-interaktiv: CODER_FIRST_USER_PASSWORD_FILE (root-only Datei)
+# setzen – siehe OPERATIONS §11.
 #
 # Mehrfach ausführbar (idempotent): bei Abbruch, fehlendem DNS oder fehlender
 # Portweiterleitung einfach erneut laufen lassen; fehlendes DNS meldet der
@@ -60,12 +66,6 @@ if [ "${ID:-}" != "debian" ] || [ "${VERSION_CODENAME:-}" != "trixie" ]; then
   exit 1
 fi
 
-# Das Setup schreibt Compose- und Wartungsskripte und startet den Stack.
-# Ein paralleler Wartungslauf könnte Dateien während ihrer Ausführung
-# überschreiben. Vor diesen Konfigurations- und Stack-Änderungen nimmt das
-# Setup denselben flock wie die Wartungsskripte: er hängt am Deskriptor 8
-# dieses Prozesses und bleibt gesperrt, bis alle Prozesse ihn geerbt haben,
-# beendet sind. Alle Aufrufe hier sind kurzlebig, kein Dauerläufer erbt ihn.
 ENV_TMP=""
 MANAGED_TMP=""
 setup_cleanup() {
@@ -75,15 +75,6 @@ setup_cleanup() {
   done
   return "${rc}"
 }
-
-mkdir -p /opt/coder
-sh -c 'umask 077; : >> /opt/coder/.maintenance.lock; chown root:root /opt/coder/.maintenance.lock; chmod 600 /opt/coder/.maintenance.lock'
-exec 8>>/opt/coder/.maintenance.lock
-if ! flock -w 300 8; then
-  echo "Fehler: gemeinsamer Wartungs-Lock nach 300 s nicht erhalten; Setup abgebrochen (Exit 75)." >&2
-  exit 75
-fi
-export CODER_MAINTENANCE_LOCK_HELD=1
 trap setup_cleanup EXIT
 
 # Alle Werte lassen sich beim Aufruf per Umgebungsvariable überschreiben,
@@ -190,8 +181,9 @@ for _vv in ${VERSION_VARS}; do
   fi
 done
 # Persistierung steht NICHT hier (A1/A7): /opt/coder gibt es an dieser Stelle
-# noch nicht (erst ab Schritt 2), und eine Version darf erst eingetragen
-# werden, wenn sie wirklich läuft. Siehe direkt nach "docker compose up -d".
+# noch nicht (Ordner kommt erst nach allen Preflights), und eine Version darf
+# erst eingetragen werden, wenn sie wirklich läuft. Siehe direkt nach
+# "docker compose up -d".
 
 # ---- Hilfsfunktionen für die Zusammenfassung ab Schritt 4 -----------------
 declare -a SUMMARY=()
@@ -203,7 +195,11 @@ fail() { echo "  [FEHLER] $1"; SUMMARY+=("[FEHLER] $1"); ERROR_COUNT=$((ERROR_CO
 check_container_running() {
   local name="$1"
   local label="$2"
-  if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || echo false)" = "true" ]; then
+  # State.Status, nicht State.Running: im Restart-Loop meldet Docker
+  # Running=true (gemessen 2026-10-03), Status="restarting" – mit Running
+  # bekäme ein abstürzender Container ein fälschliches [OK]. --type
+  # schließt Namenskollision mit Image/Volume aus.
+  if [ "$(docker inspect --type container -f '{{.State.Status}}' "${name}" 2>/dev/null || echo missing)" = "running" ]; then
     ok "${label} läuft"
   else
     fail "${label} läuft NICHT – prüfen mit: sudo docker logs ${name}"
@@ -326,6 +322,24 @@ if [ -z "${SSHD_PORTS}" ]; then
   echo "Fehler: sshd -T lieferte keinen Port – Abbruch vor jeder Serveränderung." >&2
   exit 1
 fi
+
+# Wartungs-Lock: erst nach allen read-only Preflights (OS, Domain, Downgrade,
+# sshd) und vor dem ersten Eingriff – deshalb sind die Abbruchmeldungen oben
+# ("vor jeder Serveränderung") wörtlich zu nehmen. Das Setup schreibt Compose-
+# und Wartungsskripte und startet den Stack. Ein paralleler Wartungslauf
+# könnte Dateien während ihrer Ausführung überschreiben. Vor diesen
+# Konfigurations- und Stack-Änderungen nimmt das Setup denselben flock wie
+# die Wartungsskripte: er hängt am Deskriptor 8 dieses Prozesses und bleibt
+# gesperrt, bis alle Prozesse ihn geerbt haben, beendet sind. Alle Aufrufe
+# hier sind kurzlebig, kein Dauerläufer erbt ihn.
+mkdir -p /opt/coder
+sh -c 'umask 077; : >> /opt/coder/.maintenance.lock; chown root:root /opt/coder/.maintenance.lock; chmod 600 /opt/coder/.maintenance.lock'
+exec 8>>/opt/coder/.maintenance.lock
+if ! flock -w 300 8; then
+  echo "Fehler: gemeinsamer Wartungs-Lock nach 300 s nicht erhalten; Setup abgebrochen (Exit 75)." >&2
+  exit 75
+fi
+export CODER_MAINTENANCE_LOCK_HELD=1
 
 echo "############################################################"
 echo "# [1/7] Docker Engine installieren"
@@ -509,13 +523,12 @@ elif grep -qE '^POSTGRES_PASSWORD=[^[:space:]]+' /opt/coder/.env \
     exit 1
   fi
   # B-014/B2-003: Hex-Validierung bleibt fail-closed (auch im Setup-Re-Run),
-  # Nicht-Hex-Werte brechen die Postgres-Connection-URL. Das
-  # GRAFANA_ADMIN_PASSWORD wird manuell in .env neu gesetzt (danach Grafana
-  # neu starten); POSTGRES_PASSWORD muss manuell in DB und .env abgeglichen
-  # werden (TROUBLESHOOTING.md A4).
-  if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env \
-    || ! grep -qE '^GRAFANA_ADMIN_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
-    echo "Fehler: /opt/coder/.env enthält Nicht-Hex-Passwörter." >&2
+  # aber nur für POSTGRES_PASSWORD – Nicht-Hex bricht die Postgres-Connection-
+  # URL. GRAFANA_ADMIN_PASSWORD ist frei wählbar; gedreht wird per grafana cli
+  # (OPERATIONS.md „Passwörter rotieren"), der .env-Eintrag ist nur die
+  # abrufbare Kopie (POSTGRES manuell in DB und .env abgleichen: TROUBLESHOOTING.md A4).
+  if ! grep -qE '^POSTGRES_PASSWORD=[0-9a-f]+$' /opt/coder/.env; then
+    echo "Fehler: /opt/coder/.env: POSTGRES_PASSWORD ist nicht-hex." >&2
     echo "Reparatur: siehe TROUBLESHOOTING.md (A4), danach Setup erneut." >&2
     exit 1
   fi
@@ -674,9 +687,10 @@ services:
     container_name: coder-grafana
     restart: unless-stopped
     environment:
-      # Wirkt nur beim allerersten Start (leere grafana_data). Passwort danach
-      # in /opt/coder/.env (GRAFANA_ADMIN_PASSWORD) ändern und Grafana neu
-      # starten (siehe OPERATIONS.md).
+      # Wirkt nur beim allerersten Start (leere grafana_data); danach ist der
+      # .env-Eintrag nur noch die abrufbare Kopie. Drehen per grafana cli
+      # (OPERATIONS.md „Passwörter rotieren") – ein Neustart mit geänderter
+      # .env ändert das Passwort NICHT, Grafana hält es in seiner DB.
       - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
       # Kein GF_SERVER_ROOT_URL nötig – Zugriff per IP (Schulnetz oder
       # SSH-Tunnel), nicht über eine eigene Domain.
@@ -698,6 +712,8 @@ services:
       # Nur das Unterverzeichnis gemountet, damit der Rest von
       # /etc/grafana/provisioning des Images erhalten bleibt.
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      # Dashboards als eigenes Unterverzeichnis – gleiche Begründung.
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
@@ -819,7 +835,16 @@ EOF
 # Nur Grafana hat keine Reload-API und braucht weiterhin den Hash – dessen
 # Neustart ist invasiv und bleibt an die tatsächliche Änderung gebunden.
 # Grafana liest Provisioning-Dateien nur beim Start.
-GRAFANA_PROV_BEFORE=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml 2>/dev/null | cut -d' ' -f1 || true)
+# Ganzer Provisioning-Baum (Datasource + Dashboards): find+sort+sha256,
+# damit auch ein neu hinzugekommener Dashboards-Ordner den Hash ändert.
+# Verzeichnisse vorab anlegen: auf dem Erstlauf existieren sie noch nicht
+# (die install -d unten kommen erst nach dieser Stelle), "find" gäbe dann
+# Exit 1 und pipefail+set -e brächen hier ohne Meldung ab. "|| true" fängt
+# jeden weiteren Pipeline-Fehler ab: falscher Hash bedeutet nur einen
+# zusätzlichen Grafana-Neustart, kein Setup-Abbruch.
+install -d -m 0755 /opt/coder/grafana/provisioning/datasources \
+                  /opt/coder/grafana/provisioning/dashboards
+GRAFANA_PROV_BEFORE=$(find /opt/coder/grafana/provisioning -type f 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1 || true)
 # Lauf-Status VOR dem Schreiben (gleiche Idee wie CADDY_WAS_RUNNING): nur ein
 # Container, der schon mit der alten Datei lief, braucht danach einen Neustart.
 PROM_CFG_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-prometheus 2>/dev/null || echo false)
@@ -829,9 +854,8 @@ GRAFANA_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-grafana 2>/de
 # prometheus.yml – der Config-Validierer lädt die rule_files mit und sieht
 # so die frisch geschriebenen Regeln.
 # C3: Alarmregeln (einzige Alarmkanäle ohne Alertmanager: Prometheus-eigenen
-# /alerts + Grafana). Fünf Regeln, alle mit messbarer Grundlage:
+# /alerts + Grafana). Drei Regeln, alle mit messbarer Grundlage:
 #   1. Coder-Target down  2. Root-Partition <10% frei  3. letztes Backup >25h
-#   4. TLS-Zertifikatsbudget (20/Zertifikate je 7 Tage)  5. TLS-Metrik veraltet
 # Kein "absent()"-Zweig für Regel 3: fehlende Metrik = seit Aufsetzen noch
 # kein Backup gelaufen, das meldet ohnehin das erste erfolgreiche Laufdatum;
 # ehrlicher als ein Alarm direkt nach der Installation.
@@ -901,12 +925,142 @@ datasources:
     editable: false
 EOF
 
+# C3/Dashboards: Dashboard „Server-Last" (Gesamtlast des Servers über die Zeit:
+# CPU, Arbeitsspeicher, Load-Average, Wurzelpartition) als Anbieter + JSON
+# provisionieren. Weitere Dashboards: JSON in dasselbe Verzeichnis legen.
+install -d -m 0755 /opt/coder/grafana/provisioning/dashboards
+write_managed "/opt/coder/grafana/provisioning/dashboards/dashboards.yml" 644 - <<'EOF'
+apiVersion: 1
+
+providers:
+  - name: coder
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
+EOF
+
+write_managed "/opt/coder/grafana/provisioning/dashboards/server-load.json" 644 - <<'EOF'
+{
+  "id": null,
+  "uid": "server-load",
+  "title": "Server-Last",
+  "tags": ["coder"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU-Auslastung",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "Gesamt" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Arbeitsspeicher belegt",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))", "legendFormat": "belegt" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Load-Average",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "node_load1", "legendFormat": "1 Min" },
+        { "refId": "B", "expr": "node_load5", "legendFormat": "5 Min" },
+        { "refId": "C", "expr": "node_load15", "legendFormat": "15 Min" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Wurzelpartition belegt",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "coder-prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        { "refId": "A", "expr": "100 * (1 - (node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"}))", "legendFormat": "/" }
+      ]
+    }
+  ]
+}
+EOF
+
 # C1: Zielverzeichnis der Backup-Metrik. MUSS 0755 sein: backup.sh läuft mit
 # "umask 077" und würde das Verzeichnis sonst anlegen, wenn es fehlt – dann
 # könnte node-exporter die Datei nicht lesen und die Metrik bliebe tot.
 install -d -m 0755 /opt/coder/node-textfile
 
-GRAFANA_PROV_AFTER=$(sha256sum /opt/coder/grafana/provisioning/datasources/prometheus.yml | cut -d' ' -f1)
+GRAFANA_PROV_AFTER=$(find /opt/coder/grafana/provisioning -type f 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1 || true)
+
+# Wartungsskripte am Ende von Schritt 2 schreiben, VOR dem Stack-Start:
+# Schritt 3 verlangt bei vorhandenem DB-Volume /opt/coder/backup.sh und bricht
+# sonst als "inkonsistente Installation" ab – läge die Schleife noch in
+# Schritt 5, würde eine Unterbrechung zwischen "up -d" und Schritt 5 den
+# Re-Run genau dort aufbrechen. write_managed prueft *.sh per bash -n und
+# schreibt atomar.
+for _src in "${SETUP_DIR}"/scripts/*.sh; do
+  _src_base="$(basename "${_src}")"
+  write_managed "/opt/coder/${_src_base}" 755 "${_src_base}" < "${_src}"
+done
+# Alten TLS-Check-Bestand (check-tls.sh, Cron, Metrik, Log) still entfernen –
+# Caddy betreibt ACME selbst, eine eigene Zählung gibt es nicht (D-TLS);
+# jeweils idempotenter No-Op.
+rm -f /etc/cron.d/coder-tlscheck /opt/coder/check-tls.sh \
+      /var/log/coder-tls.log /opt/coder/node-textfile/coder_tls.prom
 
 echo "############################################################"
 echo "# [3/7] Docker-Stack starten"
@@ -929,39 +1083,50 @@ fi
 # zufällig gerade läuft: gestoppter Container + vorhandenes Volume + erneuter
 # Setup-Lauf würde sonst ohne Dump in eine mögliche Migration starten.
 # Erstlauf ohne Volume braucht kein Backup; Volume ohne backup.sh ist eine
-# inkonsistente Installation und bricht hart ab. Der Wartungs-Lock hängt
+# inkonsistente Installation und bricht hart ab (die Schleife steht seit
+# Schritt 2). Gesichert wird nur bei VersionsWECHSEL gegen versions.env –
+# nur dann läuft beim "up -d" eine DB-Migration; bei unveränderter Version
+# deckt der tägliche Cron-Lauf die Sicherung ab. Der Wartungs-Lock hängt
 # schon an diesem Prozess (CODER_MAINTENANCE_LOCK_HELD=1), backup.sh
 # erwirbt keinen zweiten. Fehlschlag bricht vor "up -d" ab, nichts ist
 # verändert. Gestopptes Postgres wird vor dem Dump gestartet (gepinntes
 # Major-Image, vorhandenes Volume – keine Coder-Migration, der läuft erst
 # mit dem Coder-Container in Schritt 3).
-if [ -n "$(docker volume ls -q --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null | head -n1)" ]; then
+# Projekt-Label (name: coder, steht in der Compose-Datei): ohne das würde
+# auch das postgres_data eines FREMDEN Compose-Projekts diesen Pfad auslösen.
+if [ -n "$(docker volume ls -q --filter "label=com.docker.compose.project=coder" --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null | head -n1)" ]; then
   if [ ! -x /opt/coder/backup.sh ]; then
     echo "FEHLER: DB-Volume vorhanden, aber /opt/coder/backup.sh fehlt – inkonsistente Installation, kein Upgrade ohne Backup-Möglichkeit." >&2
     echo "scripts/backup.sh aus dem Repo nach /opt/coder/ kopieren (755), dann Setup erneut." >&2
     exit 1
   fi
-  if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || echo false)" != "true" ]; then
-    echo "Postgres-Container läuft nicht, DB-Volume ist aber da – starte Postgres für das Pre-Upgrade-Backup ..."
-    docker compose up -d postgres
-    _pg_ready=false
-    for _ in $(seq 1 30); do
-      if docker exec coder-postgres pg_isready -U coder > /dev/null 2>&1; then
-        _pg_ready=true
-        break
+  # versions.env fehlt oder nennt eine andere Version (Erst-Upgrade,
+  # manueller Eingriff) => Backup laufen lassen. -Fqx: wörtlich, ganze Zeile.
+  if grep -Fqx "CODER_VERSION=${CODER_VERSION}" "${VERSIONS_FILE}" 2>/dev/null; then
+    echo "Coder-Version unverändert (${CODER_VERSION}) – Pre-Upgrade-Backup entfällt, keine DB-Migration erwartet (Cron sichert täglich)."
+  else
+    if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || echo false)" != "true" ]; then
+      echo "Postgres-Container läuft nicht, DB-Volume ist aber da – starte Postgres für das Pre-Upgrade-Backup ..."
+      docker compose up -d postgres
+      _pg_ready=false
+      for _ in $(seq 1 30); do
+        if docker exec coder-postgres pg_isready -U coder > /dev/null 2>&1; then
+          _pg_ready=true
+          break
+        fi
+        sleep 2
+      done
+      if [ "${_pg_ready}" != "true" ]; then
+        echo "FEHLER: Postgres wird nach 60 s nicht bereit – kein Dump möglich, Abbruch vor 'docker compose up -d'." >&2
+        exit 1
       fi
-      sleep 2
-    done
-    if [ "${_pg_ready}" != "true" ]; then
-      echo "FEHLER: Postgres wird nach 60 s nicht bereit – kein Dump möglich, Abbruch vor 'docker compose up -d'." >&2
+    fi
+    echo "Ziehe Pre-Upgrade-Backup vor möglicher DB-Migration (Version ${CODER_VERSION} neu gegenüber ${VERSIONS_FILE}) ..."
+    if ! env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
+      echo "FEHLER: Pre-Upgrade-Backup fehlgeschlagen – Abbruch vor 'docker compose up -d'." >&2
+      echo "Ursache prüfen (Platte/Postgres), Backup laufen lassen, dann Setup erneut." >&2
       exit 1
     fi
-  fi
-  echo "Ziehe Pre-Upgrade-Backup vor möglicher DB-Migration ..."
-  if ! env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
-    echo "FEHLER: Pre-Upgrade-Backup fehlgeschlagen – Abbruch vor 'docker compose up -d'." >&2
-    echo "Ursache prüfen (Platte/Postgres), Backup laufen lassen, dann Setup erneut." >&2
-    exit 1
   fi
 fi
 
@@ -1017,13 +1182,13 @@ else
   echo "Prometheus lief vorher nicht – kein SIGHUP (läuft mit der neuen Datei)."
 fi
 if [ "${GRAFANA_PROV_BEFORE}" = "${GRAFANA_PROV_AFTER}" ]; then
-  echo "Grafana-Datasource unverändert – kein Neustart."
+  echo "Grafana-Provisioning unverändert – kein Neustart."
 elif [ "${GRAFANA_WAS_RUNNING}" != "true" ]; then
-  echo "Grafana-Datasource neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
+  echo "Grafana-Provisioning neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
 elif docker restart coder-grafana > /dev/null 2>&1; then
-  ok "Grafana neu gestartet, damit Provisioning greift (C3)"
+  ok "Grafana neu gestartet, damit Provisioning (Datasource/Dashboards) greift (C3)"
 else
-  warn "Neustart von coder-grafana fehlgeschlagen – Konfiguration manuell nachziehen: sudo docker restart coder-grafana (C3)"
+  warn "Neustart von coder-grafana fehlgeschlagen – Provisioning manuell nachziehen: sudo docker restart coder-grafana (C3)"
 fi
 
 docker compose ps
@@ -1185,7 +1350,11 @@ fi
 # Konfiguration (ein einzelner Drop-In ist kein vollständiger Config-Check).
 # Bei Fehlschlag: alten Inhalt wiederherstellen und abbrechen – nie mit
 # ungetesteter Datei neu laden.
-SSHD_DROPIN="/etc/ssh/sshd_config.d/99-coder.conf"
+# Reihenfolge: sshd nimmt pro Keyword den ERSTEN Wert, Drop-ins werden
+# alphabetisch gelesen. 01-coder.conf schlägt jede 50-* -Datei (z.B.
+# cloud-init), das Härtungs-Snippet 00-coder-hardening.conf schlägt 01-coder
+# (Ziffernvergleich, keine Sonderzeichen-Abhängigkeit).
+SSHD_DROPIN="/etc/ssh/sshd_config.d/01-coder.conf"
 _SSHD_DROPIN_OLD="$(cat "${SSHD_DROPIN}" 2>/dev/null || true)"
 install -d -m 755 /etc/ssh/sshd_config.d
 write_managed "${SSHD_DROPIN}" 644 - <<'EOF'
@@ -1197,6 +1366,14 @@ PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 PermitRootLogin prohibit-password
 EOF
+# Alt-Format 99-coder.conf: 99 sortierte hinter allem (50-cloud-init.conf
+# gewann), die Effekt-Checks unten hätten jeden Lauf rot. Nur unser eigenes
+# Alt-Drop-In entfernen (Markierung im Header), fremde 99-coder.conf nicht.
+if [ -f /etc/ssh/sshd_config.d/99-coder.conf ] \
+  && grep -qF 'Von setup-coder.sh erzeugt (D-SSH)' /etc/ssh/sshd_config.d/99-coder.conf; then
+  rm -f /etc/ssh/sshd_config.d/99-coder.conf
+  echo "Eigenes Alt-Drop-In 99-coder.conf entfernt (Neformat: 01-coder.conf)."
+fi
 if ! _SSHD_T_OUT="$(sshd -T 2>&1)"; then
   echo "Fehler: sshd-Konfiguration nach dem Schreiben von ${SSHD_DROPIN} ist ungültig:" >&2
   printf '%s\n' "${_SSHD_T_OUT}" >&2
@@ -1303,20 +1480,6 @@ else
   fail "Reboot-Konfiguration (52-coder-reboot) fehlt"
 fi
 
-# Wartungsskripte: eine Schleife statt drei getrennter Pfade (frueher
-# Schritt 7 "install -m 755" plus zwei Einzel-Aufrufe). write_managed
-# prueft *.sh per bash -n und schreibt atomar – und die Skripte stehen
-# hier, bevor backup.sh in Schritt 6 das erste Mal gebraucht wird.
-for _src in "${SETUP_DIR}"/scripts/*.sh; do
-  _src_base="$(basename "${_src}")"
-  write_managed "/opt/coder/${_src_base}" 755 "${_src_base}" < "${_src}"
-done
-# Alten TLS-Check-Bestand (check-tls.sh, Cron, Metrik, Log) still entfernen –
-# Caddy betreibt ACME selbst, eine eigene Zählung gibt es nicht (D-TLS);
-# jeweils idempotenter No-Op.
-rm -f /etc/cron.d/coder-tlscheck /opt/coder/check-tls.sh \
-      /var/log/coder-tls.log /opt/coder/node-textfile/coder_tls.prom
-
 echo "############################################################"
 echo "# [6/7] Tägliches Datenbank-Backup einrichten"
 echo "############################################################"
@@ -1324,8 +1487,7 @@ echo "############################################################"
 # F-009(a): ohne Cron-Daemon läuft nie ein Backup, das Setup meldete trotzdem
 # [OK]. Das Paket wurde bereits in Schritt 1 installiert; hier werden die
 # geordneten Eintraege aktiviert.
-# "enable --now": enable ist idempotent, start ist No-Op wenn aktiv (kein
-# Ban-Verlust wie bei fail2ban-restart, P-025 betrifft nur fail2ban).
+# "enable --now": enable ist idempotent, start ist No-Op wenn aktiv.
 systemctl enable --now cron
 
 # /etc/cron.d/ statt "crontab -l | ... | crontab -": eine einzelne,
@@ -1424,9 +1586,11 @@ check_container_running "coder-grafana" "Grafana-Container"
 # F-007/P-012: "Container läuft" beweist keinen Socket-Zugriff. Host-seitige
 # Probe (kein Tool im Coder-Image vorausgesetzt): GroupAdd des Containers muss
 # die aktuelle docker-GID enthalten, sonst "Permission denied" auf
-# /var/run/docker.sock und keine Workspace-Provisionierung.
+# /var/run/docker.sock und keine Workspace-Provisionierung. Volltreffer in
+# JSON-Schreiben ("999"), kein Teilsting-Match: 99 dürfte nicht auf "999"
+# passen und fälschlich [OK] melden.
 if CODER_GROUPS=$(docker inspect --format '{{json .HostConfig.GroupAdd}}' coder 2>/dev/null); then
-  if [ -n "${DOCKER_GID:-}" ] && grep -q "${DOCKER_GID}" <<< "${CODER_GROUPS}"; then
+  if [ -n "${DOCKER_GID:-}" ] && grep -q "\"${DOCKER_GID}\"" <<< "${CODER_GROUPS}"; then
     ok "Coder-Container hat docker-GID ${DOCKER_GID} (Socket-Zugriff konfiguriert)"
   else
     fail "Coder-Container GroupAdd (${CODER_GROUPS}) enthält docker-GID ${DOCKER_GID:-?} NICHT – Socket-Zugriff prüfen (F-007)"
@@ -1514,18 +1678,36 @@ HUMAN_USERS="$(docker exec coder-postgres psql -U coder -d coder -tAc \
 # B1: optional die Erstanlage DURCH DAS SETUP, solange kein Konto existiert –
 # sonst würde der erste zufällige Aufrufer der Anmeldeseite Owner. Nur aktiv,
 # wenn der Betreiber E-Mail und Benutzername setzt (sonst unverändertes
-# Verhalten). A4: das Passwort kommt NIEMALS auf die Kommandozeile (sonst
-# läge es in bash_history, sudo-Log und ps): ohne gesetzte Variable wird es
-# hier interaktiv abgefragt (read -rs), Übergabe in den Container läuft
-# weiterhin per stdin (derselbe Weg wie der ALTER-USER unten).
+# Verhalten). A4: interaktiv kommt das Passwort NIEMALS auf eine Kommandozeile
+# (read -rs). Nicht-interaktiv bevorzugt CODER_FIRST_USER_PASSWORD_FILE – der
+# Pfad zeigt auf eine root-only Datei, ihr Inhalt bleibt in ps und History
+# weg; die nackte Variable CODER_FIRST_USER_PASSWORD ist bewusster Fallback
+# (steht bei "sudo env …" in ps und Shell-History – vorher abwägen).
+# Übergabe in den Container läuft per stdin (derselbe Weg wie der ALTER-USER
+# unten).
 if [ "${HUMAN_USERS}" = "0" ] \
   && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
   && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
-  && [ -z "${CODER_FIRST_USER_PASSWORD:-}" ] \
-  && [ -t 0 ]; then
-  read -rs -p "Erstkonto: Passwort für '${CODER_FIRST_USER_USERNAME}' eingeben (leer lassen = im Browser anlegen): " \
-    CODER_FIRST_USER_PASSWORD || CODER_FIRST_USER_PASSWORD=""
-  echo ""
+  && [ -z "${CODER_FIRST_USER_PASSWORD:-}" ]; then
+  if [ -n "${CODER_FIRST_USER_PASSWORD_FILE:-}" ]; then
+    if [ ! -r "${CODER_FIRST_USER_PASSWORD_FILE}" ]; then
+      echo "Fehler: CODER_FIRST_USER_PASSWORD_FILE='${CODER_FIRST_USER_PASSWORD_FILE}' ist nicht lesbar." >&2
+      exit 1
+    fi
+    CODER_FIRST_USER_PASSWORD="$(cat -- "${CODER_FIRST_USER_PASSWORD_FILE}")"
+    case "${CODER_FIRST_USER_PASSWORD}" in
+      '')
+        echo "Fehler: CODER_FIRST_USER_PASSWORD_FILE enthält kein Passwort (leere Datei)." >&2
+        exit 1 ;;
+      *$'\n'*)
+        echo "Fehler: CODER_FIRST_USER_PASSWORD_FILE enthält mehr als eine Zeile – nur einzeilige Passwörter." >&2
+        exit 1 ;;
+    esac
+  elif [ -t 0 ]; then
+    read -rs -p "Erstkonto: Passwort für '${CODER_FIRST_USER_USERNAME}' eingeben (leer lassen = im Browser anlegen): " \
+      CODER_FIRST_USER_PASSWORD || CODER_FIRST_USER_PASSWORD=""
+    echo ""
+  fi
 fi
 if [ "${HUMAN_USERS}" = "0" ] \
   && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
@@ -1541,6 +1723,9 @@ if [ "${HUMAN_USERS}" = "0" ] \
           export CODER_FIRST_USER_PASSWORD="$P"
           exec coder login http://127.0.0.1:3000 --first-user-trial=false ${CODER_FIRST_USER_FULL_NAME:+--first-user-full-name "$CODER_FIRST_USER_FULL_NAME"}' 2>&1); then
     ok "Erstkonto (Owner) angelegt: ${CODER_FIRST_USER_USERNAME}"
+    # Frisch angelegt – der case danach soll nicht "Noch kein Nutzerkonto"
+    # melden, nur weil HUMAN_USERS vor der Anlage gelesen wurde.
+    HUMAN_USERS=1
   else
     warn "Erstkonto NICHT angelegt: $(printf '%s' "${FIRST_OUT}" | tr '\n' ' ' | tail -c 300) – Konto manuell auf der Anmeldeseite anlegen, bevor die URL weitergegeben wird"
   fi
@@ -1576,7 +1761,7 @@ echo "============================================================"
 echo ""
 echo "Coder-URL (sobald DNS + Portweiterleitung stehen): https://${DOMAIN_CODER}"
 echo "Workspace-Apps/Port-Forwarding brauchen zusätzlich den Wildcard-DNS-Eintrag"
-echo "*.${DOMAIN_CODER} -> öffentliche Server-IP (siehe Kopf des Skripts)."
+echo "*.${DOMAIN_CODER} -> öffentliche Server-IP (siehe README.md)."
 echo "Neue Releases: Pin in setup-coder.sh (Versions-Variablen) ändern und"
 echo "das Setup erneut ausführen. Docker-Engine-Updates sind separat und manuell."
 echo "Grafana: nur 127.0.0.1:3001 (Login admin), Zugang per SSH-Tunnel: ssh -L 3001:127.0.0.1:3001 <user>@<server>, dann http://127.0.0.1:3001"

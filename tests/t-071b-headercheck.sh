@@ -97,6 +97,17 @@ else
   fail "Setup schreibt scripts/*.sh nicht (Schleife fehlt)"
 fi
 
+# 7. Reihenfolge: Mindestplatz-Check VOR der .env-Kopie – bei voller Platte
+# soll die klare Platz-Meldung (inkl. logger) kommen, kein stiller
+# install-Abbruch unter set -e.
+L_FREE=$(grep -nF 'MIN_FREE_BYTES=524288000' "${BACKUP}" | head -n1 | cut -d: -f1)
+L_COPY=$(grep -nF 'coder.env.tmp.$$' "${BACKUP}" | head -n1 | cut -d: -f1)
+if [ -n "${L_FREE}" ] && [ -n "${L_COPY}" ] && [ "${L_FREE}" -lt "${L_COPY}" ]; then
+  pass "Platz-Check steht vor der .env-Kopie (${L_FREE} < ${L_COPY})"
+else
+  fail "Reihenfolge Platz-Check/.env-Kopie: free=${L_FREE:-keine} copy=${L_COPY:-keine}"
+fi
+
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-071b: ALLE PRUEFUNGEN BESTANDEN"
 else

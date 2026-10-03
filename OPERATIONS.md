@@ -42,7 +42,7 @@ deterministisch neu (siehe Abschnitt 7).
 | `/etc/cron.d/coder-backup` | Cron: täglich 01:00 | ja |
 | `/etc/logrotate.d/coder-backup` | Rotation `/var/log/coder-backup.log` | ja |
 | `/etc/fail2ban/jail.d/10-coder-sshd.local` | Drop-In: Jail `sshd` (backend systemd) | ja |
-| `/etc/ssh/sshd_config.d/99-coder.conf` | SSH-Policy des Setups (Passwort ja, root nur Schlüssel), `sshd -T`-validiert | ja |
+| `/etc/ssh/sshd_config.d/01-coder.conf` | SSH-Policy des Setups (Passwort ja, root nur Schlüssel), `sshd -T`-validiert; eigenes Alt-Drop-In `99-coder.conf` wird beim Lauf entfernt | ja |
 | `/etc/apt/apt.conf.d/52-coder-reboot` | automatischer Reboot 03:00 | ja |
 | `/etc/docker/daemon.json` | Log-Limit json-file 10 MB × 3 (nur beim Fehlen geschrieben) | nein |
 | `/etc/apt/apt.conf.d/20auto-upgrades` | via debconf von unattended-upgrades | nein |
@@ -85,8 +85,9 @@ weiterhin nur über Umgebungsvariablen. Sonstiges und Pin-Regeln:
   gezielten Abrufbefehl für das Grafana-Passwort, nicht den Secret-Wert.
 - Eine unvollständige `.env` wird nie still neu gewürfelt – das Setup
   bricht ab und nennt die Reparatur.
-- Passwörter müssen hex sein (`[0-9a-f]`); sonst bricht das Setup ab und
-  nennt die Reparatur (TROUBLESHOOTING.md A4).
+- `POSTGRES_PASSWORD` muss hex sein (`[0-9a-f]`) – sonst bricht das Setup
+  ab und nennt die Reparatur (TROUBLESHOOTING.md A4). `GRAFANA_ADMIN_PASSWORD`
+  ist frei wählbar; gedreht wird nach Abschnitt 7.
 - Rotation (Grafana-Admin): kein Skript mehr, manuell nach Abschnitt 7
   „Passwörter rotieren". Passwort bei Bedarf gezielt abrufen:
 
@@ -134,9 +135,9 @@ sudo docker exec coder-caddy caddy reload    --config /etc/caddy/Caddyfile --ada
 Prometheus lädt `prometheus.yml` und Alarmregeln auf SIGHUP neu; das Setup
 sendet das Signal bei jedem Lauf, solange Prometheus läuft (Reload ist
 No-Op bei unveränderter Datei). Manuell:
-`sudo docker kill -s HUP coder-prometheus`. Grafana liest seine Datasource-
-Provisioning-Datei beim Start; das Setup startet Grafana bei einer Änderung
-dieser Datei neu (`sudo docker restart coder-grafana`).
+`sudo docker kill -s HUP coder-prometheus`. Grafana liest sein Provisioning
+(Datasource + Dashboards) beim Start; das Setup startet Grafana bei einer
+Änderung dieser Dateien neu (`sudo docker restart coder-grafana`).
 
 ## 5. Checks (Gesundheit prüfen)
 
@@ -287,6 +288,11 @@ Generationen bleiben erhalten.
   `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`.
 - Die Datasource `Prometheus` wird beim Setup automatisch provisioniert
   (`/opt/coder/grafana/provisioning/datasources/`) – kein Eintragen im UI.
+- Ebenso das Dashboard **„Server-Last"**
+  (`/opt/coder/grafana/provisioning/dashboards/server-load.json`): CPU,
+  Arbeitsspeicher, Load-Average und Wurzelpartition über die Zeit – die
+  Gesamtlast des Servers als Zeitverlauf. Weitere Dashboards kommen als JSON
+  in dasselbe Verzeichnis; bei Änderung startet das Setup Grafana neu.
 - **Drei Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
   Coder-Target down, Root-Partition <10 % frei, letztes Backup älter als
   25 Stunden. Sie sind einsehbar unter `http://127.0.0.1:9090/alerts`
@@ -406,11 +412,11 @@ allem, nichts verändert**; `--force` hebt diese Klemme nicht auf) →
 letztes Backup → Bestätigung → Prüfung, ob Container ein zu löschendes
 Volume halten (Abbruch vor `down`, nichts angefasst) → `docker compose
 down --remove-orphans` → Löschen der Volumes `postgres_data`,
-`grafana_data`, `prometheus_data` → `.env` entfernen. Unbekannte
-Argumente werden abgelehnt (erlaubt: keine oder `--force`).
+`grafana_data`, `prometheus_data` → `.env` und `versions.env` entfernen.
+Unbekannte Argumente werden abgelehnt (erlaubt: keine oder `--force`).
 
 Bleiben erhalten: Backups, Caddy-Zertifikate (`caddy_data`/`caddy_config`),
-alle Einstellungen außerhalb des Coder-Stacks. Danach:
+alle Einstellungen außerhalb des Coder-Stacks. Danach im Repo-Verzeichnis
 `sudo ./setup-coder.sh`.
 
 `--force` ist kein Komfort-Flag: er setzt den Reset auch ohne
@@ -439,7 +445,7 @@ ausführen – nicht dauerhaft auf dem Server korrigieren.
 |---|---|
 | Was | `pg_dump` der Datenbank `coder`, gzip-komprimiert |
 | Wann | täglich 01:00 Uhr (`/etc/cron.d/coder-backup`), manuell `sudo /opt/coder/backup.sh` |
-| Wo | `/opt/coder/backups/coder_<YYYY-MM-DD_HHMMSS>.sql.gz` (700/Verzeichnis, 600/Datei) |
+| Wo | `/opt/coder/backups/coder_<YYYY-MM-DD_HHMMSS>.sql.gz` (700/Verzeichnis, 600/Datei); dazu `backups/coder.env` (600, `.env`-Kopie, bei jedem Backup-Lauf erneuert, lokal kein Offsite) |
 | Verifikation | `gzip -t` (hart), SQL-Header (hart), Größe < 512 B (Warnung), halbiert gegenüber Vorgänger (Warnung) |
 | Rotation | neueste 14 Dateien, Mindestbestand eingebaut |
 | Parallelität | gemeinsamer Wartungs-`flock` plus Backup-`flock`; parallele Läufe warten bis zu 300 s. Bei weiter belegtem Lock Exit 75, ohne neues Backup |
@@ -615,9 +621,26 @@ zum Server.
             ./setup-coder.sh
    ```
 
-   Das Passwort fragt das Skript dabei interaktiv ab (A4, `read -rs`);
-   in nicht-interaktiven Läufen muss `CODER_FIRST_USER_PASSWORD='…'`
-   gesetzt sein (hinter dem sudo, nie in Logs/Tickets). Selbst wählen:
+   Das Passwort fragt das Skript dabei interaktiv ab (A4, `read -rs`) –
+   **gewollt und die einzige Eingabe des Laufs**: nur solange kein
+   menschliches Konto existiert, `CODER_FIRST_USER_EMAIL`/`_USERNAME`
+   gesetzt sind und stdin ein TTY ist; Enter ohne Eingabe überspringt die
+   Anlage (Browser-Registrierung).
+   In nicht-interaktiven Läufen (ohne TTY) das Passwort bevorzugt aus einer
+   root-only Datei geben – ihr Inhalt steht dann weder in `ps` noch in der
+   Shell-History:
+
+   ```bash
+   read -rs -p 'Erstkonto-Passwort: ' _p; echo
+   sudo sh -c 'umask 077; cat > /root/.erstkonto-passwort' <<< "$_p"
+   unset _p
+   sudo env CODER_FIRST_USER_PASSWORD_FILE=/root/.erstkonto-passwort ./setup-coder.sh
+   sudo rm -f /root/.erstkonto-passwort
+   ```
+
+   Fallback: `CODER_FIRST_USER_PASSWORD='…'` direkt hinter dem sudo – das
+   steht kurz in `ps` und dauerhaft in der Shell-History; nie in Logs oder
+   Tickets. Selbst wählen:
    **lange Passphrase**, kein bekanntes Standard- oder Schulpasswort
    (SSH und Coder teilen sich das Netz; fail2ban begrenzt Versuche,
    ersetzt aber keine Passwortstärke).

@@ -52,13 +52,13 @@ auch `exit 1` liefert – Warnungen lassen den Stack laufen.
 | **Erwartete Ursache** | Hand-Edit oder abgebrochener Lauf hat Schlüssel entfernt/geleert. |
 | **Sichere Behebung** | Fehlende Schlüssel von Hand ergänzen, vorhandene Werte behalten (Reparaturtext des Setups), danach Setup erneut ausführen. Eine Passwort-Rotation (OPERATIONS §7) setzt nur `GRAFANA_ADMIN_PASSWORD` und vervollständigt keine fehlenden Schlüssel. Bei fehlender `.env` oder Totalverlust: vollständige `.env` wiederherstellen bzw. Restore nach Runbook. |
 
-### A4. `/opt/coder/.env enthält Nicht-Hex-Passwörter`
+### A4. `/opt/coder/.env: POSTGRES_PASSWORD ist nicht-hex`
 
 | | |
 |---|---|
-| **Diagnose** | `sudo awk -F= '{ if ($1 == "POSTGRES_PASSWORD") name=$1; else if ($1 == "GRAFANA_ADMIN_PASSWORD") name=$1; else next; value=substr($0, index($0, "=") + 1); print name ": " (value ~ /^[0-9a-f]+$/ ? "hex" : "nicht-hex") }' /opt/coder/.env` – zeigt keine Secret-Werte |
+| **Diagnose** | `sudo awk -F= '$1 == "POSTGRES_PASSWORD" { v = substr($0, index($0, "=") + 1); print "POSTGRES_PASSWORD: " (v ~ /^[0-9a-f]+$/ ? "hex" : "nicht-hex") }' /opt/coder/.env` – zeigt keinen Secret-Wert |
 | **Erwartete Ursache** | Legacy-Wert mit Sonderzeichen aus einer älteren Installation. |
-| **Sichere Behebung** | Zuerst die betroffene Zeile bestimmen (Diagnose oben). **GRAFANA_ADMIN_PASSWORD betroffen:** nach OPERATIONS §7 neu setzen (Backup vorweg, stdin-Reset in Grafana, `.env`-Zeile atomar nachziehen), danach Setup erneut. **POSTGRES_PASSWORD betroffen:** Rezept darunter ausführen, danach Setup erneut. |
+| **Sichere Behebung** | Rezept darunter ausführen (Reihenfolge DB → `.env` → Coder), danach Setup erneut. `GRAFANA_ADMIN_PASSWORD` löst diesen Abbruch nicht mehr aus (frei wählbar); drehen nach OPERATIONS §7. |
 
 `POSTGRES_PASSWORD` neu setzen – Reihenfolge DB → `.env` → Coder, damit ein
 Abbruch immer den alten, konsistenten Zustand lässt (F-010); ein Tausch in
@@ -81,7 +81,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo python3 -c 'from pathlib import Path; b=Path("/opt/coder/.env").read_bytes(); print("NUL:", "ja" if b"\0" in b else "nein", "Zeilen:", len(b.splitlines()))'` – die reguläre `.env` hat zwei Schlüsselzeilen (ältere Installationen drei); das Kommando gibt keine Werte aus |
 | **Erwartete Ursache** | Zeilenumbruch beim Hand-Edit; grep/compose lesen nur die erste Zeile. |
-| **Sichere Behebung** | Die fehlerhafte Zusatzzeile entfernen und die Schlüsselzeilen wiederherstellen, ohne Secret-Werte zu trimmen oder auszugeben. Danach Setup erneut ausführen; zeigt das Setup-Gate Nicht-Hex an: A4. |
+| **Sichere Behebung** | Die fehlerhafte Zusatzzeile entfernen und die Schlüsselzeilen wiederherstellen, ohne Secret-Werte zu trimmen oder auszugeben. Danach Setup erneut ausführen; zeigt das Setup-Gate `POSTGRES_PASSWORD ist nicht-hex` an: A4. |
 
 ### A6. `Port <p>/<pr> von fremdem Listener belegt (B2-008)`
 
@@ -376,7 +376,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 | | |
 |---|---|
 | **Diagnose** | `sudo sshd -T \| grep -iE '^(passwordauthentication\|kbdinteractiveauthentication\|permitrootlogin)'` |
-| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv und seit 2026-10-03 im Drop-In `/etc/ssh/sshd_config.d/99-coder.conf` fixiert; der Abschlusscheck meldet ihn als `OK` (Setup-Versionen vor 2026-10-01 warnten hier). Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
+| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv und im Setup-Drop-In `/etc/ssh/sshd_config.d/01-coder.conf` fixiert; der Abschlusscheck meldet ihn als `OK` (Setup-Versionen vor 2026-10-01 warnten hier). Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
 | **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Warnung ist nur dann beabsichtigt, wenn `permitrootlogin yes` steht (muss auf `prohibit-password`). Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann das Drop-In aus [SECURITY.md](SECURITY.md) Abschnitt 1 bewusst angelegt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
 
 ### G3. Warnung: `ufw-IPv6-Pfad unklar (kein IPV6=yes …)`
