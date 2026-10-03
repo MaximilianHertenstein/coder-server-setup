@@ -9,10 +9,58 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-03 · Basisstand dieses Eintrags: `825cd3f` auf `main`.
+Stand: 2026-10-03 · Basisstand dieses Eintrags: `824f1c6` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
+
+## 2026-10-03 (3) – Versions-Bumps auf die aktuellen stabilen Upstream-Stände (Coder v2.37.3, Caddy 2.11, Prometheus v3.15.0, Grafana 12.4.12) + Verifikationslessons in AGENTS.md
+
+- **Umfang:** Auftrag „alle Versionsnummern prüfen und ggf. einbauen"
+  (2026-10-03). Pins in `setup-coder.sh` gegen die Upstream-Quellen geprüft
+  (GitHub-Releases inkl. `prerelease`-Flags, Docker-Hub-Tags) und umgestellt:
+  - `CODER_VERSION` `v2.36.6` → **`v2.37.3`** (`prerelease: false`,
+    2026-09-22; ghcr.io-Tag mit `v`-Präfix erneut live geprüft → HTTP 200)
+  - `CADDY_VERSION` `2.10` → **`2.11`** (bewusst Minor-Pin; Tags `2.11`/
+    `2.11-alpine` vorhanden, 2.11.7 released 2026-10-03)
+  - `PROMETHEUS_VERSION` `v3.14.0` → **`v3.15.0`** (2026-09-25)
+  - `GRAFANA_VERSION` `12.4.5` → **`12.4.12`** (`prerelease: false`;
+    12.x-Security-Backport-Linie)
+  - `NODE_EXPORTER_VERSION` `v1.12.1` = aktueller Latest-Stand, unverändert;
+    `postgres:18-alpine` bleibt (19 nur `beta4`, außerdem Major-Entscheidung
+    mit Backup, Fehler 7); Docker-Engine ohnehin apt-gesteuert und unpinned.
+- **Bewusst nicht gebumpt:** Grafana-Major 13 (Daten-Migration der lokalen
+  SQLite, erst im Upgrade-Fenster nach Compat-Check); Coder-Downgrade-Schutz
+  bleibt unverändert (Upgrades ohne Rückfrage, Gate nur gegen runter).
+- **Caddy-Kommentare mit `caddy:2.11` neu verifiziert:** Entrypoint leer +
+  Cmd `caddy run …` (weiterhin `--entrypoint` nötig) und
+  `unrecognized ACME issuer property: acme_ca` im Issuer-Block reproduziert;
+  beide Kommentare nennen jetzt 2.11.
+- **Doku synchron:** README-Bild- und Default-Tabellen auf die neuen Pins,
+  SECURITY §5 Pin-Beispiel `2.11`; nebenbei in der README-Architektur-Tabelle
+  „ufw `limit` + fail2ban" → „`allow` + fail2ban" (Stand der D-SSH-Revision
+  von 2026-10-03); der Versions-Open-Point entfällt, weil umgesetzt.
+- **AGENTS.md:** die in dieser Runde tatsächlich ausgeführten Test- und
+  Verifikationsbefehle als Lessons festgehalten (Suite-Loop mit `ROT`-Meldung,
+  Testhost-rsync + Doppellauf, Abnahme-Greps; Pitfalls: `grep -c` bei null
+  Treffern → `|| true`, Test-/Doku-Counts bei Datei-Rotation mitziehen).
+- **Geänderte Dateien:** `setup-coder.sh`, `README.md`, `SECURITY.md`,
+  `AGENTS.md`, `CHANGELOG.md`.
+- **Teststand (lokal):** 9 Dateien, 278 PASS, 0 FAIL; `bash -n` und
+  `shellcheck -S warning` ohne Befund.
+- **Teststand (Test-Host `2.29.11.30`, 2026-10-03):** rsync + zwei volle
+  Läufe RC 0 (Lauf 2: 56× `[OK]`, 0 Fehler). Nachweise: `versions.env` =
+  `CODER_VERSION=v2.37.3`; `compose ps` zeigt alle sechs neuen Images
+  (`caddy:2.11`, `prom/prometheus:v3.15.0`, `grafana/grafana:12.4.12`,
+  `ghcr.io/coder/coder:v2.37.3`); volumenbasiertes Pre-Upgrade-Backup 13:55
+  vor dem Bildwechsel; Coder-API `buildinfo` = `v2.37.3+3a24816`; alte
+  Images bleiben als Rollback-Basis; Pre-Flights (`caddy validate` mit 2.11,
+  `promtool` 3.15) grün; die `healthz`-WARNung bleibt der bekannte externe
+  Blocker (Domain zeigt nicht auf den Host).
+- **Offene Punkte:** Grafana-Major 13 erst nach Compat-Check, Postgres-Major
+  erst mit Backup-Entscheidung; sonst unverändert aus dem Eintrag oben
+  (DNS-Weg 80/443 + Kasserver-Zugang, Offsite-Ziel, B-11-Labels,
+  Budget-Sichtprüfung).
 
 ## 2026-10-03 (2) – Externes Review „Korrekturen + Vereinfachung" dispositioniert: Grafana auf Loopback, SSH-Drop-In, Reset-Gate, check-tls/Hashstore-Ära beendet
 

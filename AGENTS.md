@@ -119,6 +119,32 @@ Prefer:
 
 Never claim a test passed unless it was actually executed.
 
+Commands used in this repo (run all after a change; expected result: every
+test file prints `PASS` lines and exits 0, no `ROT:` line):
+
+```bash
+bash -n setup-coder.sh scripts/*.sh tests/*.sh
+shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
+for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
+```
+
+Full runs happen on the isolated test host, never on production:
+
+```bash
+rsync -a --delete --exclude .git --exclude 'session-*.md' ./ root@2.29.11.30:/root/coder-server-setup/
+ssh root@2.29.11.30 'cd /root/coder-server-setup && ./setup-coder.sh'
+```
+
+Run the host setup twice (idempotency) and check acceptance greps:
+`sshd -T` (passwordauthentication, permitrootlogin), `ufw status`,
+`ss -tlnp | grep 3001`, `ls /etc/cron.d/`, Prometheus alert-rule count.
+
+Pitfalls learned here:
+
+- `grep -c` exits 1 at zero matches; append `|| true` in assertions.
+- When adding/removing test files or a `write_managed` target, update the
+  counts quoted in README/CHANGELOG/docs in the same change.
+
 ## Documentation
 
 Everything the operator or operations depends on lives in the docs at its

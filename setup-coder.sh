@@ -128,19 +128,24 @@ if ! [[ "${DOMAIN_CODER}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
   exit 1
 fi
 # Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt, CADDY bewusst nur
-# minor-gepinnt (z. B. "2.10") – TLS-taugliche Patch-Updates sollen über
+# minor-gepinnt (z. B. "2.11") – TLS-taugliche Patch-Updates sollen über
 # "docker compose pull" ankommen; postgres:18-alpine analog (Major-Tag).
-# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.36.6). Am 2026-09-28 und
+# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.37.3). Am 2026-09-28 und
 # erneut am 2026-10-03 gegen die Registry geprüft: ghcr.io/coder/coder:2.36.6
 # und :2.37.3 -> HTTP 404, mit "v" (v2.36.6/v2.37.3) -> 200; die Release-
 # Notes nennen das Tag teils ohne "v" (falsch, das bricht Schritt 3 ab).
 # Vor jeder Versionserhöhung IMMER per "docker pull"
 # gegen die Registry belegen, nicht nach dem Wortlaut der Notes. Für einen
 # bit-genauen, reproduzierbaren Pin bräuchte man ein Image-Digest (sha256:...).
-: "${CODER_VERSION:=v2.36.6}"              # https://github.com/coder/coder/releases prüfen
-: "${CADDY_VERSION:=2.10}"                # https://hub.docker.com/_/caddy/tags
-: "${PROMETHEUS_VERSION:=v3.14.0}"        # https://github.com/prometheus/prometheus/releases
-: "${GRAFANA_VERSION:=12.4.5}"            # https://github.com/grafana/grafana/releases
+# Stand 2026-10-03 (Upstream-Stable geprüft: releases/latest bzw.
+# prerelease-Flags): Coder v2.37.3 (v2.36.6 war die Vorgängerlinie),
+# Caddy 2.11 (2.11.7 released), Prometheus v3.15.0, Grafana 12.4.12
+# (12.x-Security-Backports; Major 13 bewusst nicht), node-exporter
+# v1.12.1 = aktuell, Postgres 19 nur Beta -> 18-alpine bleibt.
+: "${CODER_VERSION:=v2.37.3}"              # https://github.com/coder/coder/releases prüfen
+: "${CADDY_VERSION:=2.11}"                # https://hub.docker.com/_/caddy/tags
+: "${PROMETHEUS_VERSION:=v3.15.0}"        # https://github.com/prometheus/prometheus/releases
+: "${GRAFANA_VERSION:=12.4.12}"           # https://github.com/grafana/grafana/releases
 : "${NODE_EXPORTER_VERSION:=v1.12.1}"     # https://github.com/prometheus/node_exporter/releases
 # Review 0.3 + Punkt-3-Entscheidung (Review-Set 2026-10-03): Admin-
 # Adressen, die fail2ban nie sperren darf – NUR echte Admin-Plätze hier
@@ -286,7 +291,7 @@ retry3() {
 # A2: Validierer für write_managed – prüfen die TEMP-Datei (Pfad $1), bevor die
 # Live-Datei ausgetauscht wird. Die caddy-/promtool-Präfixe brauchen die
 # Images, deshalb wird vor dem Schreiben dieser Dateien gepullt (siehe unten).
-# caddy:2.10 hat KEINEN ENTRYPOINT (nur CMD ["caddy","run",...]) – ohne
+# caddy:2.11 hat KEINEN ENTRYPOINT (nur CMD ["caddy","run",...]) – ohne
 # --entrypoint würde "validate" selbst als Binary ausgeführt und scheitern
 # mit 'executable file not found in $PATH'.
 validate_compose() {
@@ -769,7 +774,7 @@ DOMAIN_CODER_REGEX="^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*(--[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*
 # verbrauchen. Leer = Caddys Standard. Die Zeile entsteht nur, wenn gesetzt –
 # ein leeres "acme_ca" ohne Argument wäre ungültig. Gehört in den GLOBALen
 # Block, nicht in "issuer acme { }": dort ist "acme_ca" kein gültiges
-# Property (mit caddy:2.10 nachgeprüft: "unrecognized ACME issuer property"),
+# Property (mit caddy:2.11 nachgeprüft: "unrecognized ACME issuer property"),
 # während die globale Option in beide Issuer (Apex + On-Demand) durchschlägt.
 CADDY_ACME_CA=""
 if [ -n "${ACME_CA:-}" ]; then

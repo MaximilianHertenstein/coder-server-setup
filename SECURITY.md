@@ -323,7 +323,7 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   Gesundheit meldet sich nur, wer sie abfragt (manuelle Checks in
   [OPERATIONS.md](OPERATIONS.md)).
 - Image-Pinning: Coder/Prometheus/Grafana/node-exporter exakt, Caddy minor
-  (`2.10`) und `postgres:18-alpine` mit beweglichen Tags. Ein
+  (`2.11`) und `postgres:18-alpine` mit beweglichen Tags. Ein
   bit-genauer Pin bräuchte Digests (`sha256:…`) – nicht umgesetzt.
   Alte Images bleiben nach Updates als Rollback-Basis erhalten (kein
   Auto-Prune).
