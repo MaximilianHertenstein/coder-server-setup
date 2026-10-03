@@ -68,6 +68,8 @@ find "${BACKUP_DIR}" -maxdepth 1 -name 'coder_*.sql.gz.tmp.*' -mmin +1440 -delet
 # Mindestplatz vor dem Dump (P-007/B-015): klar abbrechen statt partieller Datei.
 # 500-MB-Bodenwert ist konservativ, aber UNVERMESSEN (kein Ersatz für
 # Platten-Monitoring; retention.size/check.sh erst nach Messung, D-Monitoring).
+# Fehler 12 (Review-Set 2026-10-03): df selbst schlägt fehl -> ABBRUCH,
+# nicht stumm weiter (sonst läuft der Dump ohne Platzprüfung in die ENOSPC).
 MIN_FREE_BYTES=524288000
 if FREE_BYTES=$(df --output=avail -B1 "${BACKUP_DIR}" 2>/dev/null | tail -n1 | tr -d ' '); then
   if [ "${FREE_BYTES}" -lt "${MIN_FREE_BYTES}" ]; then
@@ -75,6 +77,10 @@ if FREE_BYTES=$(df --output=avail -B1 "${BACKUP_DIR}" 2>/dev/null | tail -n1 | t
     logger -t coder-backup "FEHLGESCHLAGEN: zu wenig Platz (${FREE_BYTES} Bytes frei)" || true
     exit 1
   fi
+else
+  echo "backup.sh: freier Platz in ${BACKUP_DIR} konnte nicht ermittelt werden (df fehlgeschlagen), Abbruch ohne Datei." >&2
+  logger -t coder-backup "FEHLGESCHLAGEN: df konnte freien Platz nicht ermitteln" || true
+  exit 1
 fi
 
 FINAL="${BACKUP_DIR}/coder_${TIMESTAMP}.sql.gz"

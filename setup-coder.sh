@@ -130,10 +130,11 @@ fi
 # Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt, CADDY bewusst nur
 # minor-gepinnt (z. B. "2.10") – TLS-taugliche Patch-Updates sollen über
 # "docker compose pull" ankommen; postgres:18-alpine analog (Major-Tag).
-# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.36.6). Am 2026-09-28 gegen
-# die Registry geprüft: ghcr.io/coder/coder:2.36.6 -> HTTP 404,
-# :v2.36.6 -> Pull ok; die Release-Notes nennen das Tag teils ohne "v" (falsch,
-# das bricht Schritt 3 ab). Vor jeder Versionserhöhung IMMER per "docker pull"
+# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.36.6). Am 2026-09-28 und
+# erneut am 2026-10-03 gegen die Registry geprüft: ghcr.io/coder/coder:2.36.6
+# und :2.37.3 -> HTTP 404, mit "v" (v2.36.6/v2.37.3) -> 200; die Release-
+# Notes nennen das Tag teils ohne "v" (falsch, das bricht Schritt 3 ab).
+# Vor jeder Versionserhöhung IMMER per "docker pull"
 # gegen die Registry belegen, nicht nach dem Wortlaut der Notes. Für einen
 # bit-genauen, reproduzierbaren Pin bräuchte man ein Image-Digest (sha256:...).
 : "${CODER_VERSION:=v2.36.6}"              # https://github.com/coder/coder/releases prüfen
@@ -141,23 +142,28 @@ fi
 : "${PROMETHEUS_VERSION:=v3.14.0}"        # https://github.com/prometheus/prometheus/releases
 : "${GRAFANA_VERSION:=12.4.5}"            # https://github.com/grafana/grafana/releases
 : "${NODE_EXPORTER_VERSION:=v1.12.1}"     # https://github.com/prometheus/node_exporter/releases
-# Review 0.3: Admin-Adressen, die fail2ban nie sperren darf (geteilte
-# Schul-NAT: 5 Fehlversuche sperrten sonst die gemeinsame Quell-IP).
-# Nur Admin-Plaetze eintragen, nicht das ganze Schuelernetz.
+# Review 0.3 + Punkt-3-Entscheidung (Review-Set 2026-10-03): Admin-
+# Adressen, die fail2ban nie sperren darf – NUR echte Admin-Plätze hier
+# eintragen, ausdrücklich NICHT die geteilte Schul-NAT: Rateversuche aus
+# dem Schulnetz sollen nach 5 Fehlversuchen sperren. Bewusst akzeptiert:
+# die gemeinsame NAT-IP kann dann gesperrt sein (Recovery: anderes Netz
+# oder Proxmox-Konsole). Default bleibt loopback.
 : "${FAIL2BAN_IGNORE_IP:=127.0.0.1/8 ::1}"
 
-# ---- Wirksam gewesene Versionen + Downgrade-Schutz (A5) --------------------
-# Die fünf Versionen sind exakt gepinnt. Führt man das Skript mit einer
-# NIEDRIGEREN Version aus (älterer Repo-Stand, Verwechslung, versehentlicher
-# Rollback), würde "docker compose up -d" die Images still zurücksetzen – bei
-# Coder mit DB-Schema-Migrationen u. U. irreversibel. Daher wird die zuletzt
-# wirksam gewesene Version in /opt/coder/versions.env gemerkt (nur
-# Versionen, keine Geheimnisse -> 644, ohne sudo lesbar) und jeder
+# ---- Wirksam gewesene Version + Downgrade-Schutz (A5) ---------------------
+# Gepinnt und geschützt wird nur CODER_VERSION: allein Coder führt
+# DB-Schema-Migrationen aus, ein stilles Zurücksetzen wäre dort irreversibel.
+# Caddy/Prometheus/node-exporter sind beim Restarten zustandslos, ihr
+# Versionswechsel ist ein bewusster Compose-Tag-Eintrag; Grafana-Downgrades
+# sind wegen der lokalen SQLite-Daten bewusste Manuellearbeit (Release-Notes
+# lesen). POSTGRES_VERSION wird gar nicht verwaltet: Postgres-Major nur
+# manuell ändern, immer mit frischem Backup (Review-Set 2026-10-03, Fehler 7).
+# Versions.env: nur Version, keine Geheimnisse -> 644, ohne sudo lesbar.
 # Downgrade-Versuch hart abgebrochen, sofern nicht ausdrücklich
 # CODER_ALLOW_DOWNGRADE=yes gesetzt ist (bewusster Rollback, siehe
 # RESTORE.md). Eine Änderung NACH oben (Upgrade) bleibt ohne Rückfrage.
 VERSIONS_FILE="/opt/coder/versions.env"
-VERSION_VARS="CODER_VERSION CADDY_VERSION PROMETHEUS_VERSION GRAFANA_VERSION NODE_EXPORTER_VERSION"
+VERSION_VARS="CODER_VERSION"
 VERSIONS_PREV="$(cat "${VERSIONS_FILE}" 2>/dev/null || true)"
 for _vv in ${VERSION_VARS}; do
   _vnew="${!_vv:-}"
@@ -200,47 +206,24 @@ check_container_running() {
   fi
 }
 
-# B-012: Drift-Warnung (Caddy-P-025-Muster verallgemeinert). Alle generierten
-# Dateien werden deterministisch regeneriert (Heilung bleibt), aber nie still:
-# weicht eine Datei von der letzten Setup-Generation ab (Operator-Tuning wie
-# retention.size, Caddy-Snippets, recidive-Jails, Cron-Zeiten), steht das als
-# WARN in der SUMMARY. Erwartungswerte liegen in /opt/coder/.generated-hashes
-# (nur root, 600). Kein interaktiver Stopp (Idempotenz bleibt).
-# Commit-Ort (B2-007): write_managed schreibt atomar und aktualisiert den Hash
-# unmittelbar nach dem erfolgreichen Austausch. So kann ein abgebrochener
-# Lauf keinen Hash der alten Datei als Hash der neuen Generation eintragen.
-HASHSTORE="/opt/coder/.generated-hashes"
-note_drift() {
-  local file="$1" label="$2" cur="" exp=""
-  cur=$(sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
-  exp=$(awk -v f="${file}" '$2 == f {print $1}' "${HASHSTORE}" 2>/dev/null || true)
-  if [ -n "${cur}" ] && [ -n "${exp}" ] && [ "${cur}" != "${exp}" ]; then
-    warn "Drift in ${label} (${file}): weicht von letzter Setup-Generation ab – wird deterministisch regeneriert, Hand-Anpassung geht verloren"
-  fi
-}
-remember_hash() {
-  local file="$1" h=""
-  h=$(sha256sum "${file}" 2>/dev/null | cut -d' ' -f1 || true)
-  [ -n "${h}" ] || return 0
-  touch "${HASHSTORE}" 2>/dev/null || true
-  awk -v f="${file}" '$2 != f' "${HASHSTORE}" 2>/dev/null > "${HASHSTORE}.tmp" || true
-  echo "${h}  ${file}" >> "${HASHSTORE}.tmp"
-  mv "${HASHSTORE}.tmp" "${HASHSTORE}"
-  chmod 600 "${HASHSTORE}"
-}
+# B-012-Drift-Warnung/Hashstore am 2026-10-03 entfernt (Review-Set §4A):
+# Das Setup ist deklarativer Besitzer der generierten Dateien, das
+# Überschreiben von Handänderungen ist in README/OPERATIONS dokumentiert –
+# die Hash-Infrastruktur war dafür zusätzliche Mechanik ohne eigenen Nutzen.
+# Was bleibt: Temp schreiben, validieren, atomar ersetzen.
 
 # Atomar eine vom Setup verwaltete Datei schreiben. Die temporäre Datei liegt
 # im Zielverzeichnis, damit mv dieselbe Dateisystem-Grenze nicht überschreitet.
 # Bei identischem Inhalt bleibt der Ziel-Inode unangetastet; das vermeidet
-# unnötige Reloads und schützt laufende Leser. Modus und Hash werden trotzdem
-# nachgezogen. MANAGED_TMP wird vom EXIT-Cleanup entfernt, falls der Lauf vor
+# unnötige Reloads und schützt laufende Leser. Modus wird nachgezogen.
+# MANAGED_TMP wird vom EXIT-Cleanup entfernt, falls der Lauf vor
 # dem mv abbricht.
 # A2: Optionaler Validierer ($4, Funktionsname) läuft auf der TEMP-Datei, VOR
 # dem Austausch der Live-Datei. Bei Fehlschlag bleibt die vorhandene Datei
 # unangetastet und der Lauf bricht ab – eine ungültige Konfiguration landet
 # damit nie auf der Platte und könnte den nächsten Reboot nicht überleben.
-write_managed() { # $1=Pfad $2=Modus $3=Drift-Label [$4=Validierer]; Inhalt via stdin
-  local file="$1" mode="$2" label="$3" validator="${4:-}" dir base
+write_managed() { # $1=Pfad $2=Modus $3=Referenz-Label (Reserve, ungenutzt) [$4=Validierer]; Inhalt via stdin
+  local file="$1" mode="$2" validator="${4:-}" dir base
   dir="${file%/*}"
   base="${file##*/}"
   MANAGED_TMP=$(mktemp "${dir}/.${base}.tmp.XXXXXX")
@@ -272,9 +255,6 @@ write_managed() { # $1=Pfad $2=Modus $3=Drift-Label [$4=Validierer]; Inhalt via 
     fi
   fi
   chmod "${mode}" "${MANAGED_TMP}"
-  if [ "${label}" != "-" ]; then
-    note_drift "${file}" "${label}"
-  fi
   if cmp -s -- "${MANAGED_TMP}" "${file}"; then
     chmod "${mode}" "${file}"
     rm -f -- "${MANAGED_TMP}"
@@ -282,9 +262,6 @@ write_managed() { # $1=Pfad $2=Modus $3=Drift-Label [$4=Validierer]; Inhalt via 
     mv -f -- "${MANAGED_TMP}" "${file}"
   fi
   MANAGED_TMP=""
-  if [ "${label}" != "-" ]; then
-    remember_hash "${file}"
-  fi
 }
 
 # B-013: Retry max. 3 mit Schlaf + Ursachen-Log (Schulnetz!). Keine endlosen
@@ -351,8 +328,8 @@ fi
 echo "############################################################"
 echo "# [1/7] Docker Engine installieren"
 echo "############################################################"
-# C1: Alle Cron-Zeiten dieses Skripts (Backup 01:00, Reboot 03:00, TLS-Check
-# Mo 06:30) gelten in LOCALTIME. Neue VMs laufen oft auf UTC, dann läuft das
+# C1: Alle Cron-Zeiten dieses Skripts (Backup 01:00, Reboot 03:00)
+# gelten in LOCALTIME. Neue VMs laufen oft auf UTC, dann läuft das
 # Backup um 03:00 statt 01:00 Berlin und der Reboot mitten in der Nacht.
 # Explizit setzen statt raten; idempotenter No-Op, wenn schon Berlin.
 if command -v timedatectl >/dev/null 2>&1; then
@@ -440,14 +417,15 @@ EOF
   DOCKER_DAEMON_CHANGED=1
 fi
 # Die Optionen liest der Daemon nur beim Start. Neu starten nur, wenn WIR die
-# Datei gerade geschrieben haben – und nur, wenn keine eigenen Container laufen
-# (sonst wäre das ein ungefragter Ausfall). Läuft der Stack schon, sind seine
-# Container ohnehin mit dem alten Log-Treiber gestartet; wirkt die Änderung
-# dann erst beim nächsten geplanten Neustart, wird das hier ausdrücklich
-# gewarnt, statt es still hinzunehmen.
+# Datei gerade geschrieben haben – und nur, wenn GAR KEINE Container laufen
+# (Review-Set 2026-10-03, Fehler-15-Folge: "keine eigenen Container" wäre zu
+# schwach, auch fremde Dienste hängen am Daemon). Läuft schon etwas, ist das
+# ein ungefragter Ausfall; dann greift die Änderung erst beim nächsten
+# geplanten Neustart und das wird hier ausdrücklich gewarnt, statt es still
+# hinzunehmen.
 if [ "${DOCKER_DAEMON_CHANGED}" -eq 1 ]; then
-  if [ -n "$(docker compose -f /opt/coder/docker-compose.yml ps -q 2>/dev/null || true)" ]; then
-    warn "daemon.json geschrieben, aber eigene Container laufen – Docker wird NICHT neu gestartet. Log-Limit greift erst nach 'sudo systemctl restart docker' (C2)"
+  if [ -n "$(docker ps -q 2>/dev/null || true)" ]; then
+    warn "daemon.json geschrieben, aber es laufen Container – Docker wird NICHT neu gestartet. Log-Limit greift erst nach 'sudo systemctl restart docker' (C2)"
   else
     systemctl restart docker
     echo "Docker-Daemon neu gestartet – Log-Limit (10m x 3) gilt ab jetzt."
@@ -706,12 +684,15 @@ services:
       # bewusst telemetriefreien Haltung des Stacks (siehe CODER_TELEMETRY).
       - GF_ANALYTICS_REPORTING_ENABLED=false
       - GF_ANALYTICS_CHECK_FOR_UPDATES=false
-    # Betreiber-Wunsch (Q2, 2026-10-03): Dashboard vom Schulnetz aus sehen.
-    # Bindung auf alle Interfaces; Schutz: Router leitet nur 80/443/22 weiter
-    # (WAN sieht 3001 nicht), ufw-Quellenregel unten für IPv6/Host-Pfad,
-    # Grafana braucht Login. Bewusst ohne TLS (Schul-LAN).
+    # Review-Set 2026-10-03 (Fehler 1–3): NICHT auf allen Interfaces und
+    # NICHT per ufw-Quellregeln schützen. Docker-published Ports umgehen den
+    # ufw-INPUT-Pfad (IPv4-DNAT, Docker-Doku), und RFC1918-Quellen
+    # (10/8, 172.16/12, 192.168/16) sind keine Präzisionsgrenze für "unser
+    # Schulnetz" – 172.16/12 enthält sogar die Docker-Netze selbst.
+    # Bindung auf Loopback wie Prometheus/node-exporter: Zugriff per
+    # SSH-Tunnel (ssh -L 3001:127.0.0.1:3001 …), LAN und WAN sehen 3001 nicht.
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     volumes:
       # C3: Datasource-Quittung (provisioniert, statt manuell im UI einzutragen).
       # Nur das Unterverzeichnis gemountet, damit der Rest von
@@ -763,9 +744,10 @@ retry3 docker compose pull
 #     Namen; für Namen IM Muster kann er es weiterhin auslösen – das Muster
 #     ist ein grober Filter, kein Budget-Schutz (P-005, Dokumentation in
 #     SECURITY.md). Wochenbudget 50/Woche pro registrierter Domain bleibt bis
-#     D-TLS (DNS-01-Wildcard ohne On-Demand) das Thema. Erkennung: Metrik
-#     coder_tls_issuances_7d aus check-tls.sh (Zertifikatsdateien im
-#     caddy_data, Warnung ab 20/7 Tage, Limit 50/Woche).
+#     D-TLS (DNS-01-Wildcard ohne On-Demand) das Thema. Automatische
+#     Budget-Überwachung gibt es nicht mehr (Review-Set 2026-10-03 §4D:
+#     Zählung war zu indirekt) – Erschöpfung fällt als HTTPS-Fehler auf;
+#     Gegenmittel ist DNS-01, sobald Zone/Token geklärt sind (D-TLS).
 #
 # Muster (Quelle: Coder-Quellcode coderd/workspaceapps/appurl/appurl.go,
 # Format "{PORT/APP_SLUG}[--{AGENT_NAME}]--{WORKSPACE_NAME}--{USERNAME}":
@@ -882,22 +864,6 @@ groups:
         annotations:
           summary: "Kein erfolgreiches Backup seit über 25 Stunden"
           description: "Letzter Erfolg siehe /opt/coder/node-textfile/coder_backup.prom, Log: /var/log/coder-backup.log"
-      - alert: TlsIssuanceBudgetHigh
-        expr: coder_tls_issuances_7d > 20
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Über 20 neue/erneuerte Zertifikate in 7 Tagen"
-          description: "Zählung aus den Zertifikatsdateien im caddy_data-Volume (7 Tage), Let's-Encrypt-Limit 50/Woche pro Domain. Wert: /opt/coder/node-textfile/coder_tls.prom"
-      - alert: TlsCheckStale
-        expr: absent(coder_tls_check_last_success_timestamp_seconds) or time() - coder_tls_check_last_success_timestamp_seconds > 691200
-        for: 30m
-        labels:
-          severity: warning
-        annotations:
-          summary: "TLS-Zertifikatscheck fehlt oder ist älter als 8 Tage"
-          description: "Cron (/etc/cron.d/coder-tlscheck) oder Textfile-Metrik pruefen; bei veralteter Metrik ist der 7-Tage-Zaehler nicht aussagekraeftig."
 EOF
 
 # prometheus.yml (komplettes Verzeichnis gemountet, siehe compose)
@@ -956,14 +922,41 @@ if _avail=$(df --output=avail -B1 /opt/coder 2>/dev/null | tail -n1 | tr -d ' ')
   fi
 fi
 
-# 1.1/Review: KEIN Upgrade ohne frisches Backup. Schritt 3 zieht Bilder und
-# "up -d" kann eine Coder-DB-Schema-Migration ausführen – ohne Dump wäre danach
-# kein Rollback möglich. Nur wenn die DB schon läuft und backup.sh existiert
-# (Erstlauf: beides nicht -> kein Backup nötig). Der Wartungs-Lock hängt schon
-# an diesem Prozess (CODER_MAINTENANCE_LOCK_HELD=1), backup.sh erwirbt keinen
-# zweiten. Fehlschlag bricht vor "up -d" ab, nichts ist verändert.
-if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || echo false)" = "true" ] \
-  && [ -x /opt/coder/backup.sh ]; then
+# 1.1/Review + Fehler 5 (Review-Set 2026-10-03): KEIN Upgrade ohne frisches
+# Backup. Schritt 3 zieht Bilder und "up -d" kann eine Coder-DB-Schema-
+# Migration ausführen – ohne Dump wäre danach kein Rollback möglich.
+# Entscheidend ist der BESTAND (DB-Volume), nicht ob der postgres-Container
+# zufällig gerade läuft: gestoppter Container + vorhandenes Volume + erneuter
+# Setup-Lauf würde sonst ohne Dump in eine mögliche Migration starten.
+# Erstlauf ohne Volume braucht kein Backup; Volume ohne backup.sh ist eine
+# inkonsistente Installation und bricht hart ab. Der Wartungs-Lock hängt
+# schon an diesem Prozess (CODER_MAINTENANCE_LOCK_HELD=1), backup.sh
+# erwirbt keinen zweiten. Fehlschlag bricht vor "up -d" ab, nichts ist
+# verändert. Gestopptes Postgres wird vor dem Dump gestartet (gepinntes
+# Major-Image, vorhandenes Volume – keine Coder-Migration, der läuft erst
+# mit dem Coder-Container in Schritt 3).
+if [ -n "$(docker volume ls -q --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null | head -n1)" ]; then
+  if [ ! -x /opt/coder/backup.sh ]; then
+    echo "FEHLER: DB-Volume vorhanden, aber /opt/coder/backup.sh fehlt – inkonsistente Installation, kein Upgrade ohne Backup-Möglichkeit." >&2
+    echo "scripts/backup.sh aus dem Repo nach /opt/coder/ kopieren (755), dann Setup erneut." >&2
+    exit 1
+  fi
+  if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || echo false)" != "true" ]; then
+    echo "Postgres-Container läuft nicht, DB-Volume ist aber da – starte Postgres für das Pre-Upgrade-Backup ..."
+    docker compose up -d postgres
+    _pg_ready=false
+    for _ in $(seq 1 30); do
+      if docker exec coder-postgres pg_isready -U coder > /dev/null 2>&1; then
+        _pg_ready=true
+        break
+      fi
+      sleep 2
+    done
+    if [ "${_pg_ready}" != "true" ]; then
+      echo "FEHLER: Postgres wird nach 60 s nicht bereit – kein Dump möglich, Abbruch vor 'docker compose up -d'." >&2
+      exit 1
+    fi
+  fi
   echo "Ziehe Pre-Upgrade-Backup vor möglicher DB-Migration ..."
   if ! env CODER_MAINTENANCE_LOCK_HELD=1 /opt/coder/backup.sh; then
     echo "FEHLER: Pre-Upgrade-Backup fehlgeschlagen – Abbruch vor 'docker compose up -d'." >&2
@@ -976,20 +969,21 @@ fi
 # sie die Live-Platte erreicht haben – hier wird nur noch gestartet.
 docker compose up -d
 
-# A7/A1: wirksam gewesene Versionen erst JETZT persistieren – genau ab dem
-# Moment, in dem die neuen Images laufen (ein Abbruch vor "up -d" darf keine
-# nie gelaufene Version als wirksam eintragen, ein Abbruch DANACH darf keine
-# bereits migrierte DB ungeschützt lassen). "install -d" sichert den Pfad,
-# falls dieser Block je früher stünde (A1: cat legt keine Verzeichnisse an).
+# A7/A1 + Fehler-6-Entscheidung (Review-Set 2026-10-03): die wirksam
+# gewesene Version wird bewusst SOFORT nach "up -d" persistiert, nicht erst
+# nach den Health-Checks. Grund: die DB-Migration läuft beim Start der neuen
+# Coder-Version, nicht erst bei "gesund" – würde erst nach Healthcheck
+# geschrieben, bliebe nach einem Crash die ALTE Version eingetragen, obwohl
+# die DB schon migriert ist, und der Downgrade-Schutz ließe genau den
+# gefährlichen Rollback zu. "wirksam" heißt hier "kann migriert haben",
+# nicht "ist gesund" – Gesundheit meldet Schritt 7. "install -d" sichert
+# den Pfad, falls dieser Block je früher stünde (A1: cat legt keine
+# Verzeichnisse an).
 install -d -m 0755 /opt/coder
 write_managed "${VERSIONS_FILE}" 644 - <<VERSIONSEOF
-# Von setup-coder.sh erzeugt – wirksam gewesene Versionen des letzten Laufs.
+# Von setup-coder.sh erzeugt – wirksam gewesene Version des letzten Laufs.
 # Kein Geheimnis, daher 644 (unten ohne sudo lesbar).
 CODER_VERSION=${CODER_VERSION}
-CADDY_VERSION=${CADDY_VERSION}
-PROMETHEUS_VERSION=${PROMETHEUS_VERSION}
-GRAFANA_VERSION=${GRAFANA_VERSION}
-NODE_EXPORTER_VERSION=${NODE_EXPORTER_VERSION}
 VERSIONSEOF
 
 # A2/C4: Reload bei JEDEM Lauf, solange Caddy lief – die Datei ist beim
@@ -1092,10 +1086,11 @@ if [ -f /etc/fail2ban/jail.local ]; then
   warn "Vorgefunden: /etc/fail2ban/jail.local – unser Drop-In ${JAIL_DROPIN} hat laut Lese-Reihenfolge Vorrang, dort geschriebene Jails greifen nicht. Eigene Werte in den Drop-In übernehmen und jail.local entfernen."
 fi
 mkdir -p /etc/fail2ban/jail.d
-# bantime.increment verlängert Wiederholungssperren, ignoreip schützt die
-# geteilte Schul-NAT (5 Fehlversuche sperrten sonst die gemeinsame Quell-IP
-# für alle). Werte dauerhaft in setup.conf eintragen (Schlüssel
-# FAIL2BAN_IGNORE_IP, siehe setup.conf.example).
+# bantime.increment verlängert Wiederholungssperren. ignoreip enthält NUR
+# Admin-Plätze (Default loopback); die Schul-NAT wird bewusst NICHT
+# eingetragen (Punkt 3, Review-Set 2026-10-03): Rateversuche aus dem
+# Schulnetz sollen sperren. Werte dauerhaft in setup.conf eintragen
+# (Schlüssel FAIL2BAN_IGNORE_IP, siehe setup.conf.example).
 write_managed "/etc/fail2ban/jail.d/10-coder-sshd.local" 644 "fail2ban-jail.d/10-coder-sshd.local" <<EOF
 [sshd]
 port     = ${SSHD_PORTS// /,}
@@ -1128,22 +1123,23 @@ fi
 # für IPv6 laufen sie aber über INPUT/docker-proxy und werden gebraucht,
 # deshalb bleiben sie stehen. Bindungsregel: neue "ports:"-Einträge NUR als
 # "127.0.0.1:<port>:<port>" – öffentliche Ports bleiben Caddy (80/443)
-# vorbehalten, Prometheus/node-exporter sind nur an 127.0.0.1 gebunden.
-# Bewusste Ausnahme: Grafana 3001 (Q2, 2026-10-03) – vom Schulnetz aus
-# sichtbar, ufw-Quellenregel + Router-Weiterleitung als Schutz, Login Pflicht.
-# SSH gilt nicht als Docker-Port: sshd ist ein Host-Dienst, ufw/fail2ban
-# greifen hier.
+# vorbehalten, Prometheus/node-exporter UND Grafana sind nur an 127.0.0.1
+# gebunden. SSH gilt nicht als Docker-Port: sshd ist ein Host-Dienst,
+# ufw/fail2ban greifen hier.
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 443/udp
-# Grafana-Dashboard 3001 nur aus privaten (Schulnetz-)Quellen. Belt and
-# braces: Docker-Published-Ports umgehen ufw auf dem IPv4-DNAT-Weg (SECURITY,
-# Risiko 7), die Regeln tragen also vor allem IPv6/Host-Pfad und
-# dokumentieren die Absicht – WAN bleibt zusätzlich vom Router
-# ausgeschlossen. Eine Quelle je Regel: ufw lehnt Komma-Listen ab
-# ("Bad source address", beim Test 2026-10-03 gefunden).
-for _net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
-  ufw allow from "${_net}" to any port 3001 proto tcp
+# Grafana 3001: alte Quellregeln aus der "Schulnetz via ufw"-Ära entfernen
+# (Review-Set 2026-10-03, Fehler 1–3 – Grafana ist jetzt loopback-gebunden,
+# eine ufw-Regel wäre nur noch eine Lug-Regel). Idempotent: nicht vorhanden =
+# stiller No-Op. Reihenfolge: Regeln löschen, dann unten "enable".
+for _spec in \
+  "from 10.0.0.0/8 to any port 3001 proto tcp" \
+  "from 172.16.0.0/12 to any port 3001 proto tcp" \
+  "from 192.168.0.0/16 to any port 3001 proto tcp" \
+  "3001/tcp"; do
+  # shellcheck disable=SC2086 # Wortaufteilung der ufw-Spezifikation ist Absicht
+  ufw --force delete allow ${_spec} > /dev/null 2>&1 || true
 done
 ufw --force enable
 ufw status verbose
@@ -1183,16 +1179,58 @@ if fail2ban-client status sshd > /dev/null 2>&1; then
 else
   fail "fail2ban-Client oder Jail 'sshd' antwortet nicht – prüfen mit: sudo fail2ban-client status"
 fi
-if grep -qi '^passwordauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}" && \
-   grep -qi '^kbdinteractiveauthentication no' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
-  ok "SSH-Passwort-Login ist deaktiviert (nur noch Keys erlaubt)"
+# D-SSH/Policy (Review-Set 2026-10-03, Abschnitte 0/5): Passwort-Login für
+# normale Benutzer ausdrücklich erlaubt, root bleibt bei Schlüssel. Das
+# "von überall" hält die ufw-ALLOW-Regel oben; hier wird die sshd-Seite
+# aktiv gesetzt statt nur beobachtet. Validierung: sshd -T über die GESAMTE
+# Konfiguration (ein einzelner Drop-In ist kein vollständiger Config-Check).
+# Bei Fehlschlag: alten Inhalt wiederherstellen und abbrechen – nie mit
+# ungetesteter Datei neu laden.
+SSHD_DROPIN="/etc/ssh/sshd_config.d/99-coder.conf"
+_SSHD_DROPIN_OLD="$(cat "${SSHD_DROPIN}" 2>/dev/null || true)"
+install -d -m 755 /etc/ssh/sshd_config.d
+write_managed "${SSHD_DROPIN}" 644 - <<'EOF'
+# Von setup-coder.sh erzeugt (D-SSH): SSH-Policy dieses Coder-Servers.
+# Passwort-Login für normale Benutzer ist bewusst erlaubt; Schutz gegen
+# Brute-Force: fail2ban (Jail sshd) plus ufw-allow (kein limit, Netzgrenze
+# am Router). Root nur per Schlüssel.
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+PermitRootLogin prohibit-password
+EOF
+if ! _SSHD_T_OUT="$(sshd -T 2>&1)"; then
+  echo "Fehler: sshd-Konfiguration nach dem Schreiben von ${SSHD_DROPIN} ist ungültig:" >&2
+  printf '%s\n' "${_SSHD_T_OUT}" >&2
+  if [ -n "${_SSHD_DROPIN_OLD}" ]; then
+    printf '%s\n' "${_SSHD_DROPIN_OLD}" > "${SSHD_DROPIN}"
+    echo "Alter Inhalt von ${SSHD_DROPIN} wiederhergestellt." >&2
+  else
+    rm -f "${SSHD_DROPIN}"
+    echo "${SSHD_DROPIN} entfernt (vorher nicht vorhanden)." >&2
+  fi
+  echo "Abbruch vor dem Reload – die laufende SSH-Sitzung bleibt unberührt." >&2
+  exit 1
+fi
+if systemctl is-active --quiet ssh; then
+  systemctl reload ssh
 else
-  echo "HINWEIS: SSH-Passwort-Login ist aktiv – bewusste Entscheidung (D-SSH); ufw-Rate-Limit und fail2ban sperren Wiederholer"
+  warn "ssh-Dienst nicht aktiv – Drop-In geschrieben, Reload entfällt (lädt beim nächsten ssh-Start)"
+fi
+# Effekt-Check gegen die NEU geladene Konfiguration, nicht den Preflight-
+# Snapshot – sonst würde der Check die alte Welt bewerten.
+SSHD_EFFECTIVE_CONFIG="$(sshd -T 2>/dev/null || true)"
+ok "sshd-Policy gesetzt (${SSHD_DROPIN}: Passwort ja, KbdInteractive ja, root nur Schlüssel) und neu geladen"
+if grep -qi '^passwordauthentication yes' <<< "${SSHD_EFFECTIVE_CONFIG}" \
+  && grep -qi '^kbdinteractiveauthentication yes' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
+  ok "SSH-Passwort-Login erlaubt (PasswordAuthentication/KbdInteractiveAuthentication yes)"
+else
+  fail "SSH-Passwort-Login NICHT aktiv (erwartet yes in ${SSHD_DROPIN}) – prüfen mit: sudo sshd -T | grep -iE 'passwordauthentication|kbdinteractive' (Vorrang anderer Drop-Ins?)"
 fi
 # Review 0.3a: root per Passwort von ueberall waere ein Upgrade-Pfad jeden
-# Brute-Forces – der Debian-Default prohibit-password bleibt gefordert.
+# Brute-Forces – unser Drop-In schreibt prohibit-password; Warnung fängt
+# Vorrang fremder Drop-Ins/Altkonfiguration ab.
 if grep -qi '^permitrootlogin yes' <<< "${SSHD_EFFECTIVE_CONFIG}"; then
-  warn "PermitRootLogin yes ist gesetzt – bei Passwort-SSH von überall nicht tragbar. Abschalten: PermitRootLogin prohibit-password in /etc/ssh/sshd_config, sshd neu laden (Validation-Check vor Reload)."
+  warn "PermitRootLogin yes wirkt (Vorrang vor ${SSHD_DROPIN}) – bei Passwort-SSH von überall nicht tragbar. Andere Drop-Ins unter /etc/ssh/sshd_config.d prüfen, prohibit-password durchsetzen, sshd -t, reload."
 else
   ok "PermitRootLogin erlaubt kein root-Passwort-Login (prohibit-password/without-password)"
 fi
@@ -1213,12 +1251,14 @@ if grep -qE '^443/udp[[:space:]]' <<< "${UFW_STATUS}"; then
 else
   fail "Port 443/udp fehlt in ufw"
 fi
-# Grafana 3001 (Q2): Quellenregel muss stehen – sonst sieht niemand vom
-# Schulnetz das Dashboard (WAN ist unabhängig am Router gesperrt).
-if grep -qE '^3001/tcp[[:space:]]+ALLOW[[:space:]]' <<< "${UFW_STATUS}"; then
-  ok "Grafana 3001/tcp steht in ufw (Quellenregel Schulnetz)"
+# Grafana 3001 (Review-Set 2026-10-03, Fehler 1–4): bewusst KEINE
+# ufw-Regel – Loopback-Bindung ist der Schutz; eine stehengebliebene Altregel
+# wäre eine Lug-Regel (behauptet "Schulnetz-Schutz", den Docker ohnehin
+# umgeht) und wird oben bereits idempotent gelöscht.
+if grep -qE '^3001/tcp[[:space:]]' <<< "${UFW_STATUS}"; then
+  warn "Altregel 3001/tcp steht noch in ufw (Löschen oben fehlgeschlagen?) – überflüssig, Grafana ist nur an 127.0.0.1 gebunden. Prüfen: sudo ufw status"
 else
-  fail "Grafana 3001/tcp-Regel fehlt in ufw – prüfen mit: sudo ufw status"
+  ok "keine ufw-Regel für 3001 (Grafana nur 127.0.0.1, per SSH-Tunnel erreichbar)"
 fi
 
 echo "############################################################"
@@ -1243,10 +1283,15 @@ Unattended-Upgrade::Automatic-Reboot-Time "03:00";
 EOF
 
 APT_UU_CONFIG="$(apt-config dump 2>/dev/null || true)"
-if systemctl is-active --quiet unattended-upgrades; then
-  ok "unattended-upgrades-Dienst läuft"
+# Fehler 4 (Review-Set 2026-10-03): unattended-upgrades ist auf Debian ein
+# oneshot-Service, den apt-daily-upgrade.timer anstößt – "dienst läuft
+# dauerhaft" war ein False-Failure. Geprüft wird der Timer (aktiv +
+# enabled), dazu die APT::Periodic-Zeile oben.
+if systemctl is-active --quiet apt-daily-upgrade.timer \
+  && systemctl is-enabled --quiet apt-daily-upgrade.timer; then
+  ok "apt-daily-upgrade.timer aktiv und enabled (stößt unattended-upgrades an)"
 else
-  fail "unattended-upgrades-Dienst läuft nicht"
+  fail "apt-daily-upgrade.timer läuft nicht/enabled fehlt – automatische Updates greifen nicht (systemctl status apt-daily-upgrade.timer)"
 fi
 if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && \
    grep -qF 'APT::Periodic::Unattended-Upgrade "1";' <<< "${APT_UU_CONFIG}"; then
@@ -1260,32 +1305,20 @@ else
   fail "Reboot-Konfiguration (52-coder-reboot) fehlt"
 fi
 
-# A6/B-005: On-Demand-TLS-Ausstellungen zaehlen (lesend, kein Alertmanager).
-# check-tls.sh zaehlt im caddy_data geaenderte *.crt der letzten 7 Tage
-# (robust gegen Container-Recreate; docker logs waere zurueckgesetzt) und
-# schreibt coder_tls_issuances_7d. Die Erfolgszeit wird separat exportiert,
-# damit ein ausgefallener oder verpasster Cronlauf als TlsCheckStale
-# sichtbar wird.
 # Wartungsskripte: eine Schleife statt drei getrennter Pfade (frueher
-# Schritt 7 "install -m 755" plus zwei Einzel-Aufrufen). write_managed
-# hashet jede Datei, prueft *.sh per bash -n und schreibt atomar – und die
-# Skripte stehen hier, bevor check-tls.sh unten und backup.sh in Schritt 6
-# das erste Mal gebraucht werden.
+# Schritt 7 "install -m 755" plus zwei Einzel-Aufrufe). write_managed
+# prueft *.sh per bash -n und schreibt atomar – und die Skripte stehen
+# hier, bevor backup.sh in Schritt 6 das erste Mal gebraucht wird.
 for _src in "${SETUP_DIR}"/scripts/*.sh; do
   _src_base="$(basename "${_src}")"
   write_managed "/opt/coder/${_src_base}" 755 "${_src_base}" < "${_src}"
 done
-write_managed "/etc/cron.d/coder-tlscheck" 644 "coder-tlscheck-Cron" <<'EOF'
-30 6 * * 1 root /opt/coder/check-tls.sh >> /var/log/coder-tls.log 2>&1
-EOF
-# TlsCheckStale würde sonst ab dem ersten Scrape feuern: die Metrik
-# coder_tls_check_last_success_timestamp_seconds existiert erst nach dem
-# ersten Cron-Lauf (Mo 06:30), und absent() meldet den Check als veraltet.
-if /opt/coder/check-tls.sh; then
-  ok "TLS-Check einmalig ausgeführt (Erfolgs-Timestamp gesetzt, kein TlsCheckStale bis Montag 06:30)"
-else
-  warn "einmaliger TLS-Check fehlgeschlagen – TlsCheckStale kann bis zum ersten Montag-Lauf feuern (/var/log/coder-tls.log)"
-fi
+# Alte TLS-Check-Ära (A6/B-005: check-tls.sh + Cron + Metrik) am
+# 2026-10-03 entfernt (Review-Set §4D/Fehler 8–9): Caddy betreibt ACME
+# selbst, die Zählung war zu indirekt für das tatsächliche Budget.
+# Hinterlassenschaften still entfernen – jeweils idempotenter No-Op.
+rm -f /etc/cron.d/coder-tlscheck /opt/coder/check-tls.sh \
+      /var/log/coder-tls.log /opt/coder/node-textfile/coder_tls.prom
 
 echo "############################################################"
 echo "# [6/7] Tägliches Datenbank-Backup einrichten"
@@ -1322,20 +1355,10 @@ write_managed "/etc/logrotate.d/coder-backup" 644 "coder-backup-logrotate" <<'EO
 }
 EOF
 
-# C4: die Logdatei des TLS-Checks lief bisher ohne Rotation und wuchs unbegrenzt
-# (wöchentlicher Lauf). Eigene Datei statt Anhängen an coder-backup, weil deren
-# Inhalt nach Server-Konvention Backup-spezifisch bleibt. coder-boot.log entfiel
-# mit B8 (boot-check.sh).
-write_managed "/etc/logrotate.d/coder-logs" 644 "coder-logs-logrotate" <<'EOF'
-/var/log/coder-tls.log {
-    weekly
-    rotate 8
-    compress
-    missingok
-    notifempty
-    copytruncate
-}
-EOF
+# C4/Update: coder-logs-Logrotate entfiel mit der TLS-Check-Ära am
+# 2026-10-03 (errotierte nur /var/log/coder-tls.log; coder-boot.log schon
+# mit B8, coder-backup.log hat eigene Datei). Stale Datei entfernen.
+rm -f /etc/logrotate.d/coder-logs
 
 if systemctl is-active --quiet cron; then
   ok "Cron-Daemon läuft (sonst liefe nie ein Backup)"
@@ -1391,14 +1414,9 @@ echo "############################################################"
 echo "# [7/7] Abschlusscheck & Zusammenfassung"
 echo "############################################################"
 
-# B-012/B2-007: Der Schritt-10-Block, der hier alle 15 Hashes auf einmal
-# nachgezogen hat, ist entfernt. remember_hash steht jetzt an jeder Schreib-
-# stelle direkt nach erfolgreichem Schreiben/chmod – ein Abbruch vor Schritt 7
-# hinterlässt damit keine veralteten Hashes mehr, die im nächsten Lauf eine
-# Fehl-Warnung ("Operator-Drift") für setup-eigene Residuen auslösen.
-# Residueller, dokumentierter Restpfad: Kill genau zwischen Schreiben und
-# remember_hash -> einmalige Fehl-WARN im Folgelauf, kein Datenverlust,
-# der nächste grüne Lauf heilt den Hashstore.
+# Alte Hashstore-Datei aus der Drift-Ära (B-012, entfernt 2026-10-03)
+# still entfernen – kein Verfahren hängt mehr daran.
+rm -f /opt/coder/.generated-hashes
 
 check_container_running "coder-postgres" "Postgres-Container"
 check_container_running "coder" "Coder-Container"
@@ -1565,7 +1583,7 @@ echo "Workspace-Apps/Port-Forwarding brauchen zusätzlich den Wildcard-DNS-Eintr
 echo "*.${DOMAIN_CODER} -> öffentliche Server-IP (siehe Kopf des Skripts)."
 echo "Neue Releases: Pin in setup-coder.sh (Versions-Variablen) ändern und"
 echo "das Setup erneut ausführen. Docker-Engine-Updates sind separat und manuell."
-echo "Grafana: http://<Server-IP>:3001 ab dem Schulnetz (Login admin) oder per SSH-Tunnel: 127.0.0.1:3001"
+echo "Grafana: nur 127.0.0.1:3001 (Login admin), Zugang per SSH-Tunnel: ssh -L 3001:127.0.0.1:3001 <user>@<server>, dann http://127.0.0.1:3001"
 
 if [ "${ERROR_COUNT}" -gt 0 ]; then
   echo ""

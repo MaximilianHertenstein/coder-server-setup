@@ -14,39 +14,36 @@ Verweise: Wiederherstellung → [RESTORE.md](RESTORE.md), Sicherheit →
 | Wo | Was |
 |---|---|
 | Repository | Quelltext: `setup-coder.sh`, `setup.conf.example`, `scripts/`, `RESTORE.md`, `templates/allowlist.md`, `tests/` |
-| `/opt/coder/` auf dem Server | Alles Erzeugte: Stack-Konfiguration, `.env`, Wartungsskripte, Backups, Hashstore |
+| `/opt/coder/` auf dem Server | Alles Erzeugte: Stack-Konfiguration, `.env`, Wartungsskripte, Backups |
 | `/etc/cron.d/`, `/etc/logrotate.d/`, `/etc/fail2ban/`, `/etc/apt/apt.conf.d/` | vom Setup erzeugte Systemdateien |
 
 Ein `git pull` allein verändert **nichts** am laufenden System. Änderungen
 an generierten Dateien kommen erst durch einen erneuten Lauf von
 `setup-coder.sh` an. Verwaltete Dateien werden in ihrem Zielverzeichnis
-atomar ersetzt; erkannte Hand-Änderungen erscheinen als WARN, bevor die
-Setup-Version sie ersetzt (siehe Abschnitt 7).
+atomar ersetzt; weicht eine Datei ab, setzt der Lauf sie ohne Vorwarnung
+deterministisch neu (seit Review-Set 2026-10-03 kein Hashstore mehr,
+siehe Abschnitt 7).
 
 ## 2. Vom Setup erzeugte Dateien
 
-| Pfad | Zweck | Hashstore |
+| Pfad | Zweck | `write_managed` |
 |---|---|---|
 | `/opt/coder/.env` | Secrets: `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` (600, root) | nein (bewusst) |
 | `/opt/coder/docker-compose.yml` | Stack-Definition, Logs, Ports, Volumes | ja |
 | `/opt/coder/caddy/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard (Verzeichnis `caddy/` wird vollständig gemountet) | ja |
 | `/opt/coder/prometheus/prometheus.yml` | Scrape-Jobs `coder`, `node`, Einbindung `rule_files` (Verzeichnis `prometheus/` wird vollständig gemountet) | ja |
-| `/opt/coder/prometheus/rules/coder-alerts.yml` | fünf Alarmregeln (Target down, Platte <10 %, Backup >25 h, TLS-Ausstellungen/7 d >20, TLS-Check veraltet) | nein |
-| `/opt/coder/grafana/provisioning/datasources/prometheus.yml` | Datasource `Prometheus` wird automatisch angelegt | nein |
+| `/opt/coder/prometheus/rules/coder-alerts.yml` | drei Alarmregeln (Target down, Platte <10 %, Backup >25 h; TLS-Regeln entfallen 2026-10-03) | ja |
+| `/opt/coder/grafana/provisioning/datasources/prometheus.yml` | Datasource `Prometheus` wird automatisch angelegt | ja |
 | `/opt/coder/node-textfile/coder_backup.prom` | Zeitstempel des letzten erfolgreichen Backups (vom Setup angelegt, vom Lauf beschrieben) | nein |
-| `/opt/coder/node-textfile/coder_tls.prom` | TLS-Ausstellungen der letzten 7 Tage (aus den Zertifikatsdateien im `caddy_data`-Volume) und Zeitstempel des letzten erfolgreichen Checks | nein |
-| `/opt/coder/versions.env` | wirksam gewesene Versionen der fünf Images (644) | nein |
+| `/opt/coder/versions.env` | wirksam gewesene Coder-Version (Downgrade-Schutz; seit Fehler-7 nur noch `CODER_VERSION`, Postgres manuell gewartet) | ja |
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
 | `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Setup, Backup und Reset (600, root) | nein |
 | `/opt/coder/reset-coder.sh` | Komplett-Reset des Coder-Stacks | ja |
-| `/opt/coder/check-tls.sh` | zählt Let's-Encrypt-Ausstellungen (7 Tage) | ja |
 | `/opt/coder/RESTORE.md` | Runbook-Kopie (Quelle liegt im Repository) | nein |
-| `/opt/coder/.generated-hashes` | sha256 der 11 drift-überwachten Dateien (600, root) | – |
 | `/etc/cron.d/coder-backup` | Cron: täglich 01:00 | ja |
-| `/etc/cron.d/coder-tlscheck` | Cron: Montag 06:30 | ja |
 | `/etc/logrotate.d/coder-backup` | Rotation `/var/log/coder-backup.log` | ja |
-| `/etc/logrotate.d/coder-logs` | Rotation `/var/log/coder-tls.log` (wöchentlich, 8×) | ja |
 | `/etc/fail2ban/jail.d/10-coder-sshd.local` | Drop-In: Jail `sshd` (backend systemd) | ja |
+| `/etc/ssh/sshd_config.d/99-coder.conf` | SSH-Policy des Setups (Passwort ja, root nur Schlüssel), `sshd -T`-validiert | ja |
 | `/etc/apt/apt.conf.d/52-coder-reboot` | automatischer Reboot 03:00 | ja |
 | `/etc/docker/daemon.json` | Log-Limit json-file 10 MB × 3 (nur beim Fehlen geschrieben) | nein |
 | `/etc/apt/apt.conf.d/20auto-upgrades` | via debconf von unattended-upgrades | nein |
@@ -56,8 +53,9 @@ Die Konfigurationsdateien für Caddy und Prometheus stehen absichtlich in
 eigenen Unterverzeichnissen (`caddy/`, `prometheus/`): Docker bindet eine
 **Datei** beim Containerstart an deren Inode. Das Setup ersetzt sie atomar per
 Temp-Datei und `mv` – über einen Einzeldatei-Mount sähe der laufende Container
-bis zum nächsten Recreate die alte Fassung, während Hash- und Preflight-Prüfen
-die neue bestätigen. Verzeichnis-Mounts zeigen auf den jeweils aktuellen Inode.
+bis zum nächsten Recreate die alte Fassung, während die Validierer
+(Compose/Caddyfile/Prometheus) die neue Fassung prüfen. Verzeichnis-Mounts
+zeigen auf den jeweils aktuellen Inode.
 
 Nicht im Repository, nur auf dem Server: alle Backups und Logs.
 
@@ -201,15 +199,11 @@ docker exec coder-caddy wget -qO- -T 3 'http://127.0.0.1:9123/ask?domain=evil.gh
 cat /opt/coder/node-textfile/coder_backup.prom
 curl -s http://127.0.0.1:9100/metrics | grep '^coder_backup'
 
-# TLS-Ausstellungen der letzten 7 Tage (aus den Zertifikatsdateien im
-# caddy_data-Volume, kein Container-Logfenster nötig)
-curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_issuances'
-
-# Zeitpunkt des letzten erfolgreichen TLS-Checks; fehlt/älter als 8 Tage = Alarm
-curl -s http://127.0.0.1:9100/metrics | grep '^coder_tls_check_last_success_timestamp_seconds'
-
-# Alarmregeln geladen (5 Stück)?
+# Alarmregeln geladen (3 Stück)?
 curl -s http://127.0.0.1:9090/api/v1/rules | grep -o '"name":"[A-Za-z]*"' | sort -u
+
+# Updates wirklich geplant? (unattended-upgrades ist oneshot, der Timer läuft)
+systemctl is-active apt-daily-upgrade.timer && systemctl is-enabled apt-daily-upgrade.timer
 
 # Prüfen, ob irgendwo eine Docker-Origin für unattended-upgrades konfiguriert ist
 apt-config dump | grep -E 'Unattended-Upgrade::Origins-Pattern'
@@ -231,10 +225,11 @@ Konfiguration validieren (ohne Eingriff):
 sudo docker compose -f /opt/coder/docker-compose.yml config --quiet
 ```
 
-Wöchentlicher TLS-Stand (liefert Zahl + `logger`-Eintrag):
+TLS-Budget manuell sichten (kein automatischer Check mehr, Review-Set
+2026-10-03):
 
 ```bash
-sudo /opt/coder/check-tls.sh      # Log: /var/log/coder-tls.log
+sudo docker exec caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" | wc -l
 ```
 
 Alles davon zusammen in einem Lauf: `sudo ./setup-coder.sh` – Schritt 7
@@ -249,7 +244,6 @@ existiert, weist er darauf hin, dass der erste Anmeldende Owner wird.
 | täglich | Backup vorhanden und aktuell | `ls -t /opt/coder/backups/coder_*.sql.gz \| head -n1` |
 | täglich | Backup-Metrik aktuell (Prometheus `BackupStale`) | `cat /opt/coder/node-textfile/coder_backup.prom` |
 | nach Reboot | Container wieder da und gesund | `sudo docker ps`, Postgres `healthy`, `/healthz` 200 |
-| wöchentlich | TLS-Ausstellungen | `sudo /opt/coder/check-tls.sh` |
 | wöchentlich | fail2ban-Bans, ufw-Status | `sudo fail2ban-client status sshd`, `sudo ufw status` |
 | vor Coder-Update | Backup grün | `gzip -t $(ls -t /opt/coder/backups/coder_*.sql.gz \| head -n1)` |
 | pro Semester | Restore-Probe auf Test-VM | [RESTORE.md](RESTORE.md) |
@@ -278,12 +272,12 @@ Generationen bleiben erhalten.
 
 - Prometheus und node-exporter laufen nur auf `127.0.0.1` (9090/9100) und
   sind von außen nirgends erreichbar.
-- Grafana ist seit 2026-10-03 (Q2) auf allen Interfaces erreichbar:
-  **vom Schulnetz aus** `http://<Server-IP>:3001` (Login: `admin`), bewusst
-  ohne TLS. Der Port darf **nicht** am Router nach außen weitergeleitet
-  werden (nur 80/443/22); die ufw-Regel lässt nur private Quellen zu.
-- Alternativ/ergänzend per SSH-Tunnel (immer möglich, auch von außerhalb
-  des Schulnetzes):
+- Grafana ist seit Review-Set 2026-10-03 **nur noch an `127.0.0.1:3001`**
+  gebunden (vorübergehend waren es alle Interfaces mit ufw-Quellregeln;
+  die Altbestandsregeln räumt das Setup beim Lauf auf). Der Port ist von
+  außen nirgends erreichbar und darf **nicht** am Router weitergeleitet
+  werden (nur 80/443/22).
+- Zugang per SSH-Tunnel (von überall, auch außerhalb des Schulnetzes):
 
   ```bash
   ssh -L 3001:127.0.0.1:3001 <user>@<server>
@@ -296,11 +290,11 @@ Generationen bleiben erhalten.
   `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`.
 - Die Datasource `Prometheus` wird beim Setup automatisch provisioniert
   (`/opt/coder/grafana/provisioning/datasources/`) – kein Eintragen im UI.
-- **Fünf Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
+- **Drei Alarmregeln** liegen in Prometheus (`/opt/coder/prometheus/rules/`):
   Coder-Target down, Root-Partition <10 % frei, letztes Backup älter als
-  25 Stunden, TLS-Ausstellungen >20/7 Tage (Let's-Encrypt-Limit 50/Woche)
-  sowie ein fehlender oder mehr als 8 Tage alter TLS-Check. Sie sind
-  einsehbar unter `http://127.0.0.1:9090/alerts` bzw. in Grafana.
+  25 Stunden. Sie sind einsehbar unter `http://127.0.0.1:9090/alerts`
+  bzw. in Grafana. (Die beiden TLS-Regeln entfielen mit der check-tls-Ära,
+  Review-Set 2026-10-03.)
 - Es gibt **keinen Benachrichtigungskanal** (kein Alertmanager, keine
   Mail/Telegram/Webhook): die Regeln klingeln nirgends, sie zeigen nur
   etwas, wer hinsieht. Metriken sind sichtbar, wer sie ansieht.
@@ -411,11 +405,13 @@ sudo /opt/coder/reset-coder.sh            # mit Backup + Bestätigung "RESET"
 sudo /opt/coder/reset-coder.sh --force    # nur, wenn das Backup fehlschlägt
 ```
 
-Was passiert: Inventar fremder Container (lesend) → letztes Backup →
-Bestätigung → Prüfung, ob fremde Container ein zu löschendes Volume halten
-(Abbruch vor `down`, nichts angefasst) → `docker compose down
---remove-orphans` → Löschen der Volumes `postgres_data`, `grafana_data`,
-`prometheus_data` → `.env` entfernen.
+Was passiert: Inventar (hart – **Nicht-Compose-Container = Abbruch vor
+allem, nichts verändert**; `--force` hebt diese Klemme nicht auf) →
+letztes Backup → Bestätigung → Prüfung, ob Container ein zu löschendes
+Volume halten (Abbruch vor `down`, nichts angefasst) → `docker compose
+down --remove-orphans` → Löschen der Volumes `postgres_data`,
+`grafana_data`, `prometheus_data` → `.env` entfernen. Unbekannte
+Argumente werden abgelehnt (erlaubt: keine oder `--force`).
 
 Bleiben erhalten: Backups, Caddy-Zertifikate (`caddy_data`/`caddy_config`),
 alle Einstellungen außerhalb des Coder-Stacks. Danach:
@@ -423,28 +419,25 @@ alle Einstellungen außerhalb des Coder-Stacks. Danach:
 
 `--force` ist kein Komfort-Flag: er setzt den Reset auch ohne
 funktionierendes Backup durch und verlangt eine zweite Eingabe
-`RESET-OHNE-BACKUP`. Ohne Terminal (Pipe/CI) wird der Reset **immer**
+`RESET-OHNE-BACKUP`; das Fremd-Container-Gate bleibt auch mit `--force`
+aktiv. Ohne Terminal (Pipe/CI) wird der Reset **immer**
 verweigert, auch mit `--force` (Schutz vor `echo RESET | …`). **Nie auf
 Produktion üben.**
 
-### Drift-Warnung (generierte Dateien)
+### Hand-Änderungen an generierten Dateien
 
-Das Setup hält sha256 der 16 generierten Dateien in
-`/opt/coder/.generated-hashes`. Ändert sich eine Datei durch Handarbeit,
-kommt beim nächsten Setup-Lauf:
+Das Setup schreibt verwaltete Dateien atomar (`write_managed`); weicht eine
+vorgefundene Datei inhaltlich ab, ersetzt der nächste Lauf sie **ohne
+Vorwarnung** durch die Setup-Fassung (gleicher Inhalt: Ziel-Inode bleibt
+unangetastet). Der Hashstore der früheren Runden
+(`/opt/coder/.generated-hashes`) ist mit dem Review-Set 2026-10-03
+entfallen – bei Upgrade-Läufen alter Stände räumt das Setup die Restdatei
+noch still mit.
 
-```
-[WARNUNG] Drift in <label> (<pfad>): weicht von letzter Setup-Generation ab –
-wird deterministisch regeneriert, Hand-Anpassung geht verloren
-```
-
-Verhalten: der Lauf läuft weiter (kein interaktiver Stopp), die Datei
-wird neu geschrieben und der Hash aktualisiert. Gewollte Anpassungen
-(Caddy-Snippets, Logrotate-Zeiten, fail2ban-Jails, Cron-Zeiten) daher
-im Repository bzw. in `setup-coder.sh` ändern und das Setup erneut
+Gewollte Anpassungen (Caddy-Snippets, Logrotate-Zeiten, fail2ban-Jails,
+Cron-Zeiten, SSH-Policy) daher im Repository bzw. in `setup-coder.sh`
+bzw. als eigenes, vorrangiges Drop-In ändern und das Setup erneut
 ausführen – nicht dauerhaft auf dem Server korrigieren.
-
-Prüfen, ob der Hashstore stimmt: `sudo cat /opt/coder/.generated-hashes`.
 
 ## 8. Backup
 
@@ -456,12 +449,15 @@ Prüfen, ob der Hashstore stimmt: `sudo cat /opt/coder/.generated-hashes`.
 | Verifikation | `gzip -t` (hart), SQL-Header (hart), Größe < 512 B (Warnung), halbiert gegenüber Vorgänger (Warnung) |
 | Rotation | neueste 14 Dateien, Mindestbestand eingebaut |
 | Parallelität | gemeinsamer Wartungs-`flock` plus Backup-`flock`; parallele Läufe warten bis zu 300 s. Bei weiter belegtem Lock Exit 75, ohne neues Backup |
-| Mindestplatz | 500 MB frei, sonst Abbruch ohne Datei |
+| Mindestplatz | 500 MB frei, sonst Abbruch ohne Datei; gilt auch, wenn `df` selbst fehlschlägt (Abbruch statt stumm weiter) |
 | Offsite | **nicht eingerichtet** |
 | Metrik | nach jedem Erfolg `node-textfile/coder_backup.prom` (644, atomar) → `coder_backup_last_success_timestamp_seconds`; Fehlschlag des Metrik-Schreibens verwandelt ein gutes Backup nicht in einen Cron-Fehler |
 
-Zusätzlich zieht ein Setup-Lauf vor einem Upgrade (geänderte Bilder) ein
-Backup; `reset-coder.sh` ebenfalls (Abbruch ohne Backup, außer `--force`).
+Zusätzlich zieht ein Setup-Lauf vor einem Upgrade ein Backup – seit
+Review-Set volumen-basiert erkannt (läuft ein Postgres-Container mit
+`postgres_data`, wird er gestartet und per `pg_isready` abgeklopft, bevor
+gesichert wird; ohne `backup.sh` bricht der Lauf hart ab).
+`reset-coder.sh` sichert ebenfalls (Abbruch ohne Backup, außer `--force`).
 
 Backup, Setup-Läufe und Reset teilen `/opt/coder/.maintenance.lock`.
 Dadurch kann ein Backup nicht mitten in einem Setup-Lauf oder Reset
@@ -490,14 +486,14 @@ tail -20 /var/log/coder-backup.log
 | Aufgabe | Wann | Datei/Quelle |
 |---|---|---|
 | Datenbank-Backup | täglich 01:00 | `/etc/cron.d/coder-backup` |
-| TLS-Ausstellungen zählen | Montag 06:30 | `/etc/cron.d/coder-tlscheck` |
 | Log-Rotation Backup-Log | wöchentlich | `/etc/logrotate.d/coder-backup` |
 | Debian-Paketupdates + Reboot 03:00 (ohne Docker Engine) | Debian-Default | unattended-upgrades, `52-coder-reboot` |
 | Coder-/Stack-Update | **nie automatisch** | manueller Setup-Lauf (Abschnitt 7) |
 | Docker-Engine-/Compose-Update | **nie automatisch**, empfohlen mind. monatlich + bei kritischen CVEs im Wartungsfenster | manuelles APT-Upgrade, siehe Abschnitt 7 „Update (bewusst manuell)" |
 
 Prüfen: `systemctl is-active cron`, `ls -l /etc/cron.d/`,
-`sudo systemctl status unattended-upgrades --no-pager`.
+`systemctl status apt-daily-upgrade.timer --no-pager` (der Timer stößt
+den oneshot-Dienst `unattended-upgrades` an).
 
 ## 10. Tests
 
@@ -507,9 +503,10 @@ shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-10-03: alle 10 Dateien in `tests/` Exit 0, 280 `PASS`,
+Stand 2026-10-03: alle 9 Dateien in `tests/` Exit 0, 278 `PASS`,
 0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
-ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
+ohne Befund. (`t-b2-005` entfiel mit der check-tls-Ära, `t-b2-007` heißt
+jetzt `t-b2-007-write-managed.sh`.) Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.
 
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder
@@ -649,6 +646,8 @@ zum Server.
    durchspielen.
 
 Nicht Teil der Inbetriebnahme, aber betriebsrelevant: die Wildcard-Zertifikate
-laufen über On-Demand-TLS mit dem gemeinsamen Let's-Encrypt-Budget der Domain
-(Erkennung: wöchentliches `check-tls.sh`; Details
+laufen über On-Demand-TLS mit dem gemeinsamen Let's-Encrypt-Budget der
+Domain; eine automatische Budget-Überwachung gibt es nicht mehr
+(Review-Set 2026-10-03), Erschöpfung fällt als HTTPS-Fehler auf (manuelle
+Sichtprüfung in Abschnitt 5, Details
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md), Abschnitte B1–B3).

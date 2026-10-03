@@ -8,12 +8,15 @@
 #         Lauf faehrt fort
 #   Regelanwendung: Policy erst, dann allow fuer die erkannten sshd-Ports
 #         (Schleife ueber SSHD_PORTS, idempotent), DANACH eigene alte
-#         limit-Regel loeschen (kein Fenster ohne SSH-Regel); nie eine
-#         Quellregel anfassen, keine fremden Regeln loeschen
+#         limit-Regel loeschen (kein Fenster ohne SSH-Regel); fremde/
+#         Operator-Regeln nie loeschen, einzige Quellregel-Ausnahme ist die
+#         explizite 3001-Altbestands-Allowlist (Review-Set 2026-10-03,
+#         Fehler 1–3)
 #   Abschlusscheck: jede erkannte Portnummer muss als ALLOW (Anywhere)
 #         stehen; LIMIT oder fehlende Regel = Fehler
-#   Statisch: kein Bypass, kein Restore, kein Quellregel-Delete, keine
-#         Detektor-/Beschraenkungs-Zweiglogik, keine "ufw limit"-Zeile
+#   Statisch: kein Bypass, kein Restore, kein Delete ausser eigene limit +
+#         3001-Altbestand, keine Detektor-/Beschraenkungs-Zweiglogik,
+#         keine "ufw limit"-Zeile
 set -euo pipefail
 
 FAIL=0
@@ -266,15 +269,33 @@ grep -qF 'ufw limit 22/tcp' "${SETUP}" \
   && fail "harte 'ufw limit 22/tcp'-Zeile ist noch im Setup" \
   || pass "keine 'ufw limit 22/tcp'-Zeile (allow statt limit)"
 
-# Genau eine Delete-Zeile: die eigene alte limit-Regel, nirgends sonst.
+# Delete-Zaehlung: genau ZWEI Zeilen gesamt, EINE im Anwendungsblock.
+# (1) eigene alte limit-Regel (im Block), (2) Altbestands-Schleife fuer die
+# veralteten Grafana-3001-Regeln ausserhalb des Blocks – die einzige
+# erlaubte Quellregel-Ausnahme (Review-Set 2026-10-03, Fehler 1–3).
 DEL_ALL="$(grep -cF 'ufw --force delete' "${SETUP}" || true)"
 DEL_APPLY="$(grep -cF 'ufw --force delete' "${WORK}/apply.sh" || true)"
-[ "${DEL_ALL}" -eq 1 ] && [ "${DEL_APPLY}" -eq 1 ] \
-  && pass "genau die eine Delete-Zeile (eigene limit) in der Anwendung (Anzahl=${DEL_ALL})" \
-  || fail "Delete-Zeilen: gesamt=${DEL_ALL} im Block=${DEL_APPLY} (erwartet 1/1)"
+[ "${DEL_ALL}" -eq 2 ] && [ "${DEL_APPLY}" -eq 1 ] \
+  && pass "2 Delete-Zeilen gesamt (limit + 3001-Altbestand), 1 im Anwendungsblock" \
+  || fail "Delete-Zeilen: gesamt=${DEL_ALL} im Block=${DEL_APPLY} (erwartet 2/1)"
 grep -qF 'ufw --force delete limit 22/tcp' "${SETUP}" \
   && pass "Delete trifft nur die eigene limit-Regel" \
   || fail "eigene limit-Regel wird nicht geloescht"
+
+# 3001-Altbestand: genau eine Delete-Zeile ueber _spec, und die Allowlist
+# enthaelt AUSSCHLIESSLICH 3001-Specs (kein Trojaner fuer andere Regeln).
+DEL_SPEC="$(grep -cF 'ufw --force delete allow ${_spec}' "${SETUP}" || true)"
+[ "${DEL_SPEC}" -eq 1 ] \
+  && pass "genau eine 3001-Delete-Zeile ueber _spec" \
+  || fail "3001-Delete-Zeilen ueber _spec: ${DEL_SPEC} (erwartet 1)"
+LOOP_SPECS="$(awk '/^for _spec in/{f=1} f{print} f&&/ufw --force delete allow/{exit}' "${SETUP}")"
+SPEC_TOTAL="$(printf '%s\n' "${LOOP_SPECS}" | grep -c '^  "' || true)"
+SPEC_BAD="$(printf '%s\n' "${LOOP_SPECS}" | grep '^  "' | grep -vc '3001' || true)"
+if [ "${SPEC_TOTAL}" -ge 1 ] && [ "${SPEC_BAD}" -eq 0 ]; then
+  pass "Allowlist-Loop: ${SPEC_TOTAL} Spec(s), alle mit 3001"
+else
+  fail "Allowlist-Loop: total=${SPEC_TOTAL} ohne-3001=${SPEC_BAD} (nur 3001-Specs erlaubt)"
+fi
 
 # SSH-Regel kommt aus der erkannten Portliste, nicht aus einer Festzahl.
 grep -qF 'ufw allow "${_ssh_p}/tcp"' "${SETUP}" \

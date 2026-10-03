@@ -8,7 +8,8 @@
 # riskieren. Betrifft NUR den Coder-Stack, nicht den Server selbst
 # (SSH/Firewall/OS bleiben unverändert).
 #
-# Ablauf (F-011/P-019): Inventar (lesend) -> Backup -> Bestätigung erst nach
+# Ablauf (F-011/P-019): Inventar (hart: Nicht-Compose-Container = Abbruch,
+# Review-Set 2026-10-03 §3) -> Backup -> Bestätigung erst nach
 # Backup-Ergebnis -> Löschung. Mit --force bei Backup-Fehlschlag zusätzlich
 # Zweitbestätigung mit Anzeige des neuesten Backups.
 # Nutzung: sudo /opt/coder/reset-coder.sh [--force]
@@ -21,6 +22,8 @@
 #            Kenntnisnahme des neuesten verfügbaren Backups (wird angezeigt).
 #            Nachweis: zweite Eingabe 'RESET-OHNE-BACKUP' (immer interaktiv,
 #            P-019 verweigert Pipe auch mit --force).
+#            Andere Argumente werden abgelehnt (kein stilles Ignorieren von
+#            Tippfehlern). --force ersetzt NICHT das Fremd-Container-Gate.
 # Danach: sudo ./setup-coder.sh erneut ausführen, um alles neu aufzubauen.
 set -euo pipefail
 cd /opt/coder
@@ -38,6 +41,13 @@ fi
 export CODER_MAINTENANCE_LOCK_HELD=1
 
 FORCE=false
+# Kleine CLI (Review-Set 2026-10-03, §3-Small): erlaubt sind genau keine
+# Argumente oder --force. Ein Tippfehler darf nicht still als "ohne --force"
+# weiterlaufen, und Extra-Argumente werden nicht geschluckt.
+if [ "$#" -gt 1 ] || { [ "$#" -ge 1 ] && [ "$1" != "--force" ]; }; then
+  echo "Fehler: unbekanntes Argument '$*' – erlaubt: sudo /opt/coder/reset-coder.sh [--force]" >&2
+  exit 1
+fi
 if [ "${1:-}" = "--force" ]; then
   FORCE=true
 fi
@@ -62,15 +72,27 @@ if [ -z "${PROJECT:-}" ]; then
 fi
 
 echo "############################################################"
-echo "Inventar VOR dem Reset (F-011: Workspace-Hinweis vor Löschung):"
-echo "Coder erstellt Workspace-Container direkt über den Docker-Socket,"
-echo "nicht über diese docker-compose.yml. 'docker compose down' erfasst sie"
-echo "NICHT – sie liefen nach dem Reset verwaist weiter (DB-Metadaten weg,"
-echo "Container da, Namens-/Port-Konflikte beim Neuaufbau möglich)."
-echo "Coder-Workspace-Labels sind in diesem Repo nicht verifiziert (BLOCKER"
-echo "B-11); daher werden ehrlich ALLE Nicht-Compose-Container angezeigt:"
-docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}' | awk -v p="${PROJECT}" -F'\t' '$3 != p {print "  fremd: " $1 " (" $2 ")"}' || true
+echo "Inventar VOR dem Reset – Harte Regel (Review-Set 2026-10-03, §3):"
+echo "es darf KEINE Nicht-Compose-Container geben. Workspace-Container"
+echo "entstehen über den Docker-Socket, nicht über docker-compose.yml –"
+echo "'down' erfasst sie nicht; mit gelöschter DB liefen sie verwaist"
+echo "weiter (Namens-/Port-Konflikte beim Neuaufbau). Labels sind dabei"
+echo "egal: ALLE Nicht-Compose-Container sind ZUERST von Hand entfernen."
+FOREIGN_LIST="$(docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}' \
+  | awk -v p="${PROJECT}" -F'\t' '$3 != p {print "  fremd: " $1 " (" $2 ")"}' || true)"
+if [ -n "${FOREIGN_LIST}" ]; then
+  printf '%s\n' "${FOREIGN_LIST}"
+fi
 echo "(Compose-eigene Container mit project=${PROJECT} sind oben nicht gelistet.)"
+echo "############################################################"
+if [ -n "${FOREIGN_LIST}" ]; then
+  echo "Fehler: Nicht-Compose-Container vorhanden (Inventar oben) – Reset abgebrochen, nichts wurde verändert." >&2
+  echo "Zuerst aufräumen, dann Reset erneut starten:" >&2
+  printf '%s\n' "${FOREIGN_LIST}" >&2
+  echo "  Inhalt vorher ansehen (docker inspect <name>), dann: docker rm -f <name>" >&2
+  echo "  --force hebt diese Klemme NICHT auf – sie schützt vor verwaisten Containern." >&2
+  exit 1
+fi
 echo "############################################################"
 echo "WARNUNG: Das löscht unwiderruflich:"
 echo "  - Datenbank (alle Nutzer, Workspaces, Templates)"
@@ -174,10 +196,8 @@ while IFS= read -r VOL_NAME; do
 done <<< "${VOLUMES_TO_DELETE}"
 
 echo "Stoppe Container (caddy_data/caddy_config bleiben unangetastet)..."
-echo "B-020: Falls im Inventar oben fremde Container standen (Workspace-Reste):"
-echo "jetzt Namen notieren – nach 'down' sind Compose-Container weg, verwaiste"
-echo "Workspace-Container stehen ggf. noch und müssen von Hand aufgeräumt werden"
-echo "(docker ps -a). Der Reset löscht sie NICHT automatisch."
+echo "(Das Inventar oben war leer – Nicht-Compose-/Workspace-Container sind"
+echo "per harter Regel vorher entfernt worden.)"
 docker compose down --remove-orphans
 
 while IFS= read -r VOL_NAME; do
@@ -192,7 +212,5 @@ echo "------------------------------------------------------------"
 echo "Reset abgeschlossen. Zum Neuaufbau:"
 echo "  sudo ./setup-coder.sh"
 echo "(erzeugt neue Passwörter und startet den Stack komplett neu)"
-echo ""
-echo "Verwaiste Workspace-Container (Inventar vor 'down', B-020):"
-echo "  docker ps -a  # von Hand aufräumen, sonst Namens-/Port-Konflikte"
+echo "(Workspace-/fremde Container gab es vorher nicht – harte Regel oben.)"
 echo "------------------------------------------------------------"

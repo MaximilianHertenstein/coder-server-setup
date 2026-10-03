@@ -9,12 +9,112 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-03 · Basisstand dieses Eintrags: `9c458cb` auf `main`.
+Stand: 2026-10-03 · Basisstand dieses Eintrags: `825cd3f` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
 
-## 2026-10-03 – Externes Review (SSH/Fehler/Overengineering/Reihenfolge) dispositioniert: SSH auf allow+fail2ban, sechs Bugs gefixt, Rest abgelehnt
+## 2026-10-03 (2) – Externes Review „Korrekturen + Vereinfachung" dispositioniert: Grafana auf Loopback, SSH-Drop-In, Reset-Gate, check-tls/Hashstore-Ära beendet
+
+- **Review-Set (143 Z., 9 Fehler + Overengineering A–K) je Punkt gegen den
+  Code verifiziert** (Fakten getrennt von Annahmen; vereinzelte Review-Punkte
+  trafen die Quelle nicht – s. u. „abgelehnt"). Zugestimmt und umgesetzt:
+  - **Fehler 1–3 (Grafana):** `ports` auf `127.0.0.1:3001:3000`; die drei
+    alten ufw-Quellregeln und eine `3001/tcp`-Regel werden idempotent
+    entfernt (harte Allowlist, nur diese vier Spezifikationen); Abschluss-
+    check verlangt das **Fehlen** jeder 3001-Regel; Zugang ausschließlich
+    per SSH-Tunnel (Zusammenfassung nennt den Befehl).
+  - **Fehler 4:** Abschlusscheck prüft `apt-daily-upgrade.timer`
+    (aktiv + enabled) statt `is-active unattended-upgrades` (auf Debian
+    oneshot – der alte Check war ein False-Failure).
+  - **Fehler 5:** Pre-Upgrade-Backup volumen-basiert erkannt
+    (`label=com.docker.compose.volume=postgres_data`), hart bei
+    fehlendem `backup.sh`, Postgres wird gestartet und per `pg_isready`
+    (30×2 s) abgeklopft, dann Backup.
+  - **Fehler 6/7 (teilweise):** `versions.env` enthält nur noch
+    `CODER_VERSION` (allein Coder führt irreversible DB-Migrationen aus;
+    Postgres bewusst manuell, als „Fehler-7-Entscheidung" kommentiert).
+    Die SchreibPOSITION direkt nach `up -d` bleibt **bewusst**: erst
+    Healthcheck würde die Downgrade-Warnung schwächen, die Migration
+    läuft beim Start, nicht bei „gesund" (Begründung im Code).
+  - **Fehler 12:** `backup.sh`: schlägt `df` fehl, bricht der Lauf ab
+    (sonst läuft der Dump ohne Platzprüfung in die ENOSPC).
+  - **SSH-Policy:** eigenes Drop-In `/etc/ssh/sshd_config.d/99-coder.conf`
+    (`PasswordAuthentication yes`, `KbdInteractiveAuthentication yes`,
+    `PermitRootLogin prohibit-password`), validiert über `sshd -T` auf der
+    GESAMTEN Konfiguration – bei Fehlschlag alter Inhalt wiederherstellen
+    und vor dem Reload abbrechen; Reload nur bei aktivem Dienst; Effekt-
+    Check gegen die **neu geladene** Konfiguration; Passwort-Check
+    invertiert (Warnung, wenn die Policy nicht wirkt), Warnung bei
+    `permitrootlogin yes` fremder Drop-Ins.
+  - **Reset (§3):** unbekannte Argumente werden abgelehnt (nur `[]` und
+    `--force`, Verhaltensfixture im Test); Nicht-Compose-Container =
+    **harter Abbruch vor Backup/Bestätigung/down** (Inventar-Format 3
+    Spalten, auch Unlabelled), `--force` hebt das Gate nicht auf; die
+    weichen B-020-Hinweise sind entfallen.
+  - **Overengineering entfernt:** Hashstore/`note_drift`/`remember_hash`
+    samt Drift-Warnung und Schritt-10-Heilschleife (A) – `write_managed`
+    bleibt der atomare Schreiber (Verhalten fixture-getestet: Inode
+    stabil bei gleichem Inhalt, bash -n-Guard, Validierer vor Austausch);
+    `check-tls.sh` + Cron `coder-tlscheck` + `coder_tls.prom` + logrotate
+    `coder-logs` + Alerts `TlsIssuanceBudgetHigh`/`TlsCheckStale` +
+    `tests/t-b2-005` (D, Fehler 8–9) – Altbestand wird beim Lauf still
+    entfernt; Daemon-Restartbedingung ehrlich auf „beliebiger Container"
+    (Log-Limits bleiben daemon-weit, weil Workspace-Container sie brauchen).
+  - **fail2ban `ignoreip` (Punkt 3):** Entscheidung festgeschrieben – NUR
+    echte Admin-Plätze, Default bleibt `127.0.0.1/8 ::1`, die geteilte
+    Schul-NAT wird bewusst **nicht** eingetragen (Rateversuche aus dem
+    Schulnetz sollen sperren; Recovery: anderes Netz oder Proxmox-
+    Konsole). Kommentare in Setup, README-Offener-Punkt und SECURITY §2
+    sind synchronisiert.
+  - **Version-Kommentar v-Präfix:** live gegen die Registry geprüft
+    2026-10-03 – `ghcr.io/coder/coder:v2.36.6` und `:v2.37.3` → HTTP 200,
+    ohne `v` → 404. Der Review-Punkt traf die Release-Notes, nicht die
+    Registry; der Setup-Kommentar bleibt und nennt jetzt beide Daten.
+- **Abgelehnt (Grund):** First-User-Automatik (Erstbesitzer-Race =
+  Sicherheitspropert – bleibt manuelle Prozedur), Auto-Reboot 03:00
+  (Fenster mit Schulbetrieb abgestimmt, D-Reboot-Fenster), Zeitzone im
+  Installer (C1-Lokalzeit-Prüfung bleibt), `.env`-Validator (Parse-Check +
+  hex-Guard reichen), `DOMAIN_CODER_REGEX` (Security-Filter mit Tests),
+  Reload-Orchestrierung (bereits eine Schleife je Dienst),
+  versions.env-Schreibposition (siehe Fehler 6), globales `daemon.json`
+  (Log-Limits müssen auch Workspace-Container decken), Versions-Bumps
+  (Caddy 2.11.7/Prometheus 3.15/Grafana 13 Major – als Empfehlung
+  dokumentiert, kein Blind-Bump, Grafana-Major erst nach Compat-Check),
+  Alertkanal und Offsite-Automatismus (bleiben Entscheidungs-/Doku-
+  punkte, Review zwingt hier zu nichts).
+- **Geänderte Dateien:** `setup-coder.sh`, `scripts/backup.sh`,
+  `scripts/reset-coder.sh`; entfernt: `scripts/check-tls.sh`,
+  `tests/t-b2-005-tls-window.sh`; umbenannt+umschrieben:
+  `tests/t-b2-007-drift-hash.sh` → `tests/t-b2-007-write-managed.sh`
+  (Struktur: 9 direkte Zieldateien + SSH-Drop-In; Verhalten a–d als
+  Extrakt-Fixture); ergänzt: `tests/t-b2-004-ufw-ssh-rules.sh`
+  (Delete-Zählung 2/1 + 3001-Allowlist-Prüfung),
+  `tests/t-b2-006-reset-precheck.sh` (Argument-Ablehnung + Fremd-Gate
+  inkl. Position vor Volumen-Ermittlung); Doku: `README.md`,
+  `SECURITY.md`, `OPERATIONS.md`, `TROUBLESHOOTING.md`.
+- **Teststand (lokal):** 9 Dateien, 278 PASS, 0 FAIL; `bash -n` und
+  `shellcheck -S warning` ohne Befund.
+- **Teststand (Test-Host `2.29.11.30`, 2026-10-03):** rsync + zwei volle
+  Läufe RC 0 (0 Fehler). Am Host nachgewiesen: `sshd -T` mit
+  `passwordauthentication yes`, `kbdinteractiveauthentication yes`,
+  `permitrootlogin without-password`; ufw ohne jede 3001-Regel;
+  `127.0.0.1:3001` gebunden (docker-proxy); `/etc/cron.d/coder-tlscheck`,
+  `/opt/coder/check-tls.sh`, `/opt/coder/.generated-hashes` und
+  `/etc/logrotate.d/coder-logs` entfernt; `versions.env` nur
+  `CODER_VERSION=v2.36.6`; genau 3 Alarmregeln (`BackupStale`,
+  `CoderTargetDown`, `RootPartitionFillingUp`); `apt-daily-upgrade.timer`
+  aktiv+enabled; `/opt/coder/` enthält nur noch `backup.sh` und
+  `reset-coder.sh`. Die `healthz`-WARNung bleibt der bekannte externe
+  Blocker (Domain zeigt nicht auf den Host).
+- **Offene Punkte:** Versions-Bumps je Empfehlung prüfen (Open-Point
+  oben); Budget-Sichtprüfung ohne Automation (manuell, OPERATIONS §5);
+  Offsite-Ziel/Rhythmus entscheiden (Doku-Pflicht, kein Code); DNS-Weg
+  für 80/443 + Kasserver-Zugang beim Schulträger klären (Befund
+  2026-10-03: Zone bei Kasserver/All-Inkl, `A` zeigt aktuell auf die alte
+  Schulseite, `93.240.138.106` ist der Kreis-Proxy `logoip.de`); Reset-
+  Gate braucht vor Produktivbetrieb Workspace-Labels bzw. sauberes
+  Inventar (B-11). dispositioniert: SSH auf allow+fail2ban, sechs Bugs gefixt, Rest abgelehnt
 
 - **Review-Set (143 Z., Abschnitte 1–4) je Punkt gegen Code verifiziert.**
   Zugestimmt und umgesetzt:

@@ -4,6 +4,9 @@
 # down), Projekt-Container-Ausschluss (sonst breche jeder Re-Run auf
 # laufendem Stack ab), wahrheitsgemaeße Meldungen (kein "Stack ist gestoppt"),
 # Verhalten des Ausschluss-Filters als Verhaltensfixture.
+# Review-Set 2026-10-03, §3: ausserdem kleine CLI (nur [] und --force,
+# Tippfehler abgelehnt) und harte Regel "keine Nicht-Compose-Container"
+# VOR jedem destruktiven Schritt (--force hebt sie nicht auf).
 # Nur /tmp, kein Docker, keine Produktion.
 set -euo pipefail
 
@@ -76,12 +79,24 @@ else
   fail "unerwartete Anzahl 'docker compose down'-Stellen: ${DOWN_COUNT}"
 fi
 
-# --- 2. Projekt-Container-Ausschluss vorhanden ------------------------------
+# --- 2. Inventar-Format: Projekt-Container erkennen, Fremde melden ----------
+# Format 3 Spalten: Name \t Status \t com.docker.compose.project; awk meldet
+# alles, dessen Projekt NICHT ${PROJECT} ist (inkl. ungelabelter Container).
+if grep -qF -- '--format '\''{{.Names}}\t{{.Status}}\t{{.Label "com.docker.compose.project"}}'\''' "${WORK}/reset-coder.sh" \
+  && grep -qF -- 'awk -v p="${PROJECT}" -F'\''\t'\'' '\''$3 != p {print "  fremd: "' "${WORK}/reset-coder.sh"; then
+  pass "Inventar-Format: Fremd-/Unlabelled-Container werden erkannt"
+else
+  fail "Inventar-Format fehlt (Nicht-Compose-Container-Meldung unbrauchbar)"
+fi
+
+# Belegungs-Check (Volume): Projekt-Container muessen draussen bleiben, sonst
+# breche jeder Re-Run auf laufendem Stack ab. Zweites, anderes Format als im
+# Inventar oben (2 Spalten: ID + Projekt-Label).
 if grep -qF -- '--format '\''{{.ID}} {{.Label "com.docker.compose.project"}}'\''' "${WORK}/reset-coder.sh" \
   && grep -qF -- 'awk -v p="${PROJECT}" '\''$2 != p {print $1}'\''' "${WORK}/reset-coder.sh"; then
-  pass "Projekt-Container werden aus dem Belegungs-Check ausgeschlossen"
+  pass "Belegungs-Check schliesst Projekt-Container aus"
 else
-  fail "Projekt-Container-Ausschluss fehlt (ohne ihn bricht jeder laufende Re-Run ab)"
+  fail "Projekt-Container-Ausschluss im Belegungs-Check fehlt (ohne ihn bricht jeder laufende Re-Run ab)"
 fi
 
 # Regressionswächter: "-q" UND "--format" an derselben docker-ps-Aufrufkette
@@ -133,14 +148,11 @@ for token in \
   fi
 done
 
-# --- 5. Verhaltensfixture: Ausschluss-Filter (awk-Teil identisch zum Code) ---
-own='ab12cd34 coder
-cd56ef78 coder
-deadbeef
-9f8e7d6c otherstack'
-filtered="$(printf '%s\n' "${own}" | awk -v p="coder" '$2 != p {print $1}')"
-if [ "${filtered}" = "deadbeef
-9f8e7d6c" ]; then
+# --- 5. Verhaltensfixture: Inventar-Filter (awk-Teil identisch zum Code) ----
+own=$'compose1\tRunning\tcoder\ncompose2\tRunning\tcoder\nfremd1\tExited\t\nfremd2\tRunning\totherstack'
+filtered="$(printf '%s\n' "${own}" | awk -v p="coder" -F'\t' '$3 != p {print "  fremd: " $1 " (" $2 ")"}')"
+if [ "${filtered}" = "  fremd: fremd1 (Exited)
+  fremd: fremd2 (Running)" ]; then
   pass "Filter: Projekt-Container raus, Fremd- und Unlabelled-Container rein"
 else
   fail "Filterverhalten falsch: [$(printf '%s' "${filtered}" | tr '\n' '|')]"
@@ -153,6 +165,53 @@ if [ -n "${L_ABORT}" ] && [ "${L_ABORT}" -lt "${L_DOWN}" ]; then
 else
   fail "Abbruch-Exit steht nicht vor dem down"
 fi
+
+# --- 7. Kleine CLI + harte Regel "keine Nicht-Compose-Container" ------------
+# Review-Set 2026-10-03, §3: nur [] und --force sind erlaubt; fremde
+# Container brechen VOR jedem destruktiven Schritt ab, --force hebt das
+# Gate nicht auf (es schuetzt vor verwaisten Containern, nicht vor Backup-
+# Problemen).
+if grep -qF -- '[ "$#" -gt 1 ] || { [ "$#" -ge 1 ] && [ "$1" != "--force" ]; }' "${WORK}/reset-coder.sh" \
+  && grep -qF 'unbekanntes Argument' "${WORK}/reset-coder.sh"; then
+  pass "Argument-Pruefung vorhanden (nur [] und --force)"
+else
+  fail "Argument-Pruefung fehlt (Tippfehler laufen still als 'ohne --force')"
+fi
+# Verhaltensfixture: dieselbe Bedingung wie im Skript.
+arg_reject() { [ "$#" -gt 1 ] || { [ "$#" -ge 1 ] && [ "$1" != "--force" ]; }; }
+if arg_reject foo; then pass "Fixture: 'foo' abgelehnt"; else fail "Fixture: 'foo' wurde NICHT abgelehnt"; fi
+if arg_reject --force; then fail "Fixture: '--force' wurde abgelehnt"; else pass "Fixture: '--force' akzeptiert"; fi
+if arg_reject; then fail "Fixture: leere Argumentliste wurde abgelehnt"; else pass "Fixture: ohne Argumente akzeptiert"; fi
+if arg_reject --force extra; then pass "Fixture: '--force' plus Extra-Argument abgelehnt"; else fail "Fixture: Extra-Argument wurde geschluckt"; fi
+
+L_FOREIGN=$(line_of 'Fehler: Nicht-Compose-Container vorhanden' || true)
+if [ -n "${L_FOREIGN}" ]; then
+  pass "harter Abbruch bei Nicht-Compose-Containern vorhanden"
+else
+  fail "harter Abbruch bei Nicht-Compose-Containern fehlt (nur Warnung waere zu schwach)"
+fi
+if [ -n "${L_FOREIGN}" ] && [ "${L_FOREIGN}" -lt "${L_VOLDET}" ]; then
+  pass "Fremd-Container-Gate steht vor Volume-Ermittlung/down (vor Backup/Confirm)"
+else
+  fail "Fremd-Container-Gate steht nicht vor den destruktiven Schritten"
+fi
+# --force darf das Gate NICHT umgehen: innerhalb des Abbruchblocks kein FORCE.
+GATE_BLOCK=$(awk '/Fehler: Nicht-Compose-Container vorhanden/{f=1} f{print} f&&/exit 1/{exit}' "${WORK}/reset-coder.sh")
+if printf '%s\n' "${GATE_BLOCK}" | grep -q 'FORCE'; then
+  fail "--force umgeht das Fremd-Container-Gate"
+else
+  pass "--force hebt das Fremd-Container-Gate NICHT auf"
+fi
+# Weiche Alt-Meldungen sind entfallen (jetzt harte Klemme).
+for gone in \
+  'B-020: Falls im Inventar oben fremde Container standen' \
+  'Verwaiste Workspace-Container (Inventar vor '\''down'\'', B-020)'; do
+  if grep -qF -- "${gone}" "${WORK}/reset-coder.sh"; then
+    fail "weiche Alt-Meldung noch vorhanden: ${gone}"
+  else
+    pass "weiche Alt-Meldung entfernt: ${gone}"
+  fi
+done
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "T-B2-006: ALLE PRUEFUNGEN BESTANDEN"

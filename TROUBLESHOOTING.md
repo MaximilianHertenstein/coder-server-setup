@@ -147,9 +147,9 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; `sudo /opt/coder/check-tls.sh`; `/var/log/coder-tls.log`; letzter Check: `curl -s http://127.0.0.1:9100/metrics \| grep coder_tls_check_last_success` |
+| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; Zählung jüngerer Zertifikate: `sudo docker exec caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" \| wc -l` |
 | **Erwartete Ursache** | On-Demand-TLS: Zertifikat wird erst bei Bedarf ausgestellt. Bei Erschöpfung des Wochenbudgets (50/Domain, geteilt) schlägt die Ausstellung fehl. |
-| **Sichere Behebung** | Abwarten und erneut prüfen; Ausstellungen bis zur Entscheidung D-TLS beobachten (`curl -s http://127.0.0.1:9100/metrics \| grep '^coder_tls_issuances'` bzw. `sudo /opt/coder/check-tls.sh`, Regel `TlsIssuanceBudgetHigh` ab >20/7 d). Budget-DoS-Muster: steigende Zählung + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
+| **Sichere Behebung** | Abwarten und erneut prüfen; bei Budget-Verdacht die Zählung oben gegen die 50er-Grenze der Domain halten (automatische Überwachung entfiel mit dem Review-Set 2026-10-03). Budget-DoS-Muster: viele junge Zertifikatsdateien + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden, DNS-01 als eigentlichen Fix. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
 
 ### B4. SSH-Login schlägt fehl / ich sitze draußen
 
@@ -201,7 +201,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo sha256sum /opt/coder/caddy/Caddyfile`, `sudo docker ps --filter name=coder-caddy` |
 | **Erwartete Ursache** | Compose merkt sich Änderungen an eingebundenen Dateien nicht; das Setup lädt die Konfiguration nur bei geändertem Inhalt per `reload` neu (validiert wurde bereits beim Schreiben; kein `restart`: der bräche bestehende Verbindungen). |
-| **Sichere Behebung** | Zuerst validieren, dann laden: `docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` und danach dasselbe mit `caddy reload`. Schlägt `validate` fehl, behält Caddy die alte Konfiguration – dann erst den Fehler suchen. Besser: Änderung in `setup-coder.sh` vornehmen und das Setup erneut ausführen – sonst meldet der Folgelauf Drift (Abschnitt G). |
+| **Sichere Behebung** | Zuerst validieren, dann laden: `docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` und danach dasselbe mit `caddy reload`. Schlägt `validate` fehl, behält Caddy die alte Konfiguration – dann erst den Fehler suchen. Besser: Änderung in `setup-coder.sh` vornehmen und das Setup erneut ausführen – sonst setzt der Folgelauf die Datei überschreibend zurück (Abschnitt G). |
 
 ### C4. Nach Reboot: Container fehlen oder Postgres nicht `healthy`
 
@@ -289,7 +289,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo ufw status numbered` |
 | **Erwartete Ursache** | Regeln gelöscht/verändert. |
-| **Sichere Behebung** | Setup erneut ausführen. Danach `sudo ufw status` muss `Status: active` und die Regeln (22/tcp ALLOW, 80, 443/tcp, 443/udp, 3001 nur aus privaten Quellen) zeigen. |
+| **Sichere Behebung** | Setup erneut ausführen. Danach `sudo ufw status` muss `Status: active` und die Regeln (22/tcp ALLOW, 80, 443/tcp, 443/udp; **keine** 3001-Regel – Grafana nur an 127.0.0.1) zeigen. |
 
 ### E4. Update läuft nicht durch / `Update-Gate rot`
 
@@ -361,22 +361,22 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 ---
 
-## G. Drift- und Warnmeldungen
+## G. Warnmeldungen und stille Zurücksetzungen
 
-### G1. `[WARNUNG] Drift in <datei> …`
+### G1. Hand-Änderung an generierter Datei ist nach dem Setup-Lauf weg
 
 | | |
 |---|---|
-| **Diagnose** | `sudo cat /opt/coder/.generated-hashes`, `sudo sha256sum <datei>` |
-| **Erwartete Ursache** | Hand-Änderung an einer generierten Datei (Caddy-Snippet, Cron-Zeit, fail2ban-Drop-In `jail.d/10-coder-sshd.local`, Logrotate). |
-| **Sichere Behebung** | Gewollte Änderung in `setup-coder.sh` aufnehmen und Setup erneut ausführen. Der Lauf schreibt die Datei ohnehin neu – die Hand-Änderung geht sonst verloren. Warnung ist beabsichtigt (kein Still-Lauf). |
+| **Diagnose** | Die eigene Änderung fehlt, die Datei enthält wieder die Setup-Version. Den Hashstore gibt es nicht mehr (`/opt/coder/.generated-hashes` am 2026-10-03 entfernt, bei Upgrade-Läufen alter Stände nur noch still aufgeräumt) – es gibt keine Drift-Warnung mehr. |
+| **Erwartete Ursache** | Hand-Änderung an einer verwalteten Datei (Caddy-Snippet, Cron-Zeit, fail2ban-Drop-In `jail.d/10-coder-sshd.local`, Logrotate, SSH-Drop-In). `write_managed` ersetzt inhaltliche Abweichungen seit dem Review-Set 2026-10-03 ohne Vorwarnung. |
+| **Sichere Behebung** | Gewollte Änderung in `setup-coder.sh` aufnehmen (oder für SSH/fail2ban als vorrangiges eigenes Drop-In, z. B. `00-*.conf`) und Setup erneut ausführen – dauerhaft nur auf dem Server zu korrigieren, wird bei jedem Lauf verworfen. |
 
 ### G2. Passwort-Login: Setup meldet `OK` (D-SSH)
 
 | | |
 |---|---|
 | **Diagnose** | `sudo sshd -T \| grep -iE '^(passwordauthentication\|kbdinteractiveauthentication\|permitrootlogin)'` |
-| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv; der Abschlusscheck meldet ihn als `OK` (Setup-Versionen vor 2026-10-01 warnten hier). Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
+| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv und seit 2026-10-03 im Drop-In `/etc/ssh/sshd_config.d/99-coder.conf` fixiert; der Abschlusscheck meldet ihn als `OK` (Setup-Versionen vor 2026-10-01 warnten hier). Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
 | **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Warnung ist nur dann beabsichtigt, wenn `permitrootlogin yes` steht (muss auf `prohibit-password`). Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann das Drop-In aus [SECURITY.md](SECURITY.md) Abschnitt 1 bewusst angelegt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
 
 ### G3. Warnung: `ufw-IPv6-Pfad unklar (kein IPV6=yes …)`
