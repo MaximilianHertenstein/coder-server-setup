@@ -46,8 +46,8 @@ SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "$(id -u)" -ne 0 ]; then
   echo "Fehler: dieses Setup muss als root laufen – Aufruf: sudo ./setup-coder.sh" >&2
   echo "Betreiberwerte dauerhaft in setup.conf eintragen (Vorlage: setup.conf.example);" >&2
-  echo " für einen Lauf gehören Variablen hinter das sudo, sonst greifen die Defaults:" >&2
-  echo "  sudo env DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh" >&2
+  echo " für einen Lauf gehören Variablen hinter das sudo; ACME_EMAIL ist Pflicht:" >&2
+  echo "  sudo env ACME_EMAIL=admin@beispiel.de DOMAIN_CODER=coder.beispiel.de ./setup-coder.sh" >&2
   exit 1
 fi
 
@@ -107,14 +107,31 @@ if [ -f "${SETUP_DIR}/setup.conf" ]; then
   done < "${SETUP_DIR}/setup.conf"
 fi
 # ":=" setzt den Default nur, wenn die Variable noch nicht (von außen oder
-# über setup.conf) gesetzt wurde.
+# über setup.conf) gesetzt wurde. Nur DOMAIN_CODER hat einen Default.
 : "${DOMAIN_CODER:=coder.ghse-unterricht.de}"
-: "${ACME_EMAIL:=hert@ghse.de}"
 # Domain hart prüfen, bevor sie in Caddyfile/Compose wandert: Leerzeichen,
 # Anführungszeichen, \r oder Grossbuchstaben würden die Konfiguration oder
 # die TLS-Ausstellung brechen.
 if ! [[ "${DOMAIN_CODER}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
   echo "Fehler: DOMAIN_CODER='${DOMAIN_CODER}' ist keine gültige Domain (erlaubt: klein, a-z, 0-9, '.', '-'; kein Leerzeichen/Anführung/\\r)." >&2
+  echo "In setup.conf oder als Umgebungsvariable korrigieren, dann Setup erneut." >&2
+  exit 1
+fi
+# A4: ACME_EMAIL hat bewusst KEINEN Default. Die Adresse steht im
+# Let's-Encrypt-Konto und ist der offizielle Kontakt für Zertifikatsfragen;
+# ein im Repository hinterlegter Personen-Default würde bei jedem fremden
+# Betreibern still weitergelten. Ohne Wert hart abbrechen – diese Prüfung
+# läuft wie die Domainprüfung im Preflight, vor jeder Serveränderung.
+if [ -z "${ACME_EMAIL:-}" ]; then
+  echo "Fehler: ACME_EMAIL ist nicht gesetzt (Kontakt-Adresse für Let's Encrypt, kein Default)." >&2
+  echo "In setup.conf oder als Umgebungsvariable eintragen, dann Setup erneut." >&2
+  exit 1
+fi
+# Leere Zeichen und mehr als ein "@" würden eine ungültige ACME-Account-
+# Kontaktadresse in die Caddyfile schreiben; caddy validate meldet das erst
+# spät, hier bricht es vor der Konfiguration ab.
+if ! [[ "${ACME_EMAIL}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+  echo "Fehler: ACME_EMAIL='${ACME_EMAIL}' ist keine gültige E-Mail-Adresse (ein '@', Domain mit Punkt, keine Leerzeichen)." >&2
   echo "In setup.conf oder als Umgebungsvariable korrigieren, dann Setup erneut." >&2
   exit 1
 fi
@@ -370,6 +387,15 @@ apt_install() {
 }
 retry3 apt-get update
 apt_install ca-certificates curl gnupg openssl cron logrotate
+# C/QEMU: Proxmox-vzdump/PBS braucht den Qemu-Gastagenten für Freeze/
+# Quiesce beim VM-Backup. Nur installieren, wenn die VM den virtio-Serial-
+# Channel wirklich hat – ohne Kanal startet qemu-ga fehl und hinterlässt
+# einen failed Dienst; Channel in der VM ergänzen und Setup erneut laufen.
+if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+  apt_install qemu-guest-agent
+else
+  echo "Hinweis: kein QEMU-Guest-Agent-Channel (/dev/virtio-ports/org.qemu.guest_agent.0) – qemu-guest-agent nicht installiert; für Proxmox-VM-Backups den Channel in der VM aktivieren und Setup erneut ausführen."
+fi
 install -m 0755 -d /etc/apt/keyrings
 # --batch --yes: existiert die Datei bereits (jeder zweite Lauf), fragt gpg
 # beim Überschreiben per /dev/tty nach – ohne TTY (ssh ohne -t, nohup) kommt
@@ -678,7 +704,12 @@ services:
       - --path.sysfs=/host/sys
       - --path.rootfs=/rootfs
       - --collector.textfile.directory=/var/lib/node-exporter/textfile
-      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)(\$\$|/)
+      # Ausschluss = Upstream-Default v1.12.1 plus host/etc aus dem alten
+      # eigenen Wert: ohne run/credentials/.+ landeten die systemd-Credential-
+      # tmpfs (3 Mountpoints, 27 Serien) in den Metriken, ohne var/lib/docker
+      # wären Bind-Mounts dort sichtbar (overlay deckt fs-types-exclude schon
+      # ab, das ist der zusätzliche Sicherheitsgurt aus dem Upstream-Default).
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|host|etc|run/credentials/.+|var/lib/docker/.+|var/lib/containers/storage/.+)(\$\$|/)
     ports:
       - "127.0.0.1:9100:9100"
 
@@ -793,8 +824,11 @@ if [ -n "${ACME_CA:-}" ]; then
 fi
 # Lauf-Status VOR Schritt 3 (Reload/Neustart-Entscheidung unten). Pfad der
 # Caddyfile unter /opt/coder/caddy, weil die compose-Datei das Verzeichnis
-# statt der Einzeldatei bindet.
-CADDY_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-caddy 2>/dev/null || echo false)
+# statt der Einzeldatei bindet. A2: State.Status statt State.Running – im
+# Restart-Loop meldet Docker Running=true, obwohl Reload/SIGHUP dort
+# nichts sinnvolles bewirken (SIGHUP an einen startenden Prometheus liefert
+# sogar ein falsches [OK]).
+CADDY_STATUS=$(docker inspect -f '{{.State.Status}}' coder-caddy 2>/dev/null || echo missing)
 # write_managed legt Verzeichnisse nicht an (Vorbild: rules/grafana unten).
 install -d -m 0755 /opt/coder/caddy
 write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" validate_caddyfile <<EOF
@@ -845,10 +879,11 @@ EOF
 install -d -m 0755 /opt/coder/grafana/provisioning/datasources \
                   /opt/coder/grafana/provisioning/dashboards
 GRAFANA_PROV_BEFORE=$(find /opt/coder/grafana/provisioning -type f 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1 || true)
-# Lauf-Status VOR dem Schreiben (gleiche Idee wie CADDY_WAS_RUNNING): nur ein
-# Container, der schon mit der alten Datei lief, braucht danach einen Neustart.
-PROM_CFG_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-prometheus 2>/dev/null || echo false)
-GRAFANA_WAS_RUNNING=$(docker inspect -f '{{.State.Running}}' coder-grafana 2>/dev/null || echo false)
+# Lauf-Status VOR dem Schreiben (gleiche Idee wie CADDY_STATUS, gleiche
+# Begründung: Status statt Running, s. Kommentar dort): nur ein Container,
+# der schon mit der alten Datei lief, braucht danach einen Neustart.
+PROM_CFG_STATUS=$(docker inspect -f '{{.State.Status}}' coder-prometheus 2>/dev/null || echo missing)
+GRAFANA_STATUS=$(docker inspect -f '{{.State.Status}}' coder-grafana 2>/dev/null || echo missing)
 
 # A2: Erst die Alarmregeln schreiben (eigener Validierer), dann
 # prometheus.yml – der Config-Validierer lädt die rule_files mit und sieht
@@ -1094,7 +1129,13 @@ fi
 # mit dem Coder-Container in Schritt 3).
 # Projekt-Label (name: coder, steht in der Compose-Datei): ohne das würde
 # auch das postgres_data eines FREMDEN Compose-Projekts diesen Pfad auslösen.
+# A3: Vor dem Start festhalten, ob das Volume in DIESEM Lauf neu angelegt
+# wird (Vor-Check vor "up -d") – unabhängig von alten Backup-Dateien. Nur
+# dann ist der Backup-Testlauf weiter unten Pflicht (B21), auch wenn Reste
+# früherer Dumps noch herumliegen (z. B. nach manuellem Volume-Löschen).
+PG_VOLUME_NEW=true
 if [ -n "$(docker volume ls -q --filter "label=com.docker.compose.project=coder" --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null | head -n1)" ]; then
+  PG_VOLUME_NEW=false
   if [ ! -x /opt/coder/backup.sh ]; then
     echo "FEHLER: DB-Volume vorhanden, aber /opt/coder/backup.sh fehlt – inkonsistente Installation, kein Upgrade ohne Backup-Möglichkeit." >&2
     echo "scripts/backup.sh aus dem Repo nach /opt/coder/ kopieren (755), dann Setup erneut." >&2
@@ -1105,7 +1146,9 @@ if [ -n "$(docker volume ls -q --filter "label=com.docker.compose.project=coder"
   if grep -Fqx "CODER_VERSION=${CODER_VERSION}" "${VERSIONS_FILE}" 2>/dev/null; then
     echo "Coder-Version unverändert (${CODER_VERSION}) – Pre-Upgrade-Backup entfällt, keine DB-Migration erwartet (Cron sichert täglich)."
   else
-    if [ "$(docker inspect -f '{{.State.Running}}' coder-postgres 2>/dev/null || echo false)" != "true" ]; then
+    # A2: Status statt Running – ein restartender Container ist nicht
+    # benutzbar für den Dump; die Warteschleife unten fängt den Fall ab.
+    if [ "$(docker inspect -f '{{.State.Status}}' coder-postgres 2>/dev/null || echo missing)" != "running" ]; then
       echo "Postgres-Container läuft nicht, DB-Volume ist aber da – starte Postgres für das Pre-Upgrade-Backup ..."
       docker compose up -d postgres
       _pg_ready=false
@@ -1160,31 +1203,35 @@ VERSIONSEOF
 # Konfiguration – "restart" ist bewusst KEIN Fallback (C4). Erstlauf ohne
 # laufendes Caddy braucht kein Reload – "up -d" hat den Container gerade
 # mit der Datei gestartet.
-if [ "${CADDY_WAS_RUNNING}" = "true" ]; then
+if [ "${CADDY_STATUS}" = "running" ]; then
   if docker exec coder-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null 2>&1; then
-    ok "Caddy reload OK (ohne Verbindungsabbruch, gevaliderte Datei) (C4)"
+    ok "Caddy reload OK (ohne Verbindungsabbruch, gevalidierte Datei) (C4)"
   else
     warn "caddy reload fehlgeschlagen – Caddy läuft weiter mit der ALTEN Konfiguration. Manuell prüfen: sudo docker exec coder-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile (C4)"
   fi
+elif [ "${CADDY_STATUS}" = "restarting" ]; then
+  warn "Caddy war zum Lauf in einer Restart-Schleife (Status restarting) – kein Reload-Versuch (der würde ohnehin fehlschlagen und falsch diagnostizieren); die neue Caddyfile liegt gebunden, der nächste Auto-Restart nimmt sie auf. Ursache prüfen: sudo docker logs coder-caddy (C4)"
 else
-  echo "Caddy lief vorher nicht (Erstlauf) – kein Reload nötig, up -d startet ihn mit der Datei."
+  echo "Caddy lief vorher nicht (Status: ${CADDY_STATUS}) – kein Reload nötig, up -d startet ihn mit der Datei."
 fi
 
 # C3: Prometheus-Dateien und Grafana-Provisioning liegen als Bind-Mounts im
 # Container – "docker compose up -d" erkennt deren Inhalt NICHT.
-if [ "${PROM_CFG_WAS_RUNNING}" = "true" ]; then
+if [ "${PROM_CFG_STATUS}" = "running" ]; then
   if docker kill -s HUP coder-prometheus > /dev/null 2>&1; then
     ok "Prometheus per SIGHUP neu geladen (Konfiguration und Alarmregeln) (C3)"
   else
     warn "Prometheus konnte SIGHUP nicht laden – Konfiguration manuell prüfen: sudo docker logs coder-prometheus"
   fi
+elif [ "${PROM_CFG_STATUS}" = "restarting" ]; then
+  warn "Prometheus war zum Lauf in einer Restart-Schleife (Status restarting) – kein SIGHUP (das würde ein falsches [OK] geben); neue Regeln greifen beim nächsten Start. Ursache prüfen: sudo docker logs coder-prometheus (C3)"
 else
-  echo "Prometheus lief vorher nicht – kein SIGHUP (läuft mit der neuen Datei)."
+  echo "Prometheus lief vorher nicht (Status: ${PROM_CFG_STATUS}) – kein SIGHUP (läuft mit der neuen Datei)."
 fi
 if [ "${GRAFANA_PROV_BEFORE}" = "${GRAFANA_PROV_AFTER}" ]; then
   echo "Grafana-Provisioning unverändert – kein Neustart."
-elif [ "${GRAFANA_WAS_RUNNING}" != "true" ]; then
-  echo "Grafana-Provisioning neu/geändert, Container lief vorher nicht – läuft bereits mit der neuen Konfiguration, kein Neustart."
+elif [ "${GRAFANA_STATUS}" != "running" ]; then
+  echo "Grafana-Provisioning neu/geändert, Container lief vorher nicht (Status: ${GRAFANA_STATUS}) – kein Neustart nötig, die gebundenen Provisioning-Dateien greifen beim Start."
 elif docker restart coder-grafana > /dev/null 2>&1; then
   ok "Grafana neu gestartet, damit Provisioning (Datasource/Dashboards) greift (C3)"
 else
@@ -1223,7 +1270,20 @@ ufw default deny incoming
 ufw default allow outgoing
 # SSH: allow für die im Preflight erkannten sshd-Ports (funktioniert auch
 # bei einem Nicht-22-Port).
+# B3a: Zuvor die Gegenregel für Docker-Container-Netze (172.16.0.0/12)
+# einfügen: ein kompromittierter Workspace-Container soll den Host nicht per
+# SSH erreichen (Docker-Published-Ports umgehen ufw, der HOST-Dienst sshd
+# wird aber über INPUT/grep von ufw gesehen – hier ist also Wirksamkeit
+# möglich). REIHENFOLGE IST DIE FUNKTION: ufw prüft von oben, die erste
+# passende Regel gewinnt, deshalb "insert 1" VOR dem allow. Vorhandene
+# eigene Regel wird nicht dupliziert (Prüfung gegen ufw status, Spaltenformat
+# "DENY" ohne Richtung, am Test-Host 2026-10-08 geprüft). 172.16.0.0/12
+# ist bewusst nur DIESE Quellregel: das Netz selbst bleibt für Container
+# erreichbar (Coder-Stack und Workspace-Netze laufen darin).
 for _ssh_p in ${SSHD_PORTS}; do
+  if ! ufw status | grep -qE "^${_ssh_p}/tcp[[:space:]]+DENY[[:space:]]+172\.16\.0\.0/12"; then
+    ufw insert 1 deny from 172.16.0.0/12 to any port "${_ssh_p}" proto tcp
+  fi
   ufw allow "${_ssh_p}/tcp"
 done
 # Eigene Altregel aus der limit-Ära entfernen – allow steht bereits, also
@@ -1335,6 +1395,19 @@ done
 if [ -n "${UFW_SSH_MISSING}" ]; then
   fail "SSH-ALLOW-Regel fehlt in ufw für Port(s):${UFW_SSH_MISSING} – prüfen mit: sudo ufw status"
 fi
+# B3a: Gegenregel gegen Docker-Container-Netze muss auch wirklich stehen
+# (fehlte sie, ließe sich die Stellung oben nur durch Nachrüsten schließen).
+UFW_SSH_DOCKER_MISSING=""
+for _p in ${SSHD_PORTS}; do
+  if grep -qE "^${_p}/tcp[[:space:]]+DENY[[:space:]]+172\.16\.0\.0/12" <<< "${UFW_STATUS}"; then
+    ok "SSH-Port ${_p}/tcp: Docker-Netze 172.16.0.0/12 stehen als DENY in ufw"
+  else
+    UFW_SSH_DOCKER_MISSING="${UFW_SSH_DOCKER_MISSING} ${_p}"
+  fi
+done
+if [ -n "${UFW_SSH_DOCKER_MISSING}" ]; then
+  fail "SSH-DENY für Docker-Netze (172.16.0.0/12) fehlt in ufw für Port(s):${UFW_SSH_DOCKER_MISSING} – prüfen mit: sudo ufw status"
+fi
 # B13: ein einziger Check statt is-active/ping/Total-failed – "status sshd"
 # liefert nur Exit 0, wenn Dienst UND Jail antworten (der Reload-Retry oben
 # hat dem Client schon Zeit zum Hochfahren gegeben).
@@ -1343,6 +1416,42 @@ if fail2ban-client status sshd > /dev/null 2>&1; then
 else
   fail "fail2ban-Client oder Jail 'sshd' antwortet nicht – prüfen mit: sudo fail2ban-client status"
 fi
+
+# B3b: Workspace-Egress gegen RFC1918 (10/8, 192.168/16) über die
+# DOCKER-USER-Kette. ufw hilft hier nicht: Docker hängt seine Sprünge vor
+# ufw in FORWARD (geprüft 2026-10-08, Test-Host: -P FORWARD DROP, aber
+# DOCKER-FORWARD akzeptiert Traffic der Container-Bridges), DOCKER-USER
+# läuft als Erstes. Offen bleibt 172.16.0.0/12, weil darin Coder-Stack und
+# Workspace-Netze laufen (auch die Wege über publizierte Ports landen bei
+# Zielen in diesem Bereich). Persistenz: eigene systemd-Oneshot-Unit nach
+# docker.service zieht das idempotente Skript nach jedem Boot nach; Docker
+# lässt den Kette-Inhalt stehen und stellt seinen FORWARD-Sprung selbst.
+# Reloader: "systemctl restart" (enable sind wirksam für den nächsten Boot).
+write_managed "/etc/systemd/system/coder-egress-firewall.service" 644 - <<'EOF'
+[Unit]
+Description=Coder Workspace-Egress-Sperre (RFC1918) in DOCKER-USER
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/coder/workspace-egress.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable coder-egress-firewall.service > /dev/null 2>&1
+systemctl restart coder-egress-firewall.service
+ok "Workspace-Egress-Sperre aktiv (systemd coder-egress-firewall → /opt/coder/workspace-egress.sh)"
+for _net in 10.0.0.0/8 192.168.0.0/16; do
+  if iptables -C DOCKER-USER -d "${_net}" -j DROP 2>/dev/null; then
+    ok "DOCKER-USER sperrt Container-Zugriff nach ${_net}"
+  else
+    fail "DOCKER-USER sperrt ${_net} NICHT – prüfen mit: sudo iptables -S DOCKER-USER; sudo systemctl status coder-egress-firewall"
+  fi
+done
 # D-SSH/Policy: Passwort-Login für
 # normale Benutzer ausdrücklich erlaubt, root bleibt bei Schlüssel. Das
 # "von überall" hält die ufw-ALLOW-Regel oben; hier wird die sshd-Seite
@@ -1529,10 +1638,13 @@ else
   fail "Logrotate-Konfiguration ist ungültig – prüfen mit: sudo logrotate -d /etc/logrotate.conf"
 fi
 
-# B21: Testlauf nur, solange noch KEIN Backup existiert – bei Re-Run lief das
-# Pre-Upgrade-Backup (Schritt 3) bereits, ein zweiter Voll-Dump pro Lauf ist
-# überflüssig. Erstmaliger Aufbau testet also, jeder spätere Lauf nicht.
-if ls /opt/coder/backups/coder_*.sql.gz > /dev/null 2>&1; then
+# B21/A3: Testlauf nur, solange noch KEIN Backup existiert – bei Re-Run lief
+# das Pre-Upgrade-Backup (Schritt 3) bereits, ein zweiter Voll-Dump pro Lauf
+# ist überflüssig. Ausnahme: das DB-Volume wurde in DIESEM Lauf neu angelegt
+# (PG_VOLUME_NEW) – dann wird getestet, auch wenn alte Dump-Dateien noch
+# herumliegen; frisch angelegtes Volume + nie geprüfter Dump darf die
+# Abschluss-Sicherung nicht verschenken.
+if [ "${PG_VOLUME_NEW}" != "true" ] && ls /opt/coder/backups/coder_*.sql.gz > /dev/null 2>&1; then
   echo "Vorhandene Backups unter /opt/coder/backups – Backup-Testlauf übersprungen."
 else
   echo "Teste Backup einmal direkt..."
@@ -1667,6 +1779,22 @@ else
   warn "Wildcard-DNS fehlt (*.${DOMAIN_CODER} löst nicht auf, Probe ${WILDCARD_PROBE}) – Workspace-Apps/Port-Forwarding scheitern, Apex-OK gilt NICHT für Apps. DNS-Wildcard-Eintrag setzen, dann Setup erneut."
 fi
 
+# A1: Auf die Schema-Migration von coderd warten, bevor die Nutzerabfrage
+# unten läuft. Frisch gestartet braucht coderd Zeit für die Migration; ohne
+# Tabelle "users" liefert psql einen Fehler, der über "|| true" als Leerwert
+# in die Warnung "Nutzeranzahl nicht lesbar" fiele – und die Erstkonto-Anlage
+# darunter würde still übersprungen. Der Fall ist real, weil die healthz-
+# Warteschleife oben bei fehlendem DNS-Eintrag sofort abbricht (kein lokaler
+# Treffer, kein Warten). Re-Runs sind beim ersten Versuch fertig, kostet
+# also nichts; max. 60 s.
+USERS_TABLE=""
+for _ in $(seq 1 30); do
+  USERS_TABLE="$(docker exec coder-postgres psql -U coder -d coder -tAc \
+    "SELECT to_regclass('public.users')" 2>/dev/null || true)"
+  [ "${USERS_TABLE}" = "public.users" ] && break
+  sleep 2
+done
+
 # B2: rein lesend, KEINE Nutzer-Erzwinge-Erstellung. Coder vergibt dem ersten
 # menschlichen Konto automatisch Owner-Rechte, das ist so vorgesehen – ein
 # "create-admin-user" erzwungen durch das Setup wäre versionseitig fragil und
@@ -1713,21 +1841,34 @@ if [ "${HUMAN_USERS}" = "0" ] \
   && [ -n "${CODER_FIRST_USER_EMAIL:-}" ] \
   && [ -n "${CODER_FIRST_USER_USERNAME:-}" ] \
   && [ -n "${CODER_FIRST_USER_PASSWORD:-}" ]; then
-  if FIRST_OUT=$(printf '%s\n' "${CODER_FIRST_USER_PASSWORD}" | \
-      docker exec -i \
-        -e CODER_CONFIG_DIR=/tmp/coder-firstuser \
-        -e CODER_FIRST_USER_EMAIL="${CODER_FIRST_USER_EMAIL}" \
-        -e CODER_FIRST_USER_USERNAME="${CODER_FIRST_USER_USERNAME}" \
-        -e CODER_FIRST_USER_FULL_NAME="${CODER_FIRST_USER_FULL_NAME:-}" \
-        coder sh -c 'IFS= read -r P
-          export CODER_FIRST_USER_PASSWORD="$P"
-          exec coder login http://127.0.0.1:3000 --first-user-trial=false ${CODER_FIRST_USER_FULL_NAME:+--first-user-full-name "$CODER_FIRST_USER_FULL_NAME"}' 2>&1); then
+  # A1: coderd nimmt das Login erst an, wenn die Migration fertig ist.
+  # Die Warteschleife auf die users-Tabelle oben deckt den Normalfall; die
+  # sechs Versuche à 5 s fangen den Rest ab (API kommt kurz später, Start-
+  # verzug). Bei falschem Passwort kosten sie 25 s und enden in derselben
+  # Warnung wie bisher.
+  _FIRST_OK=false
+  for _try in $(seq 1 6); do
+    if FIRST_OUT=$(printf '%s\n' "${CODER_FIRST_USER_PASSWORD}" | \
+        docker exec -i \
+          -e CODER_CONFIG_DIR=/tmp/coder-firstuser \
+          -e CODER_FIRST_USER_EMAIL="${CODER_FIRST_USER_EMAIL}" \
+          -e CODER_FIRST_USER_USERNAME="${CODER_FIRST_USER_USERNAME}" \
+          -e CODER_FIRST_USER_FULL_NAME="${CODER_FIRST_USER_FULL_NAME:-}" \
+          coder sh -c 'IFS= read -r P
+            export CODER_FIRST_USER_PASSWORD="$P"
+            exec coder login http://127.0.0.1:3000 --first-user-trial=false ${CODER_FIRST_USER_FULL_NAME:+--first-user-full-name "$CODER_FIRST_USER_FULL_NAME"}' 2>&1); then
+      _FIRST_OK=true
+      break
+    fi
+    [ "${_try}" -lt 6 ] && sleep 5
+  done
+  if [ "${_FIRST_OK}" = "true" ]; then
     ok "Erstkonto (Owner) angelegt: ${CODER_FIRST_USER_USERNAME}"
     # Frisch angelegt – der case danach soll nicht "Noch kein Nutzerkonto"
     # melden, nur weil HUMAN_USERS vor der Anlage gelesen wurde.
     HUMAN_USERS=1
   else
-    warn "Erstkonto NICHT angelegt: $(printf '%s' "${FIRST_OUT}" | tr '\n' ' ' | tail -c 300) – Konto manuell auf der Anmeldeseite anlegen, bevor die URL weitergegeben wird"
+    warn "Erstkonto NICHT angelegt (6 Versuche): $(printf '%s' "${FIRST_OUT}" | tr '\n' ' ' | tail -c 300) – Konto manuell auf der Anmeldeseite anlegen, bevor die URL weitergegeben wird"
   fi
   # Das CLI-Session-Token liegt in diesem isolierten Config-Verzeichnis.
   # Nach Erfolg wie Fehler entfernen; der bestehende Coder-Config-Ordner bleibt

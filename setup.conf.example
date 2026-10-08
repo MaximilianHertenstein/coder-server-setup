@@ -8,7 +8,8 @@
 # Domain des Coder-Servers (Default: coder.ghse-unterricht.de):
 #DOMAIN_CODER=coder.ghse-unterricht.de
 #
-# Kontakt-Adresse für Let's Encrypt (Default: hert@ghse.de):
+# Kontakt-Adresse für Let's Encrypt – PFLICHT, kein Default (ohne Wert
+# bricht das Setup vor jeder Serveränderung ab), Format wird geprüft:
 #ACME_EMAIL=name@beispiel.de
 #
 # Eigene ACME-CA-URL, falls je erforderlich (Default: leer = Let's Encrypt):

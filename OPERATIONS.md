@@ -38,12 +38,14 @@ deterministisch neu (siehe Abschnitt 7).
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
 | `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Setup, Backup und Reset (600, root) | nein |
 | `/opt/coder/reset-coder.sh` | Komplett-Reset des Coder-Stacks | ja |
+| `/opt/coder/workspace-egress.sh` | Workspace-Egress-Sperre (DOCKER-USER: `10.0.0.0/8` + `192.168.0.0/16` DROP) | ja |
 | `/opt/coder/RESTORE.md` | Runbook-Kopie (Quelle liegt im Repository) | nein |
 | `/etc/cron.d/coder-backup` | Cron: täglich 01:00 | ja |
 | `/etc/logrotate.d/coder-backup` | Rotation `/var/log/coder-backup.log` | ja |
 | `/etc/fail2ban/jail.d/10-coder-sshd.local` | Drop-In: Jail `sshd` (backend systemd) | ja |
 | `/etc/ssh/sshd_config.d/01-coder.conf` | SSH-Policy des Setups (Passwort ja, root nur Schlüssel), `sshd -T`-validiert; eigenes Alt-Drop-In `99-coder.conf` wird beim Lauf entfernt | ja |
 | `/etc/apt/apt.conf.d/52-coder-reboot` | automatischer Reboot 03:00 | ja |
+| `/etc/systemd/system/coder-egress-firewall.service` | führt die Egress-Sperre nach `docker.service` und nach jedem Reboot aus | ja |
 | `/etc/docker/daemon.json` | Log-Limit json-file 10 MB × 3 (nur beim Fehlen geschrieben) | nein |
 | `/etc/apt/apt.conf.d/20auto-upgrades` | via debconf von unattended-upgrades | nein |
 | `/etc/apt/sources.list.d/docker.list`, `/etc/apt/keyrings/docker.gpg` | Docker-apt-Repo (Fingerprint geprüft) | nein |
@@ -70,7 +72,8 @@ dieser Reihenfolge (Vorrang von links):
    gitignored, nie ins Repository): Zeilen `SCHLÜSSEL=Wert` für
    `DOMAIN_CODER`, `ACME_EMAIL`, `ACME_CA` (eigener ACME-Endpunkt, z. B.
    Let's-Encrypt-Staging; leer = Caddys Standard) und `FAIL2BAN_IGNORE_IP`
-3. der Default im Skript
+3. der Default im Skript – nur `DOMAIN_CODER` hat einen; `ACME_EMAIL` hat
+   bewusst keinen (Pflicht, sonst Abbruch vor jeder Serveränderung)
 
 Versions-Pins (`CODER_VERSION`, `CADDY_VERSION`, `PROMETHEUS_VERSION`,
 `GRAFANA_VERSION`, `NODE_EXPORTER_VERSION`) und `CODER_ALLOW_DOWNGRADE`
@@ -322,6 +325,11 @@ pull` (max. 3 Versuche) → `docker compose up -d` → Abschlusscheck
 (alle Container laufen, Postgres healthy, `/healthz` 200 über Caddy-TLS).
 Bei rotem Abschlusscheck: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
 
+- **Fester Update-Termin (B5):** Update-Läufe brauchen einen festen Platz
+  im Wartungsplan (Empfehlung: monatlich im abgestimmten Fenster, dazu
+  bei kritischen CVEs). Ohne Termin bleiben Updates liegen; vor dem Lauf
+  `git log`, Versions-Pins und CHANGELOG prüfen.
+
 - **Kein Auto-Prune**: alte Images bleiben als Rollback-Basis erhalten,
   Aufräumen nur manuell (`sudo docker image prune`) und bewusst.
 - Exakt gepinnte Images (Coder, Prometheus, Grafana, node-exporter) kann man
@@ -388,10 +396,17 @@ plant den nächsten Stack-Lauf (Update) entsprechend.
 ### Reboot
 
 - Automatisch bei Kernel-Updates um 03:00 Uhr
-  (`/etc/apt/apt.conf.d/52-coder-reboot`) – **Fenster ist nicht mit dem
-  Schulbetrieb abgestimmt**; laufende Workspaces/Sessions werden
+  (`/etc/apt/apt.conf.d/52-coder-reboot`) – **Fenster ist noch nicht mit dem
+  Schulbetrieb abgestimmt** (offener Punkt, README „Offene Punkte");
+  laufende Workspaces/Sessions werden
   abgerissen. Die Zeitzone steht auf `Europe/Berlin` (Setup setzt sie
   idempotent, C1), damit 03:00 wirklich 03:00 MEZ/MESZ sind.
+- **Wartungsplan/Nachtachse:** 01:00 Datenbank-Backup → 02:00 VM-Backup
+  der Proxmox-VM (vzdump/PBS, **noch einzurichten**, offener Punkt;
+  braucht `qemu-guest-agent` und den virtio-Serial-Channel in der VM,
+  das Setup installiert den Agenten nur bei vorhandenem Channel) → 03:00
+  Reboot. Reihenfolge bewusst so: Sicherungen liegen vor dem Reboot,
+  der Reboot startet den frischen Stand.
 - Nach einem Reboot startet Docker die Container selbst; danach prüfen:
   `sudo docker ps`, Postgres `healthy`
   (`sudo docker inspect -f '{{.State.Health.Status}}' coder-postgres`) und
@@ -470,6 +485,12 @@ werden.
 Ein grünes Backup ist **kein** Restore-Nachweis. Verifikation und
 Ablauf: [RESTORE.md](RESTORE.md).
 
+**Was `BackupStale` misst (C-7):** nur, dass der lokale `pg_dump`-Lauf
+erfolgreich war und jünger als 25 h ist. Die Metrik weiß nichts von der
+VM-Ebene (Proxmox/vzdump) und nichts von Offsite – ein grüner Wert deckt
+nur die eine Kopie auf derselben Platte. VM-Backup 02:00 ist
+separat einzurichten (Abschnitt 7 „Reboot").
+
 ```bash
 # Zustand prüfen (Metrik ist der Prometheus-Wert für BackupStale)
 ls -lt /opt/coder/backups/ | head
@@ -486,6 +507,7 @@ tail -20 /var/log/coder-backup.log
 | Aufgabe | Wann | Datei/Quelle |
 |---|---|---|
 | Datenbank-Backup | täglich 01:00 | `/etc/cron.d/coder-backup` |
+| Workspace-Egress-Sperre anwenden | bei jedem Boot und bei jedem Setup-Lauf | `coder-egress-firewall.service` → `/opt/coder/workspace-egress.sh` |
 | Log-Rotation Backup-Log | wöchentlich | `/etc/logrotate.d/coder-backup` |
 | Debian-Paketupdates + Reboot 03:00 (ohne Docker Engine) | Debian-Default | unattended-upgrades, `52-coder-reboot` |
 | Coder-/Stack-Update | **nie automatisch** | manueller Setup-Lauf (Abschnitt 7) |
@@ -503,8 +525,8 @@ shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Stand 2026-10-03: alle 9 Dateien in `tests/` Exit 0, 278 `PASS`,
-0 `FAIL` (in diesem Lauf ohne SKIP); ShellCheck `-S warning` und `bash -n`
+Stand 2026-10-08: alle 10 Dateien in `tests/` Exit 0, 329 `PASS`,
+0 `FAIL`; ShellCheck `-S warning` und `bash -n`
 ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
 dokumentiert (README „Prüfstand der Liste"), nicht lokal.
 
@@ -569,7 +591,11 @@ nach dem, was das Skript **nicht** selbst prüft:
 6. **Erstkonto vorbereiten:** ohne `CODER_FIRST_USER_*` ist der erste
    Anmeldende Owner. Variablen nur über `sudo env …` übergeben (sudo leitet
    eigene Variablen nicht durch), Beispiel in Schritt 4 unten.
-7. **Danach:** zweiter Lauf, Checks aus OPERATIONS §5, Cron-Dateien unter
+7. **`setup.conf` anlegen:** `cp setup.conf.example setup.conf` und
+   `ACME_EMAIL=…` eintragen – diese Adresse ist **Pflicht** (kein Default;
+   ohne Wert bricht das Setup vor jeder Serveränderung ab und nennt die
+   Datei). Domain optional, sonst greift der Default.
+8. **Danach:** zweiter Lauf, Checks aus OPERATIONS §5, Cron-Dateien unter
    `/etc/cron.d/` prüfen, erster `backup.sh`-Lauf per `gzip -t`.
 
 ### Netzwerkadmin

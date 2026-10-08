@@ -25,7 +25,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 # --- 1. Struktur: verwaltete Dateien nutzen atomaren Schreibhelfer ----------
-# 11 direkte write_managed-Adressen.
+# 12 direkte write_managed-Adressen (B3b: coder-egress-firewall.service).
 # SSH-Drop-In und versions.env adressieren ueber Variablen und stehen nicht
 # in dieser Liste (unten separat geprueft).
 EXPECTED="/opt/coder/docker-compose.yml
@@ -38,11 +38,12 @@ EXPECTED="/opt/coder/docker-compose.yml
 /etc/fail2ban/jail.d/10-coder-sshd.local
 /etc/apt/apt.conf.d/52-coder-reboot
 /etc/cron.d/coder-backup
-/etc/logrotate.d/coder-backup"
+/etc/logrotate.d/coder-backup
+/etc/systemd/system/coder-egress-firewall.service"
 
 N_MANAGED=$(grep -c '^write_managed "/' "${SETUP}")
 echo "INFO: write_managed=${N_MANAGED}"
-[ "${N_MANAGED}" -eq 11 ] && pass "alle 11 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 11)"
+[ "${N_MANAGED}" -eq 12 ] && pass "alle 12 direkt adressierten Dateien nutzen write_managed" || fail "write_managed-Anzahl=${N_MANAGED} (erwartet 12)"
 grep -qF 'write_managed "${VERSIONS_FILE}"' "${SETUP}" && pass "versions.env nutzt ebenfalls write_managed" || fail "versions.env nutzt write_managed nicht"
 
 # SSH-Drop-In: eigene Policy-Datei,

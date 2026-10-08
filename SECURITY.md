@@ -49,7 +49,12 @@ Restore: [RESTORE.md](RESTORE.md) · Fehler: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 - **Restrisiko der Entscheidung:** Jedes Gerät im Schulnetz erreicht Port 22
   und kann per Passwort raten; ein geteiltes oder weitergegebenes Passwort
   bleibt gültig. Die Netzbegrenzung verhindert Internetzugriffe, ersetzt
-  aber keinen individuellen Schlüsselzugang.
+  aber keinen individuellen Schlüsselzugang. Eine SSH-Verbindung von außen
+  ist netzseitig ohnehin nicht möglich (Betreiber-Bestätigung 2026-10-08);
+  der einzige Weg, der diese Grenze umgeht, wäre Container auf dem Host
+  selbst – dagegen steht die `DENY 172.16.0.0/12`-Gegenregel am sshd-Port
+  (Abschnitt 4). Eine ufw-Quell-CIDR-Einschränkung (`allow from <Schulnetz>`)
+  ist deshalb bewusst nicht eingebaut.
 
 **Vorgehen bei der ersten Inbetriebnahme: Passwortzugang im Schulnetz**
 
@@ -215,7 +220,8 @@ sudo journalctl -t coder-backup -n 50 --no-pager
 | Regel | Wert |
 |---|---|
 | Default-Policy | `deny incoming`, `allow outgoing` (explizit gesetzt, nicht auf Debian-Default verlassen) |
-| SSH | `ufw allow <sshd-Port>/tcp` (Ports aus `sshd -T`, meist `22/tcp`) |
+| SSH | **zuerst** `ufw insert 1 deny 172.16.0.0/12 → <sshd-Port>/tcp` (Container aus Docker-Netzen erreichen den Host-SSH-Port nicht; ohne diese Gegenregel würde die weltweite `allow`-Zeile darunter auch für sie gelten), danach `ufw allow <sshd-Port>/tcp` (Ports aus `sshd -T`, meist `22/tcp`) – beide Schritte idempotent, die `deny`-Gegenprobe ist Teil des Abschlusschecks |
+| Workspace-Egress | `/opt/coder/workspace-egress.sh` (systemd: `coder-egress-firewall.service`, nach `docker.service`, bei jedem Reboot): `iptables -I DOCKER-USER 1 -d 10.0.0.0/8 -j DROP` und `-d 192.168.0.0/16 -j DROP`, idempotent. Gesperrt: kompromittierte Workspace-Container → RFC1918 außerhalb der Docker-Netze (damit auch Schulnetz-Dienste und Proxmox-Oberfläche). Offen: Internet-Ausgang, die Docker-eigenen Netze (`172.16.0.0/12` – darin laufen die Workspace-Netze selbst, und der Gateway `172.31.1.1` des Test-Hosts) und kein `ip6tables`, weil die Compose-Netze `EnableIPv6=false` haben. **Zwei Sonderfälle bleiben absichtlich unberührt:** (1) DNS der Container läuft über Dockers Embedded-Resolver `127.0.0.11` (am Testhost verifiziert) – die Weiterleitung passiert in der Host-Ebene (`OUTPUT`), nie in `FORWARD`, und trifft die Sperre nicht; (2) Wege über publizierte Ports: `nat/PREROUTING` (DNAT) läuft vor `filter/FORWARD` um und schreibt das Ziel auf die Container-IP (in `172.16/12`), bevor die Kette die `10/8`-Prüfung sieht – Workspace ↔ Coder über `*:443/80` bleibt also auch dann heil, wenn interne DNS-Antworten eine RFC1918-Adresse des Hosts liefern. Gewollt gesperrt bleibt der Rest des Schulnetzes (z. B. IServ, 10.16.x.x). Der Re-Run des Setups setzt die Regeln erneut an |
 | Web | `ufw allow 80/tcp`, `443/tcp`, `443/udp` (HTTP/3) |
 | Grafana | **keine Regel**: Grafana ist nur an `127.0.0.1:3001` gebunden, Zugang per SSH-Tunnel; vorhandene Quellregeln (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) und eine `3001/tcp`-Regel werden beim Lauf innerhalb dieser harten Allowlist entfernt (idempotenter No-Op, wenn nichts steht) |
 | Aktivierung | `ufw --force enable` |
@@ -244,10 +250,17 @@ iptables-Regeln ein, die ufw dabei üblicherweise umgehen. Für 80/443 ist
 das akzeptabel, weil dort ohnehin der öffentliche Coder-Zugang laufen
 soll; der Schutz der übrigen Dienste kommt deshalb **nicht** aus ufw,
 sondern aus der 127.0.0.1-Bindung (Abschnitt 6). Für SSH (Host-Dienst,
-kein Container) greifen ufw und fail2ban tatsächlich. Ein
-`DOCKER-USER`-Einbau wurde am 2026-09-30 als Entscheidung D-Firewall
-geprüft und **nicht** eingebaut: solange öffentliche Ports ausschließlich
-über Caddy laufen, bleibt die 127.0.0.1-Bindung der Schutz.
+kein Container) greifen ufw und fail2ban tatsächlich – **außer** für
+Verkehr aus Docker-Netzen: dessen Weg zum Host-SSH-Port läuft über die
+ufw-`allow`-Zeile, deshalb steht die `deny`-Gegenregel für
+`172.16.0.0/12` als allererste Regel darüber (Tabelle oben, B3a).
+Ein `DOCKER-USER`-Einbau für publizierte Ports wurde am 2026-09-30 als
+Entscheidung D-Firewall geprüft und **nicht** eingebaut: solange
+öffentliche Ports ausschließlich über Caddy laufen, bleibt die
+127.0.0.1-Bindung der Schutz. Die `DOCKER-USER`-Kette wird seit
+2026-10-08 (B3b) ausschließlich für die Egress-Sperre genutzt (Tabelle
+oben) – die D-Firewall-Entscheidung zu publizierten Ports bleibt damit
+unverändert.
 
 **Reihenfolge ist die Sicherheitsfunktion (A1)**: Ohne lesbaren
 `ufw status`- oder `ufw show added`-Output bricht das Setup ab, bevor es
@@ -431,7 +444,7 @@ begründen die Lage, diese Tabelle ist der Sammelpunkt.
 | D-TLS | TLS-Ausstellungen robust zählen bzw. On-Demand-Budget schützen; ggf. Umstellung auf DNS-01 | Status quo (On-Demand + `ask`, dateibasierte Zählung); DNS-01-Wildcard ohne On-Demand (B4b) | Status quo; Budget-Warnung ab 20 Ausstellungen/7 Tage; DNS-01 nur mit Zonen-Zugang und Abstimmung | KAS-Zugang von All-Inkl (beim Domainverwalter, nicht beim Betreiber), erst nach Klärung von Zone/Hosting; DNS-API-Token beim Netzwerkadmin anfragen | teilentschieden: Zählung dateibasiert (A6); DNS-01 aufgeschoben bis Zone, Hosting und Zuständigkeit für DNS/Ports geklärt sind (Modul `caddy-dns/all-inkl` bekannt) |
 | D-Socket | Workspace-Trennung vom Host (Coder-Container hält den Docker-Socket schreibbar) | Status quo + Template-Allowlist; Workspaces auf separater VM; kompletter Plattformwechsel | Status quo + Allowlist bleiben dauerhaft; Erstinventar und T-063 bleiben Pflicht | – | entschieden: Empfehlung übernommen – keine zweite VM |
 | D-SSH | Wann Passwort-Login abgeschaltet wird (Drop-In-Snippet aus Abschnitt 1) | Status quo (Passwort + `ufw allow` der sshd-Ports + fail2ban + Netzbegrenzung); Härtung nach getestetem Key- und Zweit-Zugang; Passwort dauerhaft behalten | Passwort-Login bleibt Standard; Härtung nur auf gesonderten Wunsch | – | entschieden: Passwort bleibt, Nachhärtung ist nicht Standard; Regelwerk 2026-10-03 revidiert: `allow` statt `limit` (geteilte Schul-NAT darf ufw nicht drosseln), fail2ban bleibt Brute-Force-Schutz |
-| D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` |
+| D-Firewall | `DOCKER-USER`-Regeln für Docker-publizierte Ports ergänzen | Status quo (ufw für Host-Dienste, Schutz über 127.0.0.1-Bindung); `DOCKER-USER`-Kette ergänzen | Status quo, solange öffentliche Ports ausschließlich über Caddy laufen | – | entschieden: Empfehlung übernommen – kein `DOCKER-USER` für publizierte Ports; **2026-10-08 (B3b) ergänzt:** `DOCKER-USER` wird nun gezielt nur für die Egress-Sperre genutzt (10.0.0.0/8 + 192.168.0.0/16 DROP, Abschnitt 4), publizierte Ports bleiben davon unberührt |
 | D-Reboot-Fenster | Reboot um 03:00 (`/etc/apt/apt.conf.d/52-coder-reboot`) mit dem Schulbetrieb abstimmen | 03:00 beibehalten; anderes Fenster eintragen; automatischen Reboot abschalten | 03:00 bleibt, abgestimmt gegen Unterrichtsbeginn 07:45 | – | entschieden: Empfehlung übernommen – 03:00 bleibt |
 | D-Monitoring | Alarme an einen Empfänger senden (es gibt Regeln, aber keinen Kanal) | Status quo (nur Regeln); Alertmanager mit SMTP/Contact Point; Webhook an bestehenden Schulkanal | Grafana/Prometheus bleiben die Anlaufstelle, kein Kanal | – | entschieden: kein Kanal, Grafana reicht – Alarmweg/Empfänger bleibt als offener Punkt notiert (README „Offene Punkte") |
 | D-Offsite | Offsite-Kopie der Backups einrichten | Status quo (nur lokal, Totalverlust bei Hostschaden); rsync/scp auf zweiten Host im Schulnetz; verschlüsselter Objekt-Speicher | kein zweiter Standort; lokal bleiben Dumps 700/600 und die Restore-Probe der Schutz | – | entschieden: kein zweiter Standort, Restrisiko akzeptiert |

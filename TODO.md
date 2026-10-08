@@ -1,13 +1,16 @@
-# TODO (Betreiber) – Stand 2026-10-03
+# TODO (Betreiber) – Stand 2026-10-08
 
 Persönliche Checkliste. **Quelle der Wahrheit** ist die
-[README „Offene Punkte – wer macht was"](README.md#offene-punkte--wer-macht-was-stand-2026-10-03);
+[README „Offene Punkte – wer macht was"](README.md#offene-punkte--wer-macht-was-stand-2026-10-08);
 bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
 
 ## Am Zielserver (Walkthrough)
 
 - [ ] **Pre-Flight** durchlaufen, dann erster Lauf: `sudo ./setup-coder.sh`
       ([OPERATIONS §11](OPERATIONS.md#11-inbetriebnahme-am-zielserver-wer-macht-was))
+- [ ] **`setup.conf` mit `ACME_EMAIL` anlegen** (`cp setup.conf.example
+      setup.conf`) – Pflicht, kein Default, sonst bricht das Setup vor
+      jeder Änderung ab (Pre-Flight Schritt 7)
 - [ ] **Portlage 80/443 klären** – Zielserver ist frisches Debian ohne
       eigenen Webserver; IServ läuft auf dem zentralen Netzwerkserver,
       vermutlich dort auch der Reverse-Proxy: DNS direkt auf den
@@ -55,6 +58,11 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
       [SECURITY §9 D-TLS](SECURITY.md)
 - [ ] **03:00-Rebootfenster** mit dem Schulbetrieb abstecken und im
       Wartungsplan hinterlegen ([OPERATIONS §7](OPERATIONS.md), SECURITY §9)
+- [ ] **Proxmox-VM-Backup** (vzdump/PBS) um 02:00 einrichten – zwischen
+      DB-Backup 01:00 und Reboot 03:00; `qemu-guest-agent` braucht den
+      virtio-Channel in der VM (das Setup installiert ihn nur dann);
+      einmal **Restore aus dem VM-Backup** testen
+      ([OPERATIONS §7](OPERATIONS.md))
 
 ## Entscheidungen (dich treffen)
 
@@ -63,7 +71,11 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
       eigene Volume-Sicherung einrichten (vor Produktivbetrieb);
       [RESTORE.md](RESTORE.md) „Was gesichert wird"
 - [ ] **Offsite-Backup:** Ziel und Rhythmus festlegen (Anforderung an den
-      Betrieb, kein Automatismus im Repo)
+      Betrieb, kein Automatismus im Repo); Option **C-5: Pull** – der
+      Betreiber-Rechner zieht per rsync/scp vom Server (Source-zu-Target,
+      kein Script/Key auf dem Server, kein Push-Recht nötig)
+- [ ] **Fester Update-Termin** für `setup-coder.sh`-Läufe (B5: ohne Termin
+      bleiben Updates liegen); [OPERATIONS §7](OPERATIONS.md)
 - [ ] **Alarmweg/Empfänger:** klären, sobald Alarme zugestellt werden sollen
       (3 Regeln existieren, kein Kanal – D-Monitoring);
       [SECURITY §9](SECURITY.md)

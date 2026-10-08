@@ -136,8 +136,11 @@ ssh root@2.29.11.30 'cd /root/coder-server-setup && ./setup-coder.sh'
 ```
 
 Run the host setup twice (idempotency) and check acceptance greps:
-`sshd -T` (passwordauthentication, permitrootlogin), `ufw status`,
-`ss -tlnp | grep 3001`, `ls /etc/cron.d/`, Prometheus alert-rule count.
+`sshd -T` (passwordauthentication, permitrootlogin), `ufw status`
+(ssh-DENY 172.16.0.0/12 sits above the allow, exactly once),
+`iptables -S DOCKER-USER` (one DROP each for 10.0.0.0/8 and
+192.168.0.0/16, no duplicates), `ss -tlnp | grep 3001`,
+`ls /etc/cron.d/`, Prometheus alert-rule count.
 
 Pitfalls learned here:
 

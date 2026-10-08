@@ -4,7 +4,8 @@ Installation und Wartung eines Coder-Servers auf einer Debian-13-VM: ein
 Skript (`setup-coder.sh`) baut den kompletten Stack auf – Caddy (Reverse
 Proxy + TLS), Coder, PostgreSQL, Prometheus/Grafana/node-exporter, Firewall
 (ufw + fail2ban), automatische Sicherheitsupdates, tägliche Datenbank-Backups
-und die Wartungsskripte für Backup und Reset.
+und die Wartungsskripte für Backup und Reset sowie die
+Workspace-Egress-Sperre.
 
 Das Repository ist die **Quelle**. Alles Laufzeit-Relevante wird beim ersten
 Lauf auf dem Server unter `/opt/coder/` erzeugt (`docker-compose.yml`,
@@ -22,22 +23,22 @@ nicht im Repository.
 | Einen Fehler diagnostizieren und sicher beheben | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Was wurde wann geändert? | [CHANGELOG.md](CHANGELOG.md) |
 | Welches Workspace-Template darf was? | [templates/allowlist.md](templates/allowlist.md) |
-| Befunde, Pläne, Prüfprotokolle (Referenz) | [CHANGELOG.md](CHANGELOG.md) – Prüfstände und Dispositionen, Einträge 2026-09-29 (Setup-Fundliste A1–A13/B1–B10/C1–C5) und 2026-10-03 (Review-Runde A1–A12/B1–B21); Prozess-Archiv `ai-review/` am 2026-10-03 entfernt (in Git-Historie) |
+| Befunde, Pläne, Prüfprotokolle (Referenz) | [CHANGELOG.md](CHANGELOG.md) – Prüfstände und Dispositionen, Einträge 2026-09-29 (Setup-Fundliste A1–A13/B1–B10/C1–C5), 2026-10-03 (Review-Runde A1–A12/B1–B21) und 2026-10-08 (Review-Runde 5, Proxmox-Backup-/Risiko-Runde); Prozess-Archiv `ai-review/` am 2026-10-03 entfernt (in Git-Historie) |
 
 ## Status (Stand 2026-10-01)
 
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
-| Lokale Tests | Stand 2026-10-03: alle 9 Dateien in `tests/` grün (294 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | **zwei volle Läufe RC 0 am 2026-10-03** auf dem Test-Host `2.29.11.30` (0 Fehler; sshd-Drop-In live geprüft, Altbestand 3001/Cron aufgeräumt, Details [CHANGELOG.md](CHANGELOG.md)) |
+| Lokale Tests | Stand 2026-10-08: alle 10 Dateien in `tests/` grün (329 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
+| Vollständiger Setup-Lauf auf echtem System | **zwei volle Läufe RC 0 am 2026-10-03** und **zwei weitere volle Läufe RC 0 am 2026-10-08** auf dem Test-Host `2.29.11.30` (jeweils 0 `[FEHLER]`, 64 `[OK]`; 2026-10-08 live geprüft: ACME-Pflicht-Gate bricht vor jeder Änderung ab, ufw-`DENY 172.16.0.0/12` genau einmal über dem `allow` in beiden Läufen, `DOCKER-USER` je Netz genau ein `DROP`, Egress-Unit `enabled`+`active`, `qemu-guest-agent` installiert/aktiv, node-exporter ohne `run/credentials`-Serie; Warnung `/healthz` bekannt – externer DNS-Blocker; Details [CHANGELOG.md](CHANGELOG.md)) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
 | Monitoring | **abgenommen, Stand 2026-10-03 (Test-Host):** Prometheus `ready` 200, 3 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metrik (Backup) vorhanden |
 | Offsite-Backup | **bewusst akzeptiert** (D-Offsite, 2026-09-30): kein zweiter Standort – Platten-/Hostverlust = Datenbank + Backups weg. **Anforderung an den Betrieb:** Backup-Kopie außerhalb des Hosts (Ziel/Rhythmus zu entscheiden, kein Automatismus im Repo) |
 | SSH-Härtung | **Entschieden (D-SSH, 2026-09-30; Regelwerk revidiert 2026-10-03):** Passwort-Login bleibt Standard; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `allow` für die erkannten sshd-Ports (kein `limit` – würde die geteilte Schul-NAT drosseln), fail2ban zusätzlich und ein eigenes SSH-Drop-In (`/etc/ssh/sshd_config.d/01-coder.conf`: Passwort-Login explizit an, `PermitRootLogin prohibit-password`; Details und Key-only-Umstellung in [SECURITY.md](SECURITY.md) §1) |
 | Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting und Zuständigkeit für DNS/Ports). Von den D-Entscheidungen sonst nichts offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)) |
 
-### Offene Punkte – wer macht was (Stand 2026-10-03)
+### Offene Punkte – wer macht was (Stand 2026-10-08)
 
 Alles, was noch jemanden braucht, an einem Ort (Details jeweils in der
 verlinkten Stelle):
@@ -48,6 +49,8 @@ verlinkten Stelle):
 | Portlage 80/443 klären: Der Zielserver ist ein **frisches Debian ohne Webserver** – IServ läuft auf einem anderen (zentralen) Server, mit dem das Schulnetz verwaltet wird, vermutlich samt Reverse-Proxy. Entscheidung: DNS zeigt direkt auf den Zielserver, oder der zentrale Proxy leitet 80/443 durch (ACME-Pfade + TLS-Passthrough/SNI). **Status 2026-10-03 (E-Mail):** Zugriff von außen auf Zielserver `10.16.103.13`, Apex `coder.ghse-unterricht.de` + optional Wildcard und WebSocket-Pflicht beim Netzwerkadmin (Sascha) angefragt – Antwort: Einrichtung erst, sobald **IServ in Produktion** geht, aktuell technisch nicht möglich. WebSocket braucht auf unserer Seite nichts (Caddy `reverse_proxy` reicht `Upgrade` standardmäßig durch); beim zentralen Proxy muss die Durchreichung später mit abgedeckt sein | Betreiber + Netzwerkadmin | §11 Pre-Flight Punkt 1, §11 „Netzwerkadmin" Zeile 4 |
 | DNS: A-Record, Wildcard, 80/443-Weiterleitung, Proxy-Durchreichung beantragen. **Befund 2026-10-03:** Zone bei Kasserver/All-Inkl (`ns5/ns6.kasserver.com`), `A` für die Apex zeigt aktuell `85.13.130.100` (alte Schulseite, MX ebenfalls Kasserver), `93.240.138.106` = Kreis-Proxy `pmg.em-ghse.logoip.de` (HTTP 451) – der Weg für 80/443 und wer Kasserver-Zugang/API-Token hat, ist mit dem Schulträger zu klären. **Status 2026-10-03:** in derselben Anfrage mit angeantwortet, s. Portlage-Zeile | Netzwerkadmin; der Betreiber fordert nur Zeilen 1–4 an | §11 „Netzwerkadmin" |
 | 03:00-Rebootfenster mit Schulbetrieb abstimmen und im Wartungsplan hinterlegen | Betreiber | OPERATIONS §7 „Reboot", [SECURITY.md](SECURITY.md) §9 D-Reboot-Fenster |
+| VM-Backup der Proxmox-VM selbst (vzdump/PBS) um 02:00 einrichten – Lücke zwischen DB-Backup 01:00 und Reboot 03:00; `qemu-guest-agent` braucht den virtio-Channel in der VM; einmal Restore-aus-VM-Backup testen | Betreiber (Proxmox/PBS-Zugang) | OPERATIONS §7 „Backup"/„Reboot", [SECURITY.md](SECURITY.md) §9 |
+| Fester Termin für `setup-coder.sh`-Update-Läufe (B5: ohne festen Termin bleiben Updates liegen; Versionen-Pin beachten) | Betreiber | OPERATIONS §7 „Update", [CHANGELOG.md](CHANGELOG.md) |
 | Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT des Workspace-Agenten, A9); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (B-11: Bei Nicht-Compose-Containern bricht `reset-coder.sh` hart ab, es wird nichts gelöscht) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
 | Zone/Hosting klären **und beim Netzwerkadmin das DNS-API-Token für die Zone erfragen** – erst danach DNS-01-Modul einbauen; bis dahin läuft On-Demand-TLS (Let's-Encrypt-Limit 50 Zertifikate/Woche pro Domain, Warnung ab 20) | Domainverwalter/Hosting, **nicht** der Betreiber (Token-Anfrage: Betreiber) | OPERATIONS §11 Zeile 6, [SECURITY.md](SECURITY.md) §9 D-TLS |
@@ -79,12 +82,12 @@ Abschnitt 11.
 | Datei | Zweck |
 |---|---|
 | `setup-coder.sh` | Das Setup-Skript (8 Schritte, `set -euo pipefail`, mehrfach ausführbar) |
-| `scripts/` | Wartungsskripte als echte Dateien (`backup.sh`, `reset-coder.sh`); das Setup schreibt sie nach `/opt/coder/` (`write_managed`: `bash -n` + atomar) |
+| `scripts/` | Wartungsskripte als echte Dateien (`backup.sh`, `reset-coder.sh`, `workspace-egress.sh`); das Setup schreibt sie nach `/opt/coder/` (`write_managed`: `bash -n` + atomar) |
 | `show-sources.sh` | Gibt Setup, Härtung und Wartungsskripte mit Dateimarker und Zeilennummern aus – z. B. um die Quellen einem Chatbot zu geben (Teilmengen als Argumente) |
-| `setup.conf.example` | Vorlage für `setup.conf` (Domain, ACME-Adresse/CA, fail2ban-Ignore-IP); `setup.conf` selbst ist gitignored |
+| `setup.conf.example` | Vorlage für `setup.conf` (Domain, ACME-Adresse **Pflicht**, ACME-CA, fail2ban-Ignore-IP); `setup.conf` selbst ist gitignored |
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
-| `tests/` | 9 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
+| `tests/` | 10 lokale Prüfskripte (STATIC/UNIT-LIKE, ohne Docker und ohne Produktion) |
 
 ## Was das Setup-Skript macht
 
@@ -94,10 +97,10 @@ Werte über `setup.conf` neben dem Skript (gitignored, Vorlage
 
 | # | Schritt | Ergebnis |
 |---|---|---|
-| 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3) |
+| 1 | Grundpakete und Docker Engine installieren | `cron` und weitere Grundpakete, apt-Repo + Fingerprint-Prüfung des Docker-GPG-Keys, `docker-ce` + Compose-Plugin, `daemon.json` (Log-Limit 10 MB × 3); `qemu-guest-agent` nur, wenn die VM den virtio-Serial-Channel hat (Proxmox-VM-Backup mit Freeze) |
 | 2 | Verzeichnis und Konfiguration anlegen | `/opt/coder/`, `.env` (nur beim ersten Lauf), `docker-compose.yml`, `caddy/Caddyfile` (On-Demand-TLS mit lokalem HTTP-Permission-Endpunkt), `prometheus/prometheus.yml` + `prometheus/rules/coder-alerts.yml`, Grafana-Provisioning (Datasource + Dashboard „Server-Last"), `node-textfile/`, Wartungsskripte (`scripts/*.sh` → `/opt/coder/`, 755, per `write_managed`: `bash -n` + atomar) – jedes Schreiben atomar mit Validierung (Compose/Caddyfile/Prometheus-Config+Regeln), danach `docker compose pull` |
 | 3 | Docker-Stack starten | Preflights (Daemon, Platte), dann `up -d`; Caddy und Prometheus bei laufendem Container per `reload`/SIGHUP neu, Grafana nur bei geänderter Provisioning-Datei neu |
-| 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), `ufw allow` für die erkannten sshd-Ports (eigene alte `limit`-Regel wird entfernt), 80/443 frei, Altbestandsregeln für Grafana 3001 werden entfernt (Grafana nur noch 127.0.0.1, keine ufw-Regel), fail2ban-Jail `sshd`, SSH-Drop-In, Abschluss-Checks |
+| 4 | Firewall + SSH-Schutz | ufw (Default deny incoming), zuerst `deny` für Docker-Container-Netze (172.16.0.0/12) am sshd-Port, dann `ufw allow` für die erkannten sshd-Ports (eigene alte `limit`-Regel wird entfernt), 80/443 frei, Altbestandsregeln für Grafana 3001 werden entfernt (Grafana nur noch 127.0.0.1, keine ufw-Regel), fail2ban-Jail `sshd`, SSH-Drop-In, Workspace-Egress-Sperre (`coder-egress-firewall.service` sperrt Workspace-Container den Zugriff auf RFC1918 außerhalb der Docker-Netze), Abschluss-Checks (inkl. Gegenprobe auf die `deny`-Regel) |
 | 5 | Automatische Sicherheitsupdates | Debian-Paketupdates per unattended-upgrades (geprüft über `apt-daily-upgrade.timer`), Reboot 03:00; Docker Engine bleibt manuell |
 | 6 | Tägliches Datenbank-Backup | `backup.sh`, Cron 01:00 (`/etc/cron.d/coder-backup`), logrotate, Testlauf, Kopie der `RESTORE.md`, Erfolgs-Metrik nach `node-textfile/` |
 | 7 | Abschlusscheck & Zusammenfassung | Container, Socket-GID, `https://…/healthz`, Wildcard-DNS, Nutzer-/Owner-Hinweis (B2), `[FEHLER]`-Zähler → Exit 1 bei Fehlern |
@@ -170,9 +173,10 @@ sudo ./setup-coder.sh          # nur als root, sonst Abbruch vor Änderungen
 ```
 
 Optional vor dem Lauf: Werte in `setup.conf` neben dem Skript eintragen
-(Vorlage: `cp setup.conf.example setup.conf`; Domain, ACME-Adresse, ACME-CA,
-fail2ban-Ignore-IP). Umgebungsvariablen (hinter dem sudo) überschreiben
-`setup.conf`, `setup.conf` überschreibt die Defaults:
+(Vorlage: `cp setup.conf.example setup.conf`; Domain, ACME-Adresse –
+**Pflicht, kein Default**, sonst bricht das Setup vor jeder Änderung ab –,
+ACME-CA, fail2ban-Ignore-IP). Umgebungsvariablen (hinter dem sudo)
+überschreiben `setup.conf`, `setup.conf` überschreibt die Defaults:
 
 ```bash
 sudo env DOMAIN_CODER=coder.beispiel.de ACME_EMAIL=admin@beispiel.de ./setup-coder.sh
@@ -212,7 +216,7 @@ Vorrang: Env > `setup.conf` > Default:
 | Variable | Default | Bedeutung |
 |---|---|---|
 | `DOMAIN_CODER` | `coder.ghse-unterricht.de` | Access-URL und Wildcard `*.…` |
-| `ACME_EMAIL` | `hert@ghse.de` | Let's-Encrypt-Benachrichtigungsadresse |
+| `ACME_EMAIL` | **Pflicht** (kein Default) | Let's-Encrypt-Benachrichtigungsadresse; ohne Wert (Conf oder Env) bricht das Setup vor jeder Änderung ab |
 | `CODER_VERSION` | `v2.37.3` | exakter Coder-Image-Tag (mit `v`) |
 | `CADDY_VERSION` | `2.11` | Minor-Pin, Patch-Updates per `compose pull` |
 | `PROMETHEUS_VERSION` | `v3.15.0` | exakter Pin |
@@ -304,22 +308,24 @@ shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Stand 2026-10-03: alle 9 Testskripte Exit 0 (278 `PASS`, 0 `FAIL`, in
-diesem Lauf ohne SKIP); `bash -n` ohne Befund; `shellcheck -S warning`
+Stand 2026-10-08: alle 10 Testskripte Exit 0 (329 `PASS`, 0 `FAIL`);
+`bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
 Prüfstand-Liste unten.
 
 Was die Tests **belegen**: das Verhalten der Wartungsskripte (echte Dateien
 unter `scripts/`: Backup-Headercheck, Reset-Precheck inkl. Argument-Ablehnung
-und Fremd-Container-Gate) und
+und Fremd-Container-Gate, Workspace-Egress-Sperre mit Fake-iptables) und
 weiterer Setup-Codestellen
 (ufw-Regelpfad
 inkl. „Quellregeln bleiben unangetastet, `allow` für die erkannten
 sshd-Ports, eigene alte `limit`-Regel wird entfernt, Altbestand 3001
-innerhalb einer harten Allowlist",
-Hex-Migration, `write_managed` (atomar, Inode-stabil bei gleichen Inhalt,
-`bash -n`-Guard, Validierer vor dem Austausch; 9 direkte Zieldateien, die
+innerhalb einer harten Allowlist", dazu die Docker-Netz-`deny` vor dem
+`allow` (B3a),
+ACME-Pflicht ohne Personen-Default (A4), Hex-Migration,
+`write_managed` (atomar, Inode-stabil bei gleichen Inhalt,
+`bash -n`-Guard, Validierer vor dem Austausch; 12 direkte Zieldateien, die
 `scripts/*.sh` per Schleife, dazu `versions.env` und der sshd-Drop-In),
 `ON_ERROR_STOP` im Restore-Runbook) anhand
 von Fakes und Fixture-Dateien sowie den gerenderten On-Demand-`ask`-Endpunkt
@@ -399,7 +405,7 @@ Produktivsystem geprüft werden:
     erreicht – und der Re-Run (Konto existiert) darf scheitern, ohne
     abzubrechen.
 
-### Prüfstand der Liste (Test-Host `2.29.11.30`, Stand 2026-10-03)
+### Prüfstand der Liste (Test-Host `2.29.11.30`, Stand 2026-10-08)
 
 | # | Status |
 |---|---|
@@ -414,6 +420,7 @@ Produktivsystem geprüft werden:
 | 9 | teilweise: von außen 22/80/443 offen, 9090/9100/3001/3000/8080 geschlossen; Wildcard-DNS und Workspace-Subdomain nicht prüfbar, solange die Domain nicht auf den Server zeigt |
 | 10 | entfällt (D-Offsite) |
 | 11 | erledigt: Erstanlage über `CODER_FIRST_USER_EMAIL`/`USERNAME` + Passwort-Prompt beim Lauf (RC 0, `[OK] Erstkonto (Owner) angelegt: owner`); Re-Run mit existierendem Konto RC 0 ohne Abbruch (Block läuft nur bei `HUMAN_USERS=0`) |
+| 12 | erledigt 2026-10-08 (Läufe 5 + 6, RC 0, je 0 `[FEHLER]`/64 `[OK]`): ACME-Pflicht-Gate ohne `setup.conf` bricht vor jeder Änderung mit Klartext ab (RC 1); ufw `22/tcp DENY 172.16.0.0/12` genau einmal und über dem `allow` – nach Lauf 6 unverändert (kein Duplikat); `DOCKER-USER` je Netz genau ein `DROP` (`10.0.0.0/8`, `192.168.0.0/16`), nach Lauf 6 unverändert; Egress-Unit `enabled` + `active`; `qemu-guest-agent` installiert und aktiv (Channel `org.qemu.guest_agent.0` vorhanden); node-exporter: 0 Serien `run/credentials` (vorher 27), `node_filesystem_avail_bytes` nur noch Host-Mounts (`/`, `/boot/efi`, `/run`, `/run/lock`, `/run/user/0`, `/tmp` – Wurzelpartition für `RootPartitionFillingUp` bleibt); `sshd -T`: `passwordauthentication yes`, `permitrootlogin without-password`; 3001 an 127.0.0.1, 3 Alarmregeln, Prometheus `ready` 200 |
 
 ## Detaildokumentation
 

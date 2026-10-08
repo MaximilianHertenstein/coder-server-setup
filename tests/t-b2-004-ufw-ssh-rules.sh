@@ -7,12 +7,14 @@
 #   Gate: ohne lesbaren ufw-Status = harter Abbruch; inaktiv = Warnung,
 #         Lauf faehrt fort
 #   Regelanwendung: Policy erst, dann allow fuer die erkannten sshd-Ports
-#         (Schleife ueber SSHD_PORTS, idempotent), DANACH eigene alte
-#         limit-Regel loeschen (kein Fenster ohne SSH-Regel); fremde/
-#         Operator-Regeln nie loeschen, einzige Quellregel-Ausnahme ist die
-#         explizite 3001-Altbestands-Allowlist)
+#         (Schleife ueber SSHD_PORTS, idempotent), DAVOR die B3a-DENY-Regel
+#         fuer Docker-Container-Netze (172.16.0.0/12, insert 1 = erste
+#         Regel gewinnt), DANACH eigene alte limit-Regel loeschen (kein
+#         Fenster ohne SSH-Regel); fremde/Operator-Regeln nie loeschen,
+#         einzige Quellregel-Ausnahme ist die explizite 3001-Altbestands-Allowlist)
 #   Abschlusscheck: jede erkannte Portnummer muss als ALLOW (Anywhere)
-#         stehen; LIMIT oder fehlende Regel = Fehler
+#         stehen; LIMIT oder fehlende Regel = Fehler; dazu die B3a-DENY-
+#         Gegenregel als eigener Check (fehlt sie = Fehler)
 #   Statisch: kein Bypass, kein Restore, kein Delete ausser eigene limit +
 #         3001-Altbestand, keine Detektor-/Beschraenkungs-Zweiglogik,
 #         keine "ufw limit"-Zeile
@@ -87,7 +89,7 @@ case " $* " in
       printf '%s\n' "${FAKE_UFW_STATUS:-Status: inactive}"
     fi
     ;;
-  *" delete "*|*" limit "*|*" allow "*|*" enable "*)
+  *" delete "*|*" limit "*|*" allow "*|*" enable "*|*" insert "*)
     if [ -n "${FAKE_UFW_STATE:-}" ]; then
       printf '%s\n' "${FAKE_UFW_STATUS_AFTER:-${FAKE_UFW_STATUS:-Status: inactive}}" > "${FAKE_UFW_STATE}"
     fi
@@ -170,6 +172,21 @@ S_ONLY_80_ALLOW='Status: active
 80/tcp                     ALLOW       Anywhere
 443/tcp                    ALLOW       Anywhere
 22/tcp                     ALLOW       Anywhere'
+# B3a: Nach-Zustand NACH dem insert 1 (DENY-Regel steht als erste Zeile,
+# Schreibweise wie echtes "ufw status" ohne Richtungsangabe).
+S_ALLOW_22_WORLD_D='Status: active
+22/tcp                     DENY        172.16.0.0/12
+22/tcp                     ALLOW       Anywhere'
+S_ACTIVE_D='Status: active
+To                         Action      From
+--                         ------      ----
+22/tcp                     DENY        172.16.0.0/12
+22/tcp                     LIMIT       Anywhere
+22/tcp (v6)                LIMIT       Anywhere (v6)'
+S_ONLY_80_D='Status: active
+22/tcp                     DENY        172.16.0.0/12
+80/tcp                     ALLOW       Anywhere
+443/tcp                    ALLOW       Anywhere'
 
 # --- Pfad A: alte limit-Regel vorhanden -------------------------------------
 # Die eigene limit-Regel frueherer Laeufe wird nach dem neuen allow entfernt
@@ -229,19 +246,43 @@ assert_rc 0 "Pfad D (22/tcp-allow) laeuft weiter"
 assert_no_calls "delete allow 22/tcp" "Pfad D: vorhandene 22/tcp-allow bleibt (idempotentes Skipping)"
 assert_calls "allow 22/tcp" "Pfad D: allow wird idempotent aufgerufen"
 
-# --- Abschlusscheck ---------------------------------------------------------
+# --- B3a: DENY fuer Docker-Container-Netze, VOR dem allow -------------------
 capture "${S_ALLOW_22_WORLD}" "${S_ALLOW_22_WORLD}" 0
+assert_calls "insert 1 deny from 172.16.0.0/12 to any port 22 proto tcp" \
+  "B3a: DENY-Regel fuer 172.16.0.0/12 wird gesetzt"
+INS_N="$(grep -nF 'insert 1 deny' "${FAKE_UFW_CALLS}" | head -n1 | cut -d: -f1 || true)"
+ALW_N="$(grep -nF 'allow 22/tcp' "${FAKE_UFW_CALLS}" | head -n1 | cut -d: -f1 || true)"
+if [ -n "${INS_N}" ] && [ -n "${ALW_N}" ] && [ "${INS_N}" -lt "${ALW_N}" ]; then
+  pass "B3a: DENY-Insert vor dem ALLOW (Protokoll-Zeile ${INS_N} < ${ALW_N})"
+else
+  fail "B3a: Reihenfolge falsch (insert=${INS_N:-kein} allow=${ALW_N:-kein})"
+fi
+# Vorhandene eigene DENY wird nicht dupliziert (Pruefung gegen ufw status).
+capture "${S_ALLOW_22_WORLD_D}" "${S_ALLOW_22_WORLD_D}" 0
+assert_no_calls "insert 1 deny" "B3a: vorhandene DENY-Regel wird nicht dupliziert"
+# Statische Verankerung im Quelltext.
+grep -qF 'ufw insert 1 deny from 172.16.0.0/12' "${SETUP}" \
+  && pass "B3a: insert-Zeile steht im Setup" \
+  || fail "B3a: insert-Zeile fehlt im Setup"
+
+# --- Abschlusscheck ---------------------------------------------------------
+capture "${S_ALLOW_22_WORLD}" "${S_ALLOW_22_WORLD_D}" 0
 assert_out "SSH-Port 22/tcp steht als ALLOW" "Abschlusscheck: weltweite ALLOW-Regel als ok"
+assert_out "Docker-Netze 172.16.0.0/12 stehen als DENY" "Abschlusscheck: B3a-DENY wird bestaetigt"
 assert_out "ufw ist aktiv" "Abschlusscheck: Aktivitaet bestaetigt"
 
+# Fehlt die DENY-Regel im Check-Zustand, meldet der Abschlusscheck das.
+capture "${S_ALLOW_22_WORLD}" "${S_ALLOW_22_WORLD}" 0
+assert_out "SSH-DENY für Docker-Netze" "Abschlusscheck: fehlende DENY-Regel wird gemeldet"
+
 # Alte limit-Regel allein zaehlt NICHT mehr als erfuellt (D-SSH).
-capture "${S_ACTIVE}" "${S_ACTIVE}" 0
+capture "${S_ACTIVE}" "${S_ACTIVE_D}" 0
 assert_out "SSH-ALLOW-Regel fehlt" "Abschlusscheck: LIMIT ohne ALLOW = Fehler"
 printf '%s' "${OUT}" | grep -qF "CHECK_CONTINUE" \
   && pass "Abschlusscheck: Lauf bricht bei fehlender ALLOW-Regel ab" \
   || fail "Abschlusscheck: bricht nicht ab"
 
-capture "${S_ONLY_80}" "${S_ONLY_80}" 0
+capture "${S_ONLY_80}" "${S_ONLY_80_D}" 0
 assert_out "SSH-ALLOW-Regel fehlt" "Abschlusscheck: fehlende Regel = Fehler"
 
 # --- Statisch: keine stille Oeffnung, alte Schwachstelle weg ----------------

@@ -9,10 +9,101 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-03 · Basisstand dieses Eintrags: `824f1c6` auf `main`.
+Stand: 2026-10-08 · Basisstand dieses Eintrags: `86a8693` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
+
+## 2026-10-08 (5) – ACME-Pflicht ohne Personen-Default, Docker-Netz-`DENY` am SSH-Port, Workspace-Egress-Sperre, node-exporter-Mount-Ausnahme, Statuschecks/Erstkonto-Retry, Proxmox-Backup-Doku
+
+**Basisstand:** `86a8693` (davor: TODO-/README-Feinstand vom 2026-10-03 in
+`aac0dd5`/`86a8693`, u. a. der Quell-Export `new.txt`).
+
+- **Umfang:** Review-Runde 5 (Proxmox-Backup- und Risiko-Runde, Befunde
+  A1–A6, B1–B5, C-Empfehlungen) – Befunde im Code nachgeprüft, nur
+  Zugestimmtes umgesetzt.
+- **Umgesetzt:**
+  - **A4:** `ACME_EMAIL` ist Pflicht, eingebauter Personen-Default
+    (`hert@ghse.de`) ist entfernt; Formatprüfung (ein `@`, Domain mit
+    Punkt, keine Leerzeichen); Abbruch läuft wie die Domainprüfung im
+    Preflight, vor jeder Serveränderung. Am Testhost ohne `setup.conf`
+    live geprüft: RC 1 mit Klartext, nichts verändert.
+  - **A5:** node-exporter bekommt
+    `--collector.filesystem.mount-points-exclude` mit der
+    Upstream-Default-Liste (`/dev /proc /sys /host /etc
+    /run/credentials/.+ /var/lib/docker/.+
+    /var/lib/containers/storage/.+`). Vorher exportierte der Container 27
+    `run/credentials`-Metrikzeilen; danach 0. `node_filesystem_avail_bytes`
+    umfasst nur noch die Host-Mounts (`/`, `/boot/efi`, `/run`,
+    `/run/lock`, `/run/user/0`, `/tmp`) – die Wurzelpartition für
+    `RootPartitionFillingUp` bleibt enthalten.
+  - **A3:** `PG_VOLUME_NEW` wird vor dem Volume-Check gesetzt und im
+    „Volume vorhanden"-Zweig auf `false` gesetzt; B21 meldet nur noch
+    „PostgreSQL-Daten angelegt", wenn das Volume vor dem Lauf wirklich
+    fehlte (vorher auch bei leerem Bestand).
+  - **A2:** Statuschecks lesen `{{.State.Status}}` (Default `missing`):
+    Caddy und Prometheus dreistufig (running → `reload`/SIGHUP,
+    restarting → Warnung ohne Reload, sonst Statusmeldung), Grafana nur
+    neu, wenn der Container nicht läuft, Postgres-Start nur bei Status
+    ≠ running.
+  - **A1:** Warteschleife auf `public.users` (30 × 2 s, `to_regclass`)
+    vor dem Erstkontos-Block und sechs Versuche à 5 s für `coder login`
+    (API-Verzögerung nach der Migration); die Warnung nennt jetzt
+    „6 Versuche".
+  - **B3a:** `ufw insert 1 deny from 172.16.0.0/12` pro erkanntem
+    sshd-Port **vor** dem `allow` – ohne die Gegenregel kämen Container
+    aus Docker-Netzen über die weltweite `allow`-Zeile zum Host-SSH-Port.
+    Idempotent gegen `ufw status` (Spaltenformat `DENY` ohne Richtung, am
+    Testhost geprüft); der Abschlusscheck meldet fehlte die `deny`-Regel
+    als `[FEHLER]`.
+  - **B3b:** `scripts/workspace-egress.sh` (neu) +
+    `coder-egress-firewall.service` (Oneshot nach `docker.service`,
+    `RemainAfterExit=yes`, `enable` + `restart` beim Lauf): `DOCKER-USER`
+    sperrt `10.0.0.0/8` und `192.168.0.0/16` idempotent (`-C` vor `-I`).
+    Offen bleiben `172.16.0.0/12` (Coder-Stack, Workspace-Netze, Gateway
+    `172.31.1.1` – Wege über publizierte Ports laufen über
+    `DOCKER-FORWARD`) und das Internet; kein `ip6tables` (Compose
+    `EnableIPv6=false`); beide Netze werden im Abschlusscheck gegen
+    `iptables -C` geprüft.
+  - **C/Doku:** `qemu-guest-agent` nur installiert, wenn der
+    virtio-Serial-Channel `/dev/virtio-ports/org.qemu.guest_agent.0`
+    existiert (Proxmox-vzdump braucht den Agenten für Freeze/Quiesce);
+    OPERATIONS nennt die Nachtachse 01:00 DB-Backup → 02:00 VM-Backup
+    (**noch einzurichten**) → 03:00 Reboot, B5 festen Update-Termin (§7)
+    und C-7-Einordnung (`BackupStale` misst nur den lokalen
+    `pg_dump`-Lauf, nichts von VM-/Offsite-Ebene); README „Offene
+    Punkte" um VM-Backup und Update-Termin ergänzt; SECURITY §4 um
+    `DENY`-Gegenregel und Egress-Sperre, D-Firewall-Entscheidung (§9)
+    präzisiert: `DOCKER-USER` ausschließlich für die Egress-Sperre,
+    publizierte Ports weiterhin ohne `DOCKER-USER`.
+- **Bewusst nicht umgesetzt:** A6 (externes Alerting/SMTP – D-Monitoring
+  bleibt, die 3 Regeln haben weiterhin keinen Kanal); B2 (DNS/CNAME-Hinweis
+  – in SECURITY §9 zu DNS-01 bereits dokumentiert, Code nicht betroffen);
+  B4 (nur Hinweis, kein Codeänderungsbedarf); Wortlaut von B1 und C-6 lag
+  nicht vor – Rückfrage an den Reviewer offen.
+- **Geänderte Dateien:** `setup-coder.sh`, `scripts/workspace-egress.sh`
+  (neu), `tests/t-b2-011-workspace-egress.sh` (neu, Fake-iptables),
+  `tests/t-b2-003-hex-migration.sh` (ACME-Pflicht-Fälle, Extraktion der
+  Retry-Schleife), `tests/t-b2-004-ufw-ssh-rules.sh` (DENY-Insert,
+  Idempotenz, Check-Gegenprobe), `tests/t-b2-007-write-managed.sh` (12
+  `write_managed`-Adressen inkl. Egress-Unit), `README.md`,
+  `SECURITY.md`, `OPERATIONS.md`, `setup.conf.example`, `AGENTS.md`
+  (Acceptance-Grep `iptables -S DOCKER-USER`), `TODO.md`; `new.txt`
+  (Quell-Export vom 2026-10-03) gelöscht.
+- **Teststand (lokal, 2026-10-08):** 10 Dateien, 329 PASS, 0 FAIL;
+  `bash -n` und `shellcheck -S warning` ohne Befund.
+- **Teststand (Test-Host `2.29.11.30`, 2026-10-08):** zwei volle Läufe
+  RC 0 (je 0 `[FEHLER]`, 64 `[OK]`, dieselbe bekannte `/healthz`-WARNUNG
+  wegen des externen DNS-Blockers); Akzeptanz-Greps: ufw-`DENY` genau
+  einmal über dem `allow` (auch nach Lauf 6), `DOCKER-USER` je Netz genau
+  ein `DROP` (auch nach Lauf 6), Egress-Unit `enabled`+`active`,
+  `qemu-guest-agent` installiert/aktiv, `sshd -T` unverändert
+  (`passwordauthentication yes`, `permitrootlogin without-password`),
+  3001 nur an 127.0.0.1, 3 Alarmregeln, Prometheus `ready` 200 – Details
+  README „Prüfstand der Liste", Zeile 12.
+- **Offene Punkte:** Wortlaut von B1/B4/C-6 beim Reviewer anfragen;
+  VM-Backup 02:00, fester Update-Termin, Offsite-Pull, DNS/Portlage –
+  README „Offene Punkte"; keine Produktionsfreigabe.
 
 ## 2026-10-03 (4) – Grafana-Dashboard „Server-Last", Wartungsskripte vor dem Stack-Start, SSH-Drop-In `01-coder.conf`, Versions-Gate fürs Pre-Upgrade-Backup, `.env`-Kopie im Backup
 

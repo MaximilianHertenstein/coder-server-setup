@@ -174,10 +174,11 @@ if [ -n "${ENV_NUL}" ]; then
 fi
 
 # ---------- LIVE (Produktionszeilen, Docker stubbed: argv + stdin) ----------
-# Extraktion: Zeilenbereich vom Zuweisungs-Anfang bis 2>&1); then – "if " und
-# "; then" werden entfernt, damit der Rest eine auswertbare Zuweisung ist.
+# Extraktion: Zeilenbereich vom Zuweisungs-Anfang bis 2>&1); then – "if " (auch
+# mit Einrueckung innert der Retry-Schleife) und "; then" werden entfernt,
+# damit der Rest eine auswertbare Zuweisung ist.
 STMT_FIRST="$(awk '/FIRST_OUT=\$\(printf/,/2>&1\); then/' "${SETUP}" \
-  | sed 's/^  if FIRST_OUT=/FIRST_OUT=/; s/); then$/)/')"
+  | sed 's/^[[:space:]]*if FIRST_OUT=/FIRST_OUT=/; s/); then$/)/')"
 if [ -z "${STMT_FIRST}" ]; then
   fail "Erstkonto-Produktions-Statement nicht extrahierbar"
 else
@@ -226,11 +227,12 @@ else
 fi
 bash -n "${WORK}/parser.sh" && pass "Parser-Block syntaktisch gueltig" || fail "Parser-Syntax"
 
-run_parser() {  # $1=conf (leer = keine Datei) $2=erwarteter rc; Env DOMAIN optional als $3
+run_parser() {  # $1=conf (leer = keine Datei) $2=erwarteter rc; Env DOMAIN optional als $3; Env ACME_EMAIL als $4
   local d="${WORK}/pconf" rc=0 out="" envarg=(env)
   rm -rf "${d}"; mkdir -p "${d}"
   [ -n "$1" ] && printf '%s' "$1" > "${d}/setup.conf"
   [ "$#" -ge 3 ] && envarg=(env "DOMAIN_CODER=$3")
+  [ "$#" -ge 4 ] && envarg+=("ACME_EMAIL=$4")
   out=$("${envarg[@]}" SETUP_DIR="${d}" bash -c \
     'set -euo pipefail; . "$0"; printf "D=%s|E=%s|I=%s\n" "${DOMAIN_CODER}" "${ACME_EMAIL}" "${FAIL2BAN_IGNORE_IP:-}"' \
     "${WORK}/parser.sh" 2>&1) || rc=$?
@@ -254,13 +256,29 @@ case "${OUT}" in *"keine gültige Domain"*) pass "Parser: Klartext zur Domain" ;
 run_parser $'DOMAIN_CODER=coder beispiel.de\r\n' 1
 [ "${RC}" -eq 1 ] && pass "Parser: Domain mit Leerzeichen -> Exit 1" || fail "Parser: rc=${RC} (erwartet 1)"
 
-# (d) Umgebungsvariable gewinnt vor setup.conf.
-run_parser $'DOMAIN_CODER=from-conf.example.de\r\n' 0 from-env.example.de
+# (d) Umgebungsvariable gewinnt vor setup.conf. ACME_EMAIL steht in der
+# Conf, weil es ohne Wert hart abbricht (A4, s. unten).
+run_parser $'DOMAIN_CODER=from-conf.example.de\r\nACME_EMAIL=conf@beispiel.de\r\n' 0 from-env.example.de
 case "${OUT}" in D=from-env.example.de\|*) pass "Parser: Env gewinnt vor conf" ;; *) fail "Parser: Env-Vorrang fehlt (${OUT})" ;; esac
 
-# (e) keine setup.conf -> eingebauter Default greift.
-run_parser "" 0
-case "${OUT}" in D=coder.ghse-unterricht.de\|*) pass "Parser: Default-Domain ohne conf" ;; *) fail "Parser: Default fehlt (${OUT})" ;; esac
+# (e) ACME_EMAIL ohne Wert: harter Abbruch mit Klartext (A4: kein im Repo
+# hinterlegter Personen-Default mehr, Preflight vor jeder Serveränderung).
+run_parser "" 1
+[ "${RC}" -eq 1 ] && pass "Parser: ACME_EMAIL ohne Wert -> rc 1" || fail "Parser: ACME-Pflicht rc=${RC} (erwartet 1)"
+case "${OUT}" in *"ACME_EMAIL ist nicht gesetzt"*) pass "Parser: ACME-Pflicht mit Klartext" ;; *) fail "Parser: ACME-Fehlertext fehlt (${OUT})" ;; esac
+
+# (e2) ungueltige ACME-Adresse -> ebenfalls harter Abbruch.
+run_parser $'ACME_EMAIL=ohne-klammer-beispiel.de\r\n' 1
+case "${OUT}" in *"keine gültige E-Mail-Adresse"*) pass "Parser: ACME-Format-Fehlertext" ;; *) fail "Parser: ACME-Format-Text fehlt (${OUT})" ;; esac
+
+# (f) keine setup.conf, ACME aus der Umgebung -> Default-Domain greift.
+run_parser "" 0 "" ops@beispiel.de
+case "${OUT}" in D=coder.ghse-unterricht.de\|E=ops@beispiel.de\|*) pass "Parser: Default-Domain ohne conf (ACME aus Env)" ;; *) fail "Parser: Default fehlt (${OUT})" ;; esac
+
+# A4: im Setup darf kein Personen-Default für ACME_EMAIL mehr stehen.
+grep -qF 'hert@ghse.de' "${SETUP}" \
+  && fail "ACME-Default (hert@ghse.de) steht noch im Setup" \
+  || pass "kein ACME-Personen-Default im Setup"
 
 if [ "${FAIL}" = "0" ]; then
   echo "B2-003: ALLE PRUEFUNGEN BESTANDEN"
