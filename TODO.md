@@ -67,18 +67,22 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
 ## Entscheidungen (dich treffen)
 
 - [ ] **Produktionsfreigabe** aussprechen – bewusst nirgends dokumentiert
-- [ ] **Unterrichtsdaten:** Workspace-Homes als Verlust deklarieren **oder**
-      eigene Volume-Sicherung einrichten (vor Produktivbetrieb);
+- [x] **Unterrichtsdaten (2026-10-08):** Workspace-Homes werden über das
+      Proxmox-VM-Backup (vzdump 02:00) mitgesichert, separate
+      Volume-Sicherung entfällt, Restverlust ≤ 1 Schultag;
       [RESTORE.md](RESTORE.md) „Was gesichert wird"
-- [ ] **Offsite-Backup:** Ziel und Rhythmus festlegen (Anforderung an den
-      Betrieb, kein Automatismus im Repo); Option **C-5: Pull** – der
-      Betreiber-Rechner zieht per rsync/scp vom Server (Source-zu-Target,
-      kein Script/Key auf dem Server, kein Push-Recht nötig)
-- [ ] **Fester Update-Termin** für `setup-coder.sh`-Läufe (B5: ohne Termin
-      bleiben Updates liegen); [OPERATIONS §7](OPERATIONS.md)
-- [ ] **Alarmweg/Empfänger:** klären, sobald Alarme zugestellt werden sollen
-      (3 Regeln existieren, kein Kanal – D-Monitoring);
-      [SECURITY §9](SECURITY.md)
+- [x] **Offsite-Backup (2026-10-08):** vzdump/PBS-Ziel = anderer
+      Storage/Host als die VM-Disk, dazu monatlicher verschlüsselter
+      `rsync`-Pull `/opt/coder/backups` vom Betreiber-Rechner (C-5:
+      Source-zu-Target, kein Key/Script auf dem Server); Umsetzung bleibt
+      Aufgabe (Proxmox-Zugang, Kalendereintrag)
+- [x] **Update-Termin (2026-10-08):** monatlich, erster Samstag 09:00 –
+      Backup grün → `sudo ./setup-coder.sh` (RC 0) → §5-Checks; Engine-
+      Upgrade im selben Fenster, kritische CVEs ad hoc nach
+      Unterrichtsende; [OPERATIONS §7](OPERATIONS.md)
+- [x] **Alarmweg/Empfänger (2026-10-08):** Empfänger `hert@ghse.de`, Weg
+      Grafana-Mail über IServ-SMTP, Umsetzung sobald IServ produktiv ist;
+      [SECURITY §9](SECURITY.md), OPERATIONS §5
 - [ ] **Push-Entscheidung:** Repo hat kein Remote – sagen, ob und wohin
       gepusht wird
 

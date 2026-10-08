@@ -300,9 +300,16 @@ Generationen bleiben erhalten.
   Coder-Target down, Root-Partition <10 % frei, letztes Backup älter als
   25 Stunden. Sie sind einsehbar unter `http://127.0.0.1:9090/alerts`
   bzw. in Grafana.
-- Es gibt **keinen Benachrichtigungskanal** (kein Alertmanager, keine
-  Mail/Telegram/Webhook): die Regeln klingeln nirgends, sie zeigen nur
-  etwas, wer hinsieht. Metriken sind sichtbar, wer sie ansieht.
+- **Alarmweg (entschieden 2026-10-08): Empfänger ist `hert@ghse.de`,
+  Weg ist Grafana-Mail über den IServ-SMTP** – Umsetzung (Contact Point
+  in Grafana), sobald IServ in Produktion ist und SMTP-Zugang besteht;
+  kein Telegram/Webhook-Zeugs dazwischen. Zustellung IServ →
+  `hert@ghse.de` ist laut Betreiber bestätigt (2026-10-08). Bis dahin
+  weiterhin **ohne automatischen Kanal**: die Regeln klingeln nirgends,
+  wer hinsieht, sieht sie unter `http://127.0.0.1:9090/alerts`.
+  Manuelle Absicherung bis dahin: der tägliche Routine-Check der
+  Backup-Metrik oben fängt den kritischsten Fall (BackupStale) als
+  Mensch-Linie ab.
 
 ## 7. Wartung
 
@@ -325,10 +332,15 @@ pull` (max. 3 Versuche) → `docker compose up -d` → Abschlusscheck
 (alle Container laufen, Postgres healthy, `/healthz` 200 über Caddy-TLS).
 Bei rotem Abschlusscheck: Exit ≠ 0, Stack prüfen, ggf. zurückrollen.
 
-- **Fester Update-Termin (B5):** Update-Läufe brauchen einen festen Platz
-  im Wartungsplan (Empfehlung: monatlich im abgestimmten Fenster, dazu
-  bei kritischen CVEs). Ohne Termin bleiben Updates liegen; vor dem Lauf
-  `git log`, Versions-Pins und CHANGELOG prüfen.
+- **Update-Fenster (entschieden 2026-10-08):** manuelle Stack-Updates
+  laufen **monatlich am ersten Samstag um 09:00** – also Setup-Rerun
+  (Coder-/Prometheus-/Grafana-/node-exporter-Pins, `compose pull` für
+  Caddy-/Postgres-Patches, Stack-Neustart) und im selben Fenster das
+  Docker-Engine-Upgrade. Das betrifft NICHT die automatischen
+  Debian-Paketupdates (`unattended-upgrades`, Reboot 03:00), die bleiben
+  wie sie sind. Vorher `git log`, Versions-Pins und CHANGELOG prüfen;
+  Ablauf: Backup grün → `sudo ./setup-coder.sh` (RC 0) → Checks aus §5.
+  Kritische CVEs außerplanmäßig, nach Unterrichtsende.
 
 - **Kein Auto-Prune**: alte Images bleiben als Rollback-Basis erhalten,
   Aufräumen nur manuell (`sudo docker image prune`) und bewusst.

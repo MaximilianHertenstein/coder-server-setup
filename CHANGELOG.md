@@ -9,10 +9,52 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-08 · Basisstand dieses Eintrags: `86a8693` auf `main`.
+Stand: 2026-10-08 · Basisstand dieses Eintrags: `329adc0` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
+
+## 2026-10-08 (6) – Betreiberentscheidungen: Update-Fenster, Alarmweg, Unterrichtsdaten, Offsite-Transport
+
+**Basisstand:** `329adc0` (Review-Runde 5, siehe Eintrag (5)).
+
+- **Umfang:** reine Doku – vier offene Entscheidungen aus README „Offene
+  Punkte" wurden vom Betreiber getroffen und an ihren Documentationsorten
+  festgehalten; **kein Code geändert**.
+- **Entscheidungen:**
+  - **Update-Fenster:** manuelle Stack-Updates monatlich am ersten
+    Samstag 09:00 (Backup grün → `sudo ./setup-coder.sh` RC 0 → §5-Checks;
+    Docker-Engine-Upgrade im selben Fenster); kritische CVEs ad hoc nach
+    Unterrichtsende. `unattended-upgrades`/03:00-Reboot unverändert.
+    Neu als `D-Update-Fenster` in SECURITY §9, Details OPERATIONS §7.
+  - **Alarmweg:** Empfänger `hert@ghse.de`, Weg Grafana-Mail über
+    IServ-SMTP, Umsetzung sobald IServ in Produktion ist (Zustellung
+    IServ → `hert@ghse.de` vom Betreiber bestätigt); bis dahin fängt
+    der tägliche BackupStale-Routine-Check (OPERATIONS §5) den
+    kritischen Fall ab. SECURITY §9 D-Monitoring fortgeschrieben.
+  - **Unterrichtsdaten:** Workspace-Homes werden über das Proxmox-VM-
+    Backup (vzdump 02:00) mitgesichert, separate Volume-Sicherung
+    entfällt, Restverlust ≤ 1 Schultag; Voraussetzung: VM-Backup läuft,
+    beim Einrichten prüfen, dass die Homes in Docker-Volumes liegen
+    (RESTORE.md „Was gesichert wird").
+  - **Offsite-Transport:** vzdump/PBS-Ziel = anderer Storage/Host als die
+    VM-Disk, dazu monatlicher verschlüsselter `rsync`-Pull
+    `/opt/coder/backups` vom Betreiber-Rechner (Source-zu-Target, kein
+    Key/Script auf dem Server); kein Repo-Automatismus, D-Offsite
+    („kein zweiter Schul-Standort") bleibt unverändert (SECURITY §9,
+    RESTORE.md, README Status).
+- **Geänderte Dateien:** `OPERATIONS.md` (§7 Update-Fenster, §5
+  Alarmweg), `README.md` (Status/Offene Punkte/Verifikationsliste),
+  `RESTORE.md` (Workspace-Homes + Offsite), `SECURITY.md` (§9:
+  D-Monitoring/D-Offsite fortgeschrieben, `D-Update-Fenster` neu),
+  `TODO.md` (vier Kästchen abgehakt; Produktionsfreigabe und Push
+  bleiben offen).
+- **Teststand (lokal, 2026-10-08):** unverändert 10 Dateien, 329 PASS,
+  0 FAIL; `bash -n` und `shellcheck -S warning` ohne Befund (nach den
+  Doku-Änderungen erneut ausgeführt).
+- **Offene Punkte:** Umsetzung der vier Entscheidungen (Proxmox/PBS-
+  Zugang, IServ-SMTP, rsync-Kalendereintrag), DNS/Portlage,
+  Produktionsfreigabe, Push-Entscheidung.
 
 ## 2026-10-08 (5) – ACME-Pflicht ohne Personen-Default, Docker-Netz-`DENY` am SSH-Port, Workspace-Egress-Sperre, node-exporter-Mount-Ausnahme, Statuschecks/Erstkonto-Retry, Proxmox-Backup-Doku
 

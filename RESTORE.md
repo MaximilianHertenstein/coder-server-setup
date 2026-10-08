@@ -55,12 +55,19 @@ Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
     Limit (5/Woche) erreichen – Restores nicht probeweise wiederholen,
     vorher kurz `docker logs coder-caddy` prüfen.
   - Workspace-Homes/-Dateien stehen **nur** in den Workspace-Volumes der
-    Alt-Installation. Bei VM-/Plattenverlust sind sie weg, der Dump hilft
-    nicht. Vor Produktivbetrieb entscheiden (Betreiber): Unterrichtsdaten
-    als akzeptierter Verlust oder separate Sicherung der Workspace-Volumes
-    mit aufnehmen – siehe README „Offene Punkte".
-- Offsite-Kopie: NICHT eingerichtet (BLOCKER B-02/Offsite). Platten-/Host-
-  Verlust = DB + alle Backups weg, solange das gilt.
+    Alt-Installation. Bei VM-/Plattenverlust ohne VM-Backup sind sie weg,
+    der Dump hilft nicht. **Entschieden 2026-10-08:** die Homes werden über
+    das Proxmox-VM-Backup (vzdump 02:00, idealerweise auf anderem
+    Storage/Host) mitgesichert – separate Volume-Sicherung entfällt,
+    Restverlust ≤ 1 Schultag (Snapshot-Stand). Voraussetzung: VM-Backup
+    läuft tatsächlich; beim Einrichten einmal prüfen, dass die Homes
+    wirklich in Docker-Volumes liegen.
+- Offsite-Kopie: lokal nach wie vor **nur** auf demselben Host. **Weg
+  entschieden 2026-10-08:** (a) vzdump/PBS-Ziel auf anderem Storage/Host,
+  (b) monatlicher `rsync`-Pull `/opt/coder/backups` vom Betreiber-Rechner
+  auf externe Platte, verschlüsselt (Dumps enthalten Tokens/Nutzerdaten).
+  Bis zur Umsetzung gilt weiterhin: Platten-/Hostverlust = DB + alle
+  lokalen Backups weg.
 
 ## Voraussetzungen (Eingangs-Gates, harter Abbruch bei Fehlen)
 
