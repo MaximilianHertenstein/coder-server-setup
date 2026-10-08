@@ -408,9 +408,9 @@ plant den nächsten Stack-Lauf (Update) entsprechend.
 ### Reboot
 
 - Automatisch bei Kernel-Updates um 03:00 Uhr
-  (`/etc/apt/apt.conf.d/52-coder-reboot`) – **Fenster ist noch nicht mit dem
-  Schulbetrieb abgestimmt** (offener Punkt, README „Offene Punkte");
-  laufende Workspaces/Sessions werden
+  (`/etc/apt/apt.conf.d/52-coder-reboot`) – **abgestimmt 2026-10-08:
+  03:00 bleibt**, in Ferien- und Prüfungsphasen wird vorher manuell
+  abgestimmt (Reboot dann nur nach Plan); laufende Workspaces/Sessions werden
   abgerissen. Die Zeitzone steht auf `Europe/Berlin` (Setup setzt sie
   idempotent, C1), damit 03:00 wirklich 03:00 MEZ/MESZ sind.
 - **Wartungsplan/Nachtachse:** 01:00 Datenbank-Backup → 02:00 VM-Backup

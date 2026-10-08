@@ -37,10 +37,12 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
       die Workspace-Container-Labels prüfen, die `reset-coder.sh` braucht
       (**B-11** – ohne sie bricht der Reset hart ab, nichts wird gelöscht)
 - [ ] Template-Schritt 4 (Limit-Spielraum) je Template abhaken:
-      [templates/allowlist.md](templates/allowlist.md)
-- [ ] `FAIL2BAN_IGNORE_IP` in `setup.conf` mit den **echten Admin-Plätzen**
-      füllen (Default `127.0.0.1/8 ::1`, ausdrücklich **nicht** Schul-NAT);
-      [SECURITY §2](SECURITY.md)
+      **entschieden 2026-10-08: erst nach dem Vorführen der konkreten
+      Templates** – [templates/allowlist.md](templates/allowlist.md)
+- [x] `FAIL2BAN_IGNORE_IP`: **entschieden 2026-10-08: Default
+      `127.0.0.1/8 ::1` belassen** – Admin-IP nur ergänzen, wenn ein
+      öffentlicher Admin-Zugang existiert (Schul-NAT bleibt absichtlich
+      sperrbar); [SECURITY §2](SECURITY.md)
 
 ## Extern klären (braucht andere Leute)
 
@@ -56,8 +58,9 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
       **DNS-API-Token** anfragen (erst danach DNS-01 einbauen; bis dahin
       läuft On-Demand-TLS, Budget 50 Zertifikate/Woche, Warnung ab 20);
       [SECURITY §9 D-TLS](SECURITY.md)
-- [ ] **03:00-Rebootfenster** mit dem Schulbetrieb abstecken und im
-      Wartungsplan hinterlegen ([OPERATIONS §7](OPERATIONS.md), SECURITY §9)
+- [x] **03:00-Rebootfenster: entschieden 2026-10-08** – 03:00 bleibt als
+      Dauerregel, in Ferien-/Prüfungsphasen vorher manuell abstimmen
+      ([OPERATIONS §7](OPERATIONS.md), SECURITY §9 D-Reboot-Fenster)
 - [ ] **Proxmox-VM-Backup** (vzdump/PBS) um 02:00 einrichten – zwischen
       DB-Backup 01:00 und Reboot 03:00; `qemu-guest-agent` braucht den
       virtio-Channel in der VM (das Setup installiert ihn nur dann);
@@ -83,8 +86,10 @@ bei Abweichungen gilt die README. Nicht hier committen (persönliche Notiz).
 - [x] **Alarmweg/Empfänger (2026-10-08):** Empfänger `hert@ghse.de`, Weg
       Grafana-Mail über IServ-SMTP, Umsetzung sobald IServ produktiv ist;
       [SECURITY §9](SECURITY.md), OPERATIONS §5
-- [ ] **Push-Entscheidung:** Repo hat kein Remote – sagen, ob und wohin
-      gepusht wird
+- [ ] **Push-Entscheidung:** remote `origin` existiert
+      (`github.com/MaximilianHertenstein/coder-server-setup`, Branches
+      `main` + `ai/implementation-v*`) – sagen, wann der nächste Push auf
+      `main` laufen soll
 
 ## Offene Verifikationen (brauchen Aktionen, nicht nur dich)
 

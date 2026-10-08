@@ -9,10 +9,43 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-08 · Basisstand dieses Eintrags: `329adc0` auf `main`.
+Stand: 2026-10-08 · Basisstand dieses Eintrags: `207f12f` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
+
+## 2026-10-08 (7) – Rebootfenster bestätigt, fail2ban-Whitelist-Default, Template-Limits-Reihenfolge, Remote-Korrektur
+
+**Basisstand:** `207f12f` (Einträge (5)+(6)).
+
+- **Umfang:** reine Doku – drei weitere Betreiberentscheidungen plus eine
+  Korrektur einer falschen Repo-Aussage; **kein Code geändert**.
+- **Entscheidungen:**
+  - **03:00-Rebootfenster:** bleibt als Dauerregel, in Ferien- und
+    Prüfungsphasen vorher manuell abstimmen (OPERATIONS §7 „Reboot",
+    SECURITY §9 D-Reboot-Fenster; README-Offene-Punkte-Zeile entfernt,
+    TODO-Kasten abgehakt).
+  - **`FAIL2BAN_IGNORE_IP`:** Default `127.0.0.1/8 ::1` bleibt – Admin-IP
+    nur ergänzen, falls ein öffentlicher Admin-Zugang existiert; die
+    Schul-NAT bleibt absichtlich sperrbar (README-Zeile entfernt,
+    TODO-Kasten abgehakt).
+  - **Template-Limits (allowlist Schritt 4):** erst nach dem Vorführen
+    der konkreten Templates festlegen, keine pauschalen Werte vorher
+    (README/TODO-Zeile präzisiert, bleibt offen).
+- **Korrektur:** Das Repo **hat** ein Remote – `origin` =
+  `https://github.com/MaximilianHertenstein/coder-server-setup`
+  (Branches `main`, `ai/implementation-v*`). Die bisherige Aussage
+  „Repo hat kein Remote" (TODO) war falsch und ist korrigiert; offen ist
+  nur noch, wann `main` das nächste Mal gepusht wird. Zusätzlich wurde
+  die IServ-Zustellung an `hert@ghse.de` vom Betreiber bestätigt (Eintrag
+  (6), Alarmweg).
+- **Geänderte Dateien:** `OPERATIONS.md` (§7 Reboot), `SECURITY.md` (§9
+  D-Reboot-Fenster), `README.md` (Offene Punkte/Status), `TODO.md`
+  (drei Kästchen/Zeilen), diese Datei.
+- **Teststand (lokal, 2026-10-08):** unverändert 10 Dateien, 329 PASS,
+  0 FAIL; `bash -n` und `shellcheck -S warning` ohne Befund.
+- **Offene Punkte:** Push-Termin, DNS/Portlage, VM-Backup-Umsetzung,
+  IServ-SMTP, Produktionsfreigabe.
 
 ## 2026-10-08 (6) – Betreiberentscheidungen: Update-Fenster, Alarmweg, Unterrichtsdaten, Offsite-Transport
 
