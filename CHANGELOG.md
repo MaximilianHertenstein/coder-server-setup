@@ -9,10 +9,56 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-08 · Basisstand dieses Eintrags: `207f12f` auf `main`.
+Stand: 2026-10-08 · Basisstand dieses Eintrags: `f642359` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
+
+## 2026-10-08 (8) – Doku-Aufräum-Durchgang: Dopplungen raus, veraltete Fakten korrigiert, `show-sources.sh` entfernt
+
+**Basisstand:** `f642359` (Einträge (5)–(7)).
+
+- **Umfang:** reine Doku, **kein Code geändert**; Gesamtlauf −113 Zeilen
+  in vier Dateien.
+- **Gelöscht:**
+  - `show-sources.sh` (Chatbot-Lesehilfe; durch `nl -ba <Datei>` ersetzbar);
+    Zeile aus der README-Repo-Tabelle entfernt.
+  - README-Abschnitt „Detaildokumentation" (Dopplung der Doku-Landkarte).
+  - README-Abschnitt „Nur auf einer Test-VM … zu verifizieren" +
+    „Prüfstand der Liste": zwei parallel geführte Listen (Liste 1–11 und
+    Tabelle –12, inzwischen widersprüchlich bei #10) → **eine**
+    „Verifikation"-Tabelle mit Prüfpunkt + Status pro Zeile.
+  - README-Offene-Punkte-Zeile „Unterrichtsdaten" (war bereits entschieden,
+    kein offener Punkt mehr) sowie die Dopplungen Portlage/DNS/Zone
+    (drei Zeilen → eine mit Status) und die chronologischen Befund-Texte
+    (DNS-Befund `85.13.130.100` usw. stehen in diesem CHANGELOG, Eintrag
+    2026-10-03).
+  - TODO: Abnahme-Befehlsblock (identisch mit OPERATIONS §11 Schritt 5)
+    und die ausgeschriebenen Befund-Protokolle → Verweise; Entscheidungs-
+    Kästen auf je eine Zeile.
+- **Verkürzt (Dopplungen/Chronik):** README-Statuszeilen (Setup-Lauf,
+  Restore, Offsite, SSH, Offene Entscheidungen) auf den jeweils einen
+  Satz mit Verweis; „Zielbetrieb"-Absatz (Dopplung zu OPERATIONS §11);
+  Kurzfassung „Sicherheit" (SSH-Bullet von 11 auf5 Zeilen).
+- **Korrigierte veraltete Fakten:**
+  - README „Sicherheit/Updates": Reboot-Fenster „nicht abgestimmt" →
+    Dauerregel 03:00, abgestimmt 2026-10-08 (Ferien/Prüfungen manuell).
+  - README „Backup": „Offsite fehlt" → Weg entschieden2026-10-08;
+    „Restore-Test noch offen" → Pfad A2026-10-01 geprobt.
+  - README-Überschrift „Status (Stand 2026-10-01)" → 2026-10-08.
+  - TODO: „Nicht hier committen" gestrichen (Datei liegt im Repo).
+  - OPERATIONS §11 Netzwerkadmin Zeile 4: WebSocket-/Upgrade-Durchreichung
+    beim zentralen Proxy ergänzt (Standort vorher nur in der README und
+    TODO, jetzt am Anforderungsort).
+  - OPERATIONS §10: Verweis auf den neuen README-Abschnittsnamen.
+- **Geänderte Dateien:** `README.md`, `TODO.md`, `OPERATIONS.md`
+  (drei Zeilen), `show-sources.sh` (gelöscht), diese Datei.
+- **Teststand (lokal, 2026-10-08):** 10 Dateien, 329 PASS, 0 FAIL;
+  `bash -n` und `shellcheck -S warning` ohne Befund (nach den Änderungen
+  ausgeführt); `tests/t-b2-009` liest unverändert aus `RESTORE.md`
+  (unverändert).
+- **Offene Punkte:** unverändert (DNS/IServ, Proxmox-Backup, Push,
+  Produktionsfreigabe).
 
 ## 2026-10-08 (7) – Rebootfenster bestätigt, fail2ban-Whitelist-Default, Template-Limits-Reihenfolge, Remote-Korrektur
 

@@ -23,20 +23,20 @@ nicht im Repository.
 | Einen Fehler diagnostizieren und sicher beheben | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Was wurde wann geändert? | [CHANGELOG.md](CHANGELOG.md) |
 | Welches Workspace-Template darf was? | [templates/allowlist.md](templates/allowlist.md) |
-| Befunde, Pläne, Prüfprotokolle (Referenz) | [CHANGELOG.md](CHANGELOG.md) – Prüfstände und Dispositionen, Einträge 2026-09-29 (Setup-Fundliste A1–A13/B1–B10/C1–C5), 2026-10-03 (Review-Runde A1–A12/B1–B21) und 2026-10-08 (Review-Runde 5, Proxmox-Backup-/Risiko-Runde); Prozess-Archiv `ai-review/` am 2026-10-03 entfernt (in Git-Historie) |
+| Befunde, Prüfstände, Dispositionen (Archiv) | [CHANGELOG.md](CHANGELOG.md) |
 
-## Status (Stand 2026-10-01)
+## Status (Stand 2026-10-08)
 
 | Punkt | Stand |
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
 | Lokale Tests | Stand 2026-10-08: alle 10 Dateien in `tests/` grün (329 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
-| Vollständiger Setup-Lauf auf echtem System | **zwei volle Läufe RC 0 am 2026-10-03** und **zwei weitere volle Läufe RC 0 am 2026-10-08** auf dem Test-Host `2.29.11.30` (jeweils 0 `[FEHLER]`, 64 `[OK]`; 2026-10-08 live geprüft: ACME-Pflicht-Gate bricht vor jeder Änderung ab, ufw-`DENY 172.16.0.0/12` genau einmal über dem `allow` in beiden Läufen, `DOCKER-USER` je Netz genau ein `DROP`, Egress-Unit `enabled`+`active`, `qemu-guest-agent` installiert/aktiv, node-exporter ohne `run/credentials`-Serie; Warnung `/healthz` bekannt – externer DNS-Blocker; Details [CHANGELOG.md](CHANGELOG.md)) |
-| Restore-Test | **Pfad A komplett geprobt** 2026-10-01 auf dem Test-Host: Alt weg, Volumes frisch, Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot/Paketinstallation (braucht frische VM) und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md)) |
+| Vollständiger Setup-Lauf | **vier volle Läufe RC 0** (2026-10-03 und 2026-10-08 auf Test-Host `2.29.11.30`, jeweils 0 `[FEHLER]`, 64 `[OK]`; Live-Greps 2026-10-08 in der Verifikationstabelle unten, Punkt 12). Warnung `/healthz` bekannt = externer DNS-Blocker; Details [CHANGELOG.md](CHANGELOG.md) |
+| Restore-Test | **Pfad A komplett geprobt** 2026-10-01: Setup 58 s, Import 2,3 s, Datenprobe, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md), Verifikation #4) |
 | Monitoring | **abgenommen, Stand 2026-10-03 (Test-Host):** Prometheus `ready` 200, 3 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metrik (Backup) vorhanden |
-| Offsite-Backup | **weggezählt, Weg entschieden 2026-10-08** (D-Offsite bleibt: kein zweiter Schul-Standort): (a) vzdump/PBS-Ziel = anderer Storage/Host als die VM-Disk, (b) monatlicher `rsync`-Pull `/opt/coder/backups` vom Betreiber-Rechner auf externe Platte, **verschlüsselt** (Dumps enthalten Tokens/Nutzerdaten); kein Automatismus im Repo. Offen ist nur noch die Umsetzung (Proxmox-Zugang, Kalendereintrag) |
-| SSH-Härtung | **Entschieden (D-SSH, 2026-09-30; Regelwerk revidiert 2026-10-03):** Passwort-Login bleibt Standard; SSH laut Netzvorgabe nur aus dem Schulnetz, ufw `allow` für die erkannten sshd-Ports (kein `limit` – würde die geteilte Schul-NAT drosseln), fail2ban zusätzlich und ein eigenes SSH-Drop-In (`/etc/ssh/sshd_config.d/01-coder.conf`: Passwort-Login explizit an, `PermitRootLogin prohibit-password`; Details und Key-only-Umstellung in [SECURITY.md](SECURITY.md) §1) |
-| Offene Entscheidungen | **aufgeschoben:** DNS-01-Teil von D-TLS (Anbieter All-Inkl bekannt, Modul `caddy-dns/all-inkl`; Umstellung wartet auf Klärung Zone/Hosting und Zuständigkeit für DNS/Ports). Von den D-Entscheidungen sonst nichts offen. **Entschieden 2026-09-30:** D-Socket, D-Firewall, D-Reboot-Fenster, D-Offsite, D-SSH, D-Monitoring – alle mit Optionen in [SECURITY.md](SECURITY.md) §9; entschieden: B5 (Client-IPs im Audit bleiben aus); PostgreSQL-Migration erledigt (15 → 18 am 2026-09-30, Beleg in [CHANGELOG.md](CHANGELOG.md)). **Entschieden 2026-10-08:** Update-Fenster (monatlich, 1. Samstag 09:00), Alarmweg (`hert@ghse.de`, Grafana-Mail über IServ-SMTP), Unterrichtsdaten (via Proxmox-VM-Backup, Restverlust ≤ 1 Schultag), Offsite-Transport (PBS-/anderes Storage-Target + monatlicher verschlüsselter `rsync`-Pull) – Details OPERATIONS §7/§5, [RESTORE.md](RESTORE.md), [CHANGELOG.md](CHANGELOG.md) Einträge 2026-10-08 (6)+(7) |
+| Offsite-Backup | **entschieden 2026-10-08** (D-Offsite bleibt: kein zweiter Schul-Standort): (a) vzdump/PBS-Ziel = anderer Storage/Host als die VM-Disk, (b) monatlicher verschlüsselter `rsync`-Pull `/opt/coder/backups` vom Betreiber-Rechner. Offen: nur noch die Umsetzung (Verifikation #10) |
+| SSH-Härtung | **entschieden (D-SSH, 2026-09-30):** Passwort-Login bleibt Standard, Root nur per Schlüssel; ufw `allow` ohne `limit` (Schul-NAT), fail2ban zusätzlich, Drop-In `/etc/ssh/sshd_config.d/01-coder.conf` – Details [SECURITY.md](SECURITY.md) §1 |
+| Offene Entscheidungen | **nur DNS-01 aufgeschoben** (wartet Zone/Hosting, D-TLS). Übrige Entscheidungen erledigt: Übersicht [SECURITY.md](SECURITY.md) §9, Verlauf [CHANGELOG.md](CHANGELOG.md) |
 
 ### Offene Punkte – wer macht was (Stand 2026-10-08)
 
@@ -46,33 +46,22 @@ verlinkten Stelle):
 | Was | Wer | Wo |
 |---|---|---|
 | Pre-Flight-Checkliste durchlaufen, dann erster `setup-coder.sh`-Lauf am Schulserver | Betreiber | [OPERATIONS.md](OPERATIONS.md) §11 |
-| Portlage 80/443 klären: Der Zielserver ist ein **frisches Debian ohne Webserver** – IServ läuft auf einem anderen (zentralen) Server, mit dem das Schulnetz verwaltet wird, vermutlich samt Reverse-Proxy. Entscheidung: DNS zeigt direkt auf den Zielserver, oder der zentrale Proxy leitet 80/443 durch (ACME-Pfade + TLS-Passthrough/SNI). **Status 2026-10-03 (E-Mail):** Zugriff von außen auf Zielserver `10.16.103.13`, Apex `coder.ghse-unterricht.de` + optional Wildcard und WebSocket-Pflicht beim Netzwerkadmin (Sascha) angefragt – Antwort: Einrichtung erst, sobald **IServ in Produktion** geht, aktuell technisch nicht möglich. WebSocket braucht auf unserer Seite nichts (Caddy `reverse_proxy` reicht `Upgrade` standardmäßig durch); beim zentralen Proxy muss die Durchreichung später mit abgedeckt sein | Betreiber + Netzwerkadmin | §11 Pre-Flight Punkt 1, §11 „Netzwerkadmin" Zeile 4 |
-| DNS: A-Record, Wildcard, 80/443-Weiterleitung, Proxy-Durchreichung beantragen. **Befund 2026-10-03:** Zone bei Kasserver/All-Inkl (`ns5/ns6.kasserver.com`), `A` für die Apex zeigt aktuell `85.13.130.100` (alte Schulseite, MX ebenfalls Kasserver), `93.240.138.106` = Kreis-Proxy `pmg.em-ghse.logoip.de` (HTTP 451) – der Weg für 80/443 und wer Kasserver-Zugang/API-Token hat, ist mit dem Schulträger zu klären. **Status 2026-10-03:** in derselben Anfrage mit angeantwortet, s. Portlage-Zeile | Netzwerkadmin; der Betreiber fordert nur Zeilen 1–4 an | §11 „Netzwerkadmin" |
-| VM-Backup der Proxmox-VM selbst (vzdump/PBS) um 02:00 einrichten – Lücke zwischen DB-Backup 01:00 und Reboot 03:00; `qemu-guest-agent` braucht den virtio-Channel in der VM; **Ziel = anderer Storage/Host als die VM-Disk (entschieden 2026-10-08, trägt auch die Workspace-Homes und den Offsite-Teil)**; dabei einmal prüfen, dass die Workspace-Homes wirklich in Docker-Volumes liegen; einmal Restore-aus-VM-Backup testen | Betreiber (Proxmox/PBS-Zugang) | OPERATIONS §7 „Backup"/„Reboot", [SECURITY.md](SECURITY.md) §9, [RESTORE.md](RESTORE.md) |
-| Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT des Workspace-Agenten, A9); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (B-11: Bei Nicht-Compose-Containern bricht `reset-coder.sh` hart ab, es wird nichts gelöscht) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
-| Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken – **entschieden 2026-10-08: erst nach dem Vorführen der konkreten Templates** | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
-| Zone/Hosting klären **und beim Netzwerkadmin das DNS-API-Token für die Zone erfragen** – erst danach DNS-01-Modul einbauen; bis dahin läuft On-Demand-TLS (Let's-Encrypt-Limit 50 Zertifikate/Woche pro Domain, Warnung ab 20) | Domainverwalter/Hosting, **nicht** der Betreiber (Token-Anfrage: Betreiber) | OPERATIONS §11 Zeile 6, [SECURITY.md](SECURITY.md) §9 D-TLS |
+| DNS/Portlage klären: lokal Pre-Flight 1 (`ss -ltnp`), extern Netzwerkadmin-Zeilen 1–4 (A, Wildcard, 80/443, ggf. Proxy-Durchreichung + TLS-Passthrough). **Status der Anfrage 2026-10-03:** Einrichtung erst, sobald **IServ in Produktion** ist. Zone/Hosting + DNS-API-Token separat für DNS-01 (bis dahin On-Demand-TLS, Budget 50 Zertifikate/Woche) | Netzwerkadmin/Domainverwalter; Betreiber fordert nur Zeilen 1–4 an | [OPERATIONS.md](OPERATIONS.md) §11, [SECURITY.md](SECURITY.md) §9 D-TLS |
+| VM-Backup der Proxmox-VM selbst (vzdump/PBS) um 02:00 einrichten – Lücke zwischen DB-Backup 01:00 und Reboot 03:00; `qemu-guest-agent` braucht den virtio-Channel in der VM; Ziel = anderer Storage/Host (entschieden 2026-10-08, trägt auch die Workspace-Homes und den Offsite-Teil); dabei einmal prüfen, dass die Workspace-Homes wirklich in Docker-Volumes liegen; einmal Restore-aus-VM-Backup testen | Betreiber (Proxmox/PBS-Zugang) | OPERATIONS §7 „Backup"/„Reboot", [SECURITY.md](SECURITY.md) §9, [RESTORE.md](RESTORE.md) |
+| Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT, A9); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (B-11: Bei Nicht-Compose-Containern bricht `reset-coder.sh` hart ab, es wird nichts gelöscht) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken – entschieden 2026-10-08: erst nach dem Vorführen der konkreten Templates | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
 | Produktionsfreigabe aussprechen – bewusst hier nicht dokumentiert | Betreiber | diese README |
-| Unterrichtsdaten | **entschieden 2026-10-08:** Workspace-Homes werden über das Proxmox-VM-Backup (vzdump 02:00) mitgesichert, separate Volume-Sicherung entfällt; Restverlust ≤ 1 Schultag (Snapshot-Stand) | Betreiber | [RESTORE.md](RESTORE.md) „Was gesichert wird", OPERATIONS §7 |
-| Alarmweg/Empfänger | **entschieden 2026-10-08:** Empfänger `hert@ghse.de`, Weg Grafana-Mail über IServ-SMTP; **offen bleibt nur noch die Umsetzung** (warten auf IServ-Produktivschaltung + SMTP-Zugang); bis dahin fängt der tägliche BackupStale-Routine-Check in OPERATIONS §5 den kritischen Fall ab | Betreiber | [SECURITY.md](SECURITY.md) §9 D-Monitoring, OPERATIONS §5 |
-| Offene Verifikation: RTO inkl. VM-Boot, `/healthz` + Wildcard, volle Platte, 03:00-Fire | wartet auf frische VM / DNS / Kernel-Update | Prüfstand-Tabelle unten |
+| Alarmweg umsetzen: Grafana-Contact-Point an `hert@ghse.de` über IServ-SMTP, sobald IServ produktiv ist; bis dahin fängt der tägliche BackupStale-Routine-Check (OPERATIONS §5) den kritischen Fall ab | Betreiber | [SECURITY.md](SECURITY.md) §9 D-Monitoring, OPERATIONS §5 |
+| Offene Verifikation: RTO inkl. VM-Boot, `/healthz` + Wildcard, volle Platte, 03:00-Fire, rsync-Pull proben | wartet auf frische VM / DNS / Kernel-Update | Verifikationstabelle unten |
 
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
 **Zielbetrieb:** ein Schulserver (frisches Debian 13), per SSH nur aus dem
-Schulnetz erreichbar. IServ läuft **nicht** auf diesem Server, sondern auf
-einem anderen zentralen Netzwerkserver, mit dem das Schulnetz verwaltet
-wird – vermutlich ist dort auch der Reverse-Proxy. Offen ist, wie 80/443
-zum Zielserver kommen: DNS direkt auf den Zielserver, oder Durchreichung
-bzw. Proxy-Regel am zentralen Server. Bis das steht, kann das Setup dort
-keine Zertifikate ausstellen; die TLS-Umstellung auf DNS-01 (D-TLS)
-wartet zusätzlich auf Klärung von Zone/Hosting. Der Betreiber hat
-**keinen** DNS-Zugang – Anforderungen laufen über den
-Netzwerkadmin ([OPERATIONS.md](OPERATIONS.md) §11).
-Der aktuelle Test-Host `2.29.11.30` ist eine
-Hetzner-VM, die irgendwann abgeschaltet wird. **Wer was macht** (DNS +
-Wildcard, Portweiterleitung, Abnahme): [OPERATIONS.md](OPERATIONS.md)
-Abschnitt 11.
+Schulnetz erreichbar. IServ und der zentrale Reverse-Proxy laufen auf einem
+anderen Server – wie 80/443 zum Zielserver kommen und wer was anfordert,
+steht komplett in [OPERATIONS.md](OPERATIONS.md) §11. Der Betreiber hat
+keinen DNS-Zugang. Der aktuelle Test-Host `2.29.11.30` ist eine
+Hetzner-VM, die irgendwann abgeschaltet wird.
 
 ## Was im Repo liegt
 
@@ -80,7 +69,6 @@ Abschnitt 11.
 |---|---|
 | `setup-coder.sh` | Das Setup-Skript (8 Schritte, `set -euo pipefail`, mehrfach ausführbar) |
 | `scripts/` | Wartungsskripte als echte Dateien (`backup.sh`, `reset-coder.sh`, `workspace-egress.sh`); das Setup schreibt sie nach `/opt/coder/` (`write_managed`: `bash -n` + atomar) |
-| `show-sources.sh` | Gibt Setup, Härtung und Wartungsskripte mit Dateimarker und Zeilennummern aus – z. B. um die Quellen einem Chatbot zu geben (Teilmengen als Argumente) |
 | `setup.conf.example` | Vorlage für `setup.conf` (Domain, ACME-Adresse **Pflicht**, ACME-CA, fail2ban-Ignore-IP); `setup.conf` selbst ist gitignored |
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
@@ -243,16 +231,11 @@ November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/suppo
 
 ## Sicherheit und Hardening (Kurzfassung)
 
-- **SSH**: Auf dem Schulserver ist Port 22 laut Netzvorgabe nur aus dem
-  Schulnetz erreichbar. Passwort-Login bleibt bewusst aktiv (D-SSH,
-  2026-09-30); ufw stellt `allow` für die erkannten sshd-Ports (Revision
-  2026-10-03: kein `limit`, weil es die geteilte Schul-NAT aller Nutzer
-  drosseln würde) und fail2ban begrenzt Fehlversuche (5 Fehlversuche in
-  10 min → 1 h Sperre, `ignoreip` enthält nur Admin-Plätze – die geteilte
-  Schul-NAT wird bewusst NICHT eingetragen, Rateversuche aus dem Schulnetz
-  sollen sperren). Das Setup schreibt das Drop-In
-  `/etc/ssh/sshd_config.d/01-coder.conf` (Passwort-Login explizit an,
-  `sshd -T`-Validierung, Reload nur bei Änderung); Key-only/Umbau in
+- **SSH**: Port 22 laut Netzvorgabe nur aus dem Schulnetz; Passwort-Login
+  bleibt bewusst an, Root nur per Schlüssel (D-SSH). ufw `allow` ohne
+  `limit` (würde die geteilte Schul-NAT drosseln), fail2ban sperrt nach
+  5 Fehlversuchen/10 min für 1 h (`ignoreip` ohne Schul-NAT). Drop-In
+  `/etc/ssh/sshd_config.d/01-coder.conf`; Key-only-Umbau in
   [SECURITY.md](SECURITY.md) §1.
 - **Firewall**: ufw mit `default deny incoming`; 80/443 (tcp+udp) frei,
   keine 3001-Regel mehr (Grafana nur an `127.0.0.1`, Zugang per
@@ -275,10 +258,10 @@ November 2030, siehe [PostgreSQL-Versionierung](https://www.postgresql.org/suppo
   Angreifer das Zertifikat weiterhin auslösen, das Let's-Encrypt-
   Wochenbudget (50/Domain) bleibt mit allen Schuldiensten geteilt
   (Grenzen und Folgen: [SECURITY.md](SECURITY.md)).
-- **Updates**: Debian-Paketupdates per unattended-upgrades inkl. automatischem
-  Reboot um 03:00 Uhr (Betriebsfenster ist **nicht** mit dem Schulbetrieb
-  abgestimmt). Docker Engine wird manuell aktualisiert, um ungeplante
-  Workspace-Unterbrechungen zu vermeiden.
+- **Updates**: Debian-Paketupdates per unattended-upgrades inkl.
+  automatischem Reboot um 03:00 (Dauerregel, abgestimmt 2026-10-08; in
+  Ferien-/Prüfungsphasen vorher abstimmen). Docker-Engine- und
+  Stack-Updates manuell im monatlichen Update-Fenster (OPERATIONS §7).
 
 Grenzen, Nachweisbefehle und offene Entscheidungen: [SECURITY.md](SECURITY.md).
 
@@ -287,13 +270,14 @@ Grenzen, Nachweisbefehle und offene Entscheidungen: [SECURITY.md](SECURITY.md).
 - Täglich 01:00 Uhr: `pg_dump` nach `/opt/coder/backups/coder_<Zeitstempel>.sql.gz`,
   verifiziert (`gzip -t` + SQL-Header), 600/root, 700 für das Verzeichnis,
   Rotation: neueste 14 Dumps.
-- **Gesichert ist nur die Datenbank.** Nicht gesichert: `.env` (alle
-  Passwörter), Compose-/Caddy-/Prometheus-Config, Zertifikate,
-  Grafana-Dashboards, Prometheus-Historie, Workspace-Dateien.
-- **Offsite fehlt** – es gibt aktuell nur diese eine Kopie auf derselben Platte.
-- Restore-Ablauf, Voraussetzungen (Restore-Sonde!), Verifikation und
-  Fehlerfälle: [RESTORE.md](RESTORE.md). Der Restore-Test ist noch offen und
-  gehört auf eine isolierte Test-VM, nie auf Produktion.
+- **Gesichert ist nur die Datenbank** (bis das Proxmox-VM-Backup läuft):
+  nicht gesichert sind `.env`, Compose-/Caddy-/Prometheus-Config,
+  Zertifikate, Grafana-Dashboards, Prometheus-Historie, Workspace-Dateien.
+- **Offsite-Transport entschieden 2026-10-08:** vzdump/PBS auf anderem
+  Storage/Host + monatlicher verschlüsselter `rsync`-Pull; Umsetzung offen.
+- Restore-Pfad A ist am 2026-10-01 auf einer Test-VM geprobt; offen bleibt
+  RTO inkl. VM-Boot. Ablauf und Verifikation: [RESTORE.md](RESTORE.md) –
+  Restore niemals zum ersten Mal auf Produktion.
 
 ## Testen
 
@@ -309,7 +293,7 @@ Stand 2026-10-08: alle 10 Testskripte Exit 0 (329 `PASS`, 0 `FAIL`);
 `bash -n` ohne Befund; `shellcheck -S warning`
 ohne Befund. Vollständige Läufe (Erstlauf, Re-Run, Reboot, Reset, Restore,
 Passwortrotation) liefen separat auf dem Test-Host `2.29.11.30` – siehe
-Prüfstand-Liste unten.
+Verifikationstabelle unten.
 
 Was die Tests **belegen**: das Verhalten der Wartungsskripte (echte Dateien
 unter `scripts/`: Backup-Headercheck, Reset-Precheck inkl. Argument-Ablehnung
@@ -368,65 +352,22 @@ nicht weiter auf dem Produktionssystem herumprobieren, erst diagnostizieren.
 Kein Fehlerbild wird durch Abschalten von Prüfungen, Zurücksetzen von
 Firewall-Regeln oder übersprungener Verifikation „gelöst".
 
-## Nur auf einer Test-VM bzw. in Produktion zu verifizieren
+## Verifikation (Test-VM bzw. Produktion)
 
-Folgende Punkte sind im Repository **nicht** belegt und müssen vor
-Freigabe auf einer isolierten Test-VM (Restore, Reset, Reboot) bzw. am
-Produktivsystem geprüft werden:
+Was das Repo nicht belegt und vor Freigabe zu prüfen ist – Nachweise und
+Details stehen im [CHANGELOG.md](CHANGELOG.md):
 
-1. Vollständiger Lauf von `setup-coder.sh` auf frischem Debian 13
-   (inkl. Paketinstallation, Image-Pull, Let's-Encrypt-Erstausstellung).
-2. Re-Run auf laufendem Stack (Idempotenz); Hand-Änderungen an
-   generierten Dateien werden ohne Warnung deterministisch überschrieben
-   (`write_managed`-Test belegt das
-   Schreibverhalten).
-3. Echtes Backup inkl. `pg_dump`, Cron-Lauf um 01:00, logrotate,
-   Verhalten bei vollem Speicher.
-4. Restore nach [RESTORE.md](RESTORE.md) inkl. Datenprobe und RTO-Messung
-   (Tabelle dort ist `_offen_`).
-5. Reboot inkl. Wiederanlauf der Container (`docker ps`, `/healthz`) und
-   unattended-upgrades-Fenster 03:00.
-6. ufw-/fail2ban-Verhalten im Echtbetrieb, Re-Run mit vorhandener
-   restriktiver SSH-Regel (B2-004-Pfad B): Regel bleibt unangetastet, es
-   wird keine weltweite `limit`-Regel daneben gesetzt.
-7. `reset-coder.sh` mit echten Containern/Volumes und fremden
-   Workspace-Containern im Inventar.
-8. Optionale SSH-Nachhärtung (Drop-In-Snippet aus [SECURITY.md](SECURITY.md) §1)
-   – nicht Teil der Standard-Abnahme (D-SSH); nur mit getestetem Key-Login
-   und Zweit-Zugang.
-9. Externe Sicht: Ports 22/80/443 offen, 9090/9100/3001 von außen
-   geschlossen; Wildcard-DNS und Workspace-App-Subdomain im Test.
-10. Offsite-Backup-Transport: einmal proben, wie der monatliche
-    `rsync`-Pull (entschieden 2026-10-08) mit Verschlüsselung und ohne
-    Zugriff von der VM auf die Zielkopie funktioniert.
-11. Erstanlage des Owner-Kontos über `CODER_FIRST_USER_*` beim ersten Lauf
-    (B1): muss das Konto entstehen, ohne dass jemand die Anmeldeseite
-    erreicht – und der Re-Run (Konto existiert) darf scheitern, ohne
-    abzubrechen.
-
-### Prüfstand der Liste (Test-Host `2.29.11.30`, Stand 2026-10-08)
-
-| # | Status |
-|---|---|
-| 1 | erledigt: Original-Lauf auf frischer Debian-13-VM 2026-09-28/29; zusätzlich Neuaufbau nach `reset-coder.sh` heute (RC 0) |
-| 2 | erledigt 2026-09-30 19:05: Re-Run RC 0 in 48 s; Hand-Patch an der Compose-Datei wurde als Drift erkannt und deterministisch regeneriert, Stack nicht neu erstellt; erneut bestätigt 2026-10-01 nach der Skript-Extraktion: zwei Re-Runs RC 0 (56 s / 47 s), mtimes der sechs Wartungsskripte unverändert, 0 Drift |
-| 3 | erledigt: Cron-Läufe um 01:00 nachweisbar (Dumps 29. + 30.09., `gzip -t` grün), 14 Dumps in der Rotation, logrotate aktiv; Verhalten bei vollem Speicher bleibt offen – ein echter Plattenausfall ist nur mit Rettungskonsole sicher zurückspielbar |
-| 4 | fast erledigt: Dump-Import isoliert 3,0 s, Major-Wechsel 15 → 18 live (2,3 s), **Pfad A am 2026-10-01 komplett** (Setup 58 s, Import 2,3 s, Datenprobe 1, `owner` zurück; 1 min 50 s ohne VM-Boot); offen bleibt nur RTO inkl. VM-Boot/Paketinstallation und `/healthz` unter echtem DNS |
-| 5 | erledigt 2026-09-30 19:07: Reboot, alle 6 Container + Postgres healthy in 51 s, API grün; die `/healthz`-Zeile bleibt hier rot, weil die Domain nicht auf den Host zeigt (kein Zertifikat, externer Blocker); Reboot-Fenster konfiguriert geprüft (`52-coder-reboot`: `Automatic-Reboot true`, `03:00`) – tatsächlicher Fire noch nicht beobachtet; Wiederanlauf nach Reboot per `docker ps` und `/healthz` prüfen |
-| 6 | erledigt: Verfahren `allow` – weltweite `allow 22/tcp`, eigene `limit`-Regel (v4/v6) wird entfernt, Quellregeln bleiben unangetastet, fail2ban aktiv; Altbestand der Grafana-3001-Quellregeln wird innerhalb einer harten Allowlist entfernt |
-| 7 | erledigt, inklusive Rest: `reset-coder.sh --force` mit echten Volumes – DB/Grafana/Prometheus-Volumes und `.env` gelöscht, Zertifikate und Dumps erhalten; der Pfad „fremder Container“ wurde mit einem bewusst fremden Container geprüft (als `fremd: fremd-inventartest` gemeldet, danach selbst entfernt), Neuaufbau mit Owner-Konto grün. Nicht-Compose-Container führen zum harten Abbruch vor jeder Löschung (`--force` hebt das Gate nicht auf) |
-| 8 | als Skript entfällt (D-SSH); optional manuell: SSH-Härtungs-Drop-In aus [SECURITY.md](SECURITY.md) §1, nur mit getestetem Key-Login und Zweit-Zugang |
-| 9 | teilweise: von außen 22/80/443 offen, 9090/9100/3001/3000/8080 geschlossen; Wildcard-DNS und Workspace-Subdomain nicht prüfbar, solange die Domain nicht auf den Server zeigt |
-| 10 | entfällt (D-Offsite) |
-| 11 | erledigt: Erstanlage über `CODER_FIRST_USER_EMAIL`/`USERNAME` + Passwort-Prompt beim Lauf (RC 0, `[OK] Erstkonto (Owner) angelegt: owner`); Re-Run mit existierendem Konto RC 0 ohne Abbruch (Block läuft nur bei `HUMAN_USERS=0`) |
-| 12 | erledigt 2026-10-08 (Läufe 5 + 6, RC 0, je 0 `[FEHLER]`/64 `[OK]`): ACME-Pflicht-Gate ohne `setup.conf` bricht vor jeder Änderung mit Klartext ab (RC 1); ufw `22/tcp DENY 172.16.0.0/12` genau einmal und über dem `allow` – nach Lauf 6 unverändert (kein Duplikat); `DOCKER-USER` je Netz genau ein `DROP` (`10.0.0.0/8`, `192.168.0.0/16`), nach Lauf 6 unverändert; Egress-Unit `enabled` + `active`; `qemu-guest-agent` installiert und aktiv (Channel `org.qemu.guest_agent.0` vorhanden); node-exporter: 0 Serien `run/credentials` (vorher 27), `node_filesystem_avail_bytes` nur noch Host-Mounts (`/`, `/boot/efi`, `/run`, `/run/lock`, `/run/user/0`, `/tmp` – Wurzelpartition für `RootPartitionFillingUp` bleibt); `sshd -T`: `passwordauthentication yes`, `permitrootlogin without-password`; 3001 an 127.0.0.1, 3 Alarmregeln, Prometheus `ready` 200 |
-
-## Detaildokumentation
-
-- [OPERATIONS.md](OPERATIONS.md) – Betrieb, Checks, Wartung, Logs, Backup
-- [RESTORE.md](RESTORE.md) – Wiederherstellung mit Datenprobe und RTO-Tabelle
-- [SECURITY.md](SECURITY.md) – Härtung, SSH, Secrets, TLS/SNI, Firewall, Grenzen
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) – Fehlerbilder, Diagnose, Behebung
-- [CHANGELOG.md](CHANGELOG.md) – tatsächliche Änderungsstände, keine Releases
-- [templates/allowlist.md](templates/allowlist.md) – was Workspace-Templates
-  dürfen
+| # | Prüfpunkt | Status (Test-Host `2.29.11.30`, Stand 2026-10-08) |
+|---|---|---|
+| 1 | Voll-Lauf auf frischem Debian 13 (Pakete, Images, Erstausstellung) | erledigt 2026-09-29 (RC 0) + Neuaufbau nach `reset-coder.sh` 2026-10-08; Let's-Encrypt-Erstausstellung wartet auf DNS (#9) |
+| 2 | Re-Run/Idempotenz, Drift-Erkennung | erledigt mehrfach 2026-09-30/10-01 (RC 0, Hand-Patch deterministisch regeneriert, 0 Drift) |
+| 3 | Echtes Backup (Cron 01:00, logrotate) | erledigt (Dumps, `gzip -t`, 14er-Rotation); **offen:** volle Platte |
+| 4 | Restore nach [RESTORE.md](RESTORE.md) inkl. Datenprobe/RTO | Pfad A komplett 2026-10-01 (1 min 50 s ohne VM-Boot); **offen:** RTO inkl. VM-Boot + `/healthz` unter echtem DNS |
+| 5 | Reboot/Wiederanlauf, 03:00-Fenster | erledigt 2026-09-30 (6 Container in 51 s, Fenster konfiguriert); **offen:** tatsächlicher Fire um 03:00 |
+| 6 | ufw/fail2ban im Echtbetrieb, Re-Run bei vorhandener SSH-Restriktion | erledigt (allow-Pfad, Quellregeln unangetastet, alte `limit`-Regel entfernt, fail2ban aktiv) |
+| 7 | `reset-coder.sh` mit echten/fremden Containern | erledigt (`--force` löscht nur eigene; Nicht-Compose-Container = harter Abbruch) |
+| 8 | Optionale SSH-Nachhärtung (D-SSH) | entfällt als Skript; manuell nur mit Key-Login + Zweit-Zugang ([SECURITY.md](SECURITY.md) §1) |
+| 9 | Externe Sicht: Ports offen/geschlossen, Wildcard-DNS | teilweise (Ports geprüft; Wildcard/Workspace-Subdomain wartet auf DNS) |
+| 10 | Offsite-Transport: monatlicher verschlüsselter `rsync`-Pull | **offen** (entschieden 2026-10-08) |
+| 11 | Erstkonto `CODER_FIRST_USER_*` + Re-Run | erledigt (Owner angelegt, Re-Run ohne Abbruch) |
+| 12 | Review-Runde-5-Live-Greps (ACME-Gate, ufw-DENY-Reihenfolge, `DOCKER-USER`, Egress-Unit, qemu-Guest-Agent, node-exporter-Mounts, `sshd -T`) | erledigt 2026-10-08 (Läufe 5+6 RC 0, je 0 `[FEHLER]`/64 `[OK]`; Details CHANGELOG, Eintrag 2026-10-08) |

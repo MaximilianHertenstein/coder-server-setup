@@ -540,13 +540,13 @@ for f in tests/*.sh; do bash "$f"; done
 Stand 2026-10-08: alle 10 Dateien in `tests/` Exit 0, 329 `PASS`,
 0 `FAIL`; ShellCheck `-S warning` und `bash -n`
 ohne Befund. Vollständige Setup-/VM-Läufe sind auf dem Test-Host
-dokumentiert (README „Prüfstand der Liste"), nicht lokal.
+dokumentiert (README „Verifikation"), nicht lokal.
 
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder
 Root noch Docker und berühren keine Produktion. Sie belegen das Verhalten
 einzelner Codestellen, **nicht** den Gesamtlauf. VM-Pflichtige Prüfungen
-stehen in [README.md](README.md), Abschnitt „Nur auf einer Test-VM bzw. in
-Produktion zu verifizieren".
+stehen in [README.md](README.md), Abschnitt „Verifikation (Test-VM bzw.
+Produktion)".
 
 ## 11. Inbetriebnahme am Zielserver: wer macht was
 
@@ -617,7 +617,7 @@ nach dem, was das Skript **nicht** selbst prüft:
 | 1 | A-Record `coder.ghse-unterricht.de` → öffentliche IP des Ziel-**Servers** | sonst keine Weboberfläche |
 | 2 | A-Record Wildcard `*.coder.ghse-unterricht.de` → gleiche IP | **Pflicht**: Coder vergibt Workspace-URLs im Format `<port>--<agent>--<workspace>--<user>.coder.ghse-unterricht.de`; ohne Wildcard laufen nur die Oberfläche und keine Workspace-App/Port-Forwarding |
 | 3 | Firewall/Router: **80/tcp und 443/tcp 1:1 an den Server** weiterleiten (443/udp optional für HTTP/3) | ACME braucht 80 (http-01) und 443 (tls-alpn-01); ohne beides kein Zertifikat |
-| 4 | Falls der zentrale Proxy (vermutlich am IServ-Server) vor dem Zielserver bleibt: `/.well-known/acme-challenge/` durchreichen **und** HTTPS als TLS-Passthrough (SNI) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft |
+| 4 | Falls der zentrale Proxy (vermutlich am IServ-Server) vor dem Zielserver bleibt: `/.well-known/acme-challenge/` durchreichen, HTTPS als TLS-Passthrough (SNI) **und WebSocket-Upgrade** durchreichen (Workspace-Verbindungen laufen über WSS; Caddy selbst leitet `Upgrade` standardmäßig durch) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft |
 | 5 | SSH/22 bleibt ausschließlich aus dem Schulnetz erreichbar; keine öffentliche Weiterleitung | Passwortzugang ist für die erste Inbetriebnahme vorgesehen; ufw + fail2ban begrenzen Fehlversuche zusätzlich |
 | 6 | Nur wenn Zeile 3 dauerhaft nicht geht: KAS-Zugang für DNS-01 (Modul `caddy-dns/all-inkl`) selbst beschaffen bzw. herausgeben | Der Betreiber hat **keinen** DNS-Zugang – Zugangsdaten und Umstellung sind Aufgabe des Domainverwalters; der Betreiber fordert nur an, was in den Zeilen 1–4 steht |
 
