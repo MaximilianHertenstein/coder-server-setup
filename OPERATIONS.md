@@ -587,12 +587,17 @@ nach dem, was das Skript **nicht** selbst prüft:
    80/443 am Zielserver. Eigenes Docker-Postgres (5432) ist kein Konflikt –
    der Stack veröffentlicht diesen Port nicht.
 2. **sshd muss auf Port 22 laufen** – sonst bricht das Skript eigens vor
-   der ersten Firewall-Änderung ab (eigene Regel, `sshd -T | grep -i ^port`).
-3. **Internetabbindung** (Images + Zertifikate):
+   der ersten Firewall-Änderung ab (eigene Regel). Prüfen mit
+   `sudo sshd -T | grep -i ^port` – ohne sudo ist `/usr/sbin` meist nicht
+   im PATH (Schulserver-Log 2026-10-14: „sshd: Kommando nicht gefunden").
+3. **Internetabbindung** (Images + Zertifikate) – Statuscode per GET
+   prüfen, `curl -sI` (HEAD) liefert an beiden Endpunkten 405 und sieht
+   nach Fehler aus (Schulserver-Log 2026-10-14, am Testhost 2026-10-14
+   nachgestellt):
 
    ```bash
-   curl -sI 'https://auth.docker.io/token?service=registry.docker.io' | head -1   # Docker Hub
-   curl -sI https://ghcr.io/v2/ | head -1                                          # Coder-Image
+   curl -s -o /dev/null -w '%{http_code}\n' 'https://auth.docker.io/token?service=registry.docker.io'  # muss 200 sein
+   curl -s -o /dev/null -w '%{http_code}\n' https://ghcr.io/v2/                                         # muss 401 sein (unauthorized = erreichbar)
    ```
 
 4. **Ressourcen:** `df -h /` (Images, laufende Dumps), `free -h` (Stack +

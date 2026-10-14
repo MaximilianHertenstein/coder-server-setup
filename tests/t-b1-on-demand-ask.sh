@@ -45,8 +45,11 @@ awk -v s="${L_START}" -v e="${L_END}" 'NR>s && NR<e' "${SETUP}" > "${WORK}/caddy
   echo 'DOMAIN_CODER="coder.test"'
   echo 'ACME_EMAIL="admin@example.test"'
   echo 'ACME_CA="${ACME_CA:-}"'
-  # Die beiden Variablen exakt wie in setup-coder.sh (inkl. Reihenfolge).
+  # Definitionszeilen exakt wie in setup-coder.sh (inkl. Reihenfolge);
+  # CADDY_ACME_LINE liefert die acme_ca-/email-Zeilen des globalen Blocks
+  # (caddy-fmt-Fix, Tabs + keine Leerzeile bei leerem ACME_CA).
   grep -E '^DOMAIN_CODER_(ESC|REGEX)=' "${SETUP}" || true
+  grep -E '^CADDY_ACME_LINE=' "${SETUP}" || true
   echo 'cat <<EOF'
   cat "${WORK}/caddybody"
   echo 'EOF'

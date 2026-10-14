@@ -125,6 +125,14 @@ fi
 if [ -z "${ACME_EMAIL:-}" ]; then
   echo "Fehler: ACME_EMAIL ist nicht gesetzt (Kontakt-Adresse für Let's Encrypt, kein Default)." >&2
   echo "In setup.conf oder als Umgebungsvariable eintragen, dann Setup erneut." >&2
+  # Beobachtet am Zielserver 2026-10-14: statt setup.conf wurde mehrfach das
+  # Muster setup.conf.example editiert – das Setup liest diese Datei nicht.
+  # Der Hinweis nennt die fehlende Datei konkret, bevor der nächste Lauf
+  # wieder an derselben Stelle abbricht.
+  if [ ! -f "${SETUP_DIR}/setup.conf" ]; then
+    echo "Hinweis: ${SETUP_DIR}/setup.conf existiert nicht – das Muster setup.conf.example wird NICHT gelesen:" >&2
+    echo "  cp setup.conf.example setup.conf   # dann ACME_EMAIL eintragen" >&2
+  fi
   exit 1
 fi
 # Leere Zeichen und mehr als ein "@" würden eine ungültige ACME-Account-
@@ -818,48 +826,58 @@ DOMAIN_CODER_REGEX="^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*(--[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*
 # Block, nicht in "issuer acme { }": dort ist "acme_ca" kein gültiges
 # Property (mit caddy:2.11 nachgeprüft: "unrecognized ACME issuer property"),
 # während die globale Option in beide Issuer (Apex + On-Demand) durchschlägt.
-CADDY_ACME_CA=""
-if [ -n "${ACME_CA:-}" ]; then
-  CADDY_ACME_CA="    acme_ca ${ACME_CA}"
-fi
+# caddy-fmt-Fix (Zielserver-Lauf 2026-10-14, Warnung "Caddyfile input is
+# not formatted ... line 2" in JEDEM Lauf): caddy fmt schreibt Tabs und
+# verwirft die Leerzeile, die eine leere CA-Heredoc-Zeile im globalen Block
+# hinterlässt (am Testhost gegen caddy:2.11 nachgebaut: Tabs+Leerzeile =>
+# rc 1, Tabs ohne Leerzeile => rc 0, byte-identisch). Deshalb EINE Zeile
+# für acme_ca+email: bei leerem ACME_CA fällt die ca-Zeile ganz weg, es
+# bleibt kein Blank. WICHTIG: kein "printf ...\n" in einer eigenen
+# $(...)-Zuweisung – die Schluck-Regel von $() würde das \n entfernen.
+CADDY_ACME_LINE="$(if [ -n "${ACME_CA:-}" ]; then printf '\tacme_ca %s\n' "${ACME_CA}"; fi; printf '\temail %s' "${ACME_EMAIL}")"
 # Lauf-Status VOR Schritt 3 (Reload/Neustart-Entscheidung unten). Pfad der
 # Caddyfile unter /opt/coder/caddy, weil die compose-Datei das Verzeichnis
 # statt der Einzeldatei bindet. A2: State.Status statt State.Running – im
 # Restart-Loop meldet Docker Running=true, obwohl Reload/SIGHUP dort
 # nichts sinnvolles bewirken (SIGHUP an einen startenden Prometheus liefert
 # sogar ein falsches [OK]).
-CADDY_STATUS=$(docker inspect -f '{{.State.Status}}' coder-caddy 2>/dev/null || echo missing)
+# docker inspect druckt bei fehlendem Container eine Leerzeile (Stdout) und
+# liefert rc 1 – ohne Trittel-Entferner stünde "\nmissing" in der Meldung
+# (Zielserver-Log 2026-10-14: Umbruch vor "missing)"). Newlines raus,
+# dann mit :-missing auffüllen (Vergleichsstellen unten brauchen das nicht:
+# dort wird gegen "running" verglichen, "\nmissing" schlägt ohnehin fehl).
+CADDY_STATUS=$(docker inspect -f '{{.State.Status}}' coder-caddy 2>/dev/null | tr -d '\r\n' || true)
+CADDY_STATUS="${CADDY_STATUS:-missing}"
 # write_managed legt Verzeichnisse nicht an (Vorbild: rules/grafana unten).
 install -d -m 0755 /opt/coder/caddy
 write_managed "/opt/coder/caddy/Caddyfile" 644 "Caddyfile" validate_caddyfile <<EOF
 {
-${CADDY_ACME_CA}
-    email ${ACME_EMAIL}
-    on_demand_tls {
-        # Caddy 2.9+ empfiehlt permission; ask ist deprecated.
-        permission http http://127.0.0.1:9123/ask
-    }
+${CADDY_ACME_LINE}
+	on_demand_tls {
+		# Caddy 2.9+ empfiehlt permission; ask ist deprecated.
+		permission http http://127.0.0.1:9123/ask
+	}
 }
 
 :9123 {
-    @askOK expression \`{http.request.uri.path} == "/ask" && matches({http.request.uri.query.domain}, '${DOMAIN_CODER_REGEX}')\`
-    handle @askOK {
-        respond "ok" 200
-    }
-    handle {
-        respond "not found" 404
-    }
+	@askOK expression \`{http.request.uri.path} == "/ask" && matches({http.request.uri.query.domain}, '${DOMAIN_CODER_REGEX}')\`
+	handle @askOK {
+		respond "ok" 200
+	}
+	handle {
+		respond "not found" 404
+	}
 }
 
 ${DOMAIN_CODER} {
-    reverse_proxy coder:3000
+	reverse_proxy coder:3000
 }
 
 *.${DOMAIN_CODER} {
-    reverse_proxy coder:3000
-    tls {
-        on_demand
-    }
+	reverse_proxy coder:3000
+	tls {
+		on_demand
+	}
 }
 EOF
 
@@ -882,8 +900,10 @@ GRAFANA_PROV_BEFORE=$(find /opt/coder/grafana/provisioning -type f 2>/dev/null |
 # Lauf-Status VOR dem Schreiben (gleiche Idee wie CADDY_STATUS, gleiche
 # Begründung: Status statt Running, s. Kommentar dort): nur ein Container,
 # der schon mit der alten Datei lief, braucht danach einen Neustart.
-PROM_CFG_STATUS=$(docker inspect -f '{{.State.Status}}' coder-prometheus 2>/dev/null || echo missing)
-GRAFANA_STATUS=$(docker inspect -f '{{.State.Status}}' coder-grafana 2>/dev/null || echo missing)
+PROM_CFG_STATUS=$(docker inspect -f '{{.State.Status}}' coder-prometheus 2>/dev/null | tr -d '\r\n' || true)
+PROM_CFG_STATUS="${PROM_CFG_STATUS:-missing}"
+GRAFANA_STATUS=$(docker inspect -f '{{.State.Status}}' coder-grafana 2>/dev/null | tr -d '\r\n' || true)
+GRAFANA_STATUS="${GRAFANA_STATUS:-missing}"
 
 # A2: Erst die Alarmregeln schreiben (eigener Validierer), dann
 # prometheus.yml – der Config-Validierer lädt die rule_files mit und sieht

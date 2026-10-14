@@ -31,7 +31,7 @@ nicht im Repository.
 |---|---|
 | Quellstand | Branch `main`, alles committet; Stände pro Runde in [CHANGELOG.md](CHANGELOG.md) |
 | Lokale Tests | Stand 2026-10-08: alle 10 Dateien in `tests/` grün (329 PASS, 0 FAIL), `bash -n setup-coder.sh scripts/*.sh tests/*.sh` und `shellcheck -S warning` ohne Befund |
-| Vollständiger Setup-Lauf | **vier volle Läufe RC 0** (2026-10-03 und 2026-10-08 auf Test-Host `2.29.11.30`, jeweils 0 `[FEHLER]`, 64 `[OK]`; Live-Greps 2026-10-08 in der Verifikationstabelle unten, Punkt 12). Warnung `/healthz` bekannt = externer DNS-Blocker; Details [CHANGELOG.md](CHANGELOG.md) |
+| Vollständiger Setup-Lauf | **vier volle Läufe RC 0** auf Test-Host `2.29.11.30` (2026-10-03 und 2026-10-08, jeweils 0 `[FEHLER]`, 64 `[OK]`; Live-Greps unten, Verifikation #12). **Zielserver (Schule) 2026-10-14: erster Lauf + Re-Run liefen bis zur Zusammenfassung durch** (je 0 `[FEHLER]`, nur die WARNUNG `/healthz` = Portlage offen), Erstkonto `maximilian` angelegt. Details [CHANGELOG.md](CHANGELOG.md) |
 | Restore-Test | **Pfad A komplett geprobt** 2026-10-01: Setup 58 s, Import 2,3 s, Datenprobe, `owner` zurück – 1 min 50 s ohne VM-Boot. Offen: RTO inkl. VM-Boot und `/healthz` unter echtem DNS ([RESTORE.md](RESTORE.md), Verifikation #4) |
 | Monitoring | **abgenommen, Stand 2026-10-03 (Test-Host):** Prometheus `ready` 200, 3 Alarmregeln geladen (`BackupStale`, `CoderTargetDown`, `RootPartitionFillingUp`), Targets `coder`/`node` up, Grafana `api/health` 200 auf 127.0.0.1:3001, textfile-Metrik (Backup) vorhanden |
 | Offsite-Backup | **entschieden 2026-10-08** (D-Offsite bleibt: kein zweiter Schul-Standort): (a) vzdump/PBS-Ziel = anderer Storage/Host als die VM-Disk, (b) monatlicher verschlüsselter `rsync`-Pull `/opt/coder/backups` vom Betreiber-Rechner. Offen: nur noch die Umsetzung (Verifikation #10) |
@@ -45,8 +45,7 @@ verlinkten Stelle):
 
 | Was | Wer | Wo |
 |---|---|---|
-| Pre-Flight-Checkliste durchlaufen, dann erster `setup-coder.sh`-Lauf am Schulserver | Betreiber | [OPERATIONS.md](OPERATIONS.md) §11 |
-| DNS/Portlage klären: lokal Pre-Flight 1 (`ss -ltnp`), extern Netzwerkadmin-Zeilen 1–4 (A, Wildcard, 80/443, ggf. Proxy-Durchreichung + TLS-Passthrough). **Status der Anfrage 2026-10-03:** Einrichtung erst, sobald **IServ in Produktion** ist. Zone/Hosting + DNS-API-Token separat für DNS-01 (bis dahin On-Demand-TLS, Budget 50 Zertifikate/Woche) | Netzwerkadmin/Domainverwalter; Betreiber fordert nur Zeilen 1–4 an | [OPERATIONS.md](OPERATIONS.md) §11, [SECURITY.md](SECURITY.md) §9 D-TLS |
+| DNS/Portlage klären: lokal Pre-Flight 1 (`ss -ltnp`), extern Netzwerkadmin-Zeilen 1–4 (A, Wildcard, 80/443, ggf. Proxy-Durchreichung + TLS-Passthrough). **Status der Anfrage 2026-10-03:** Einrichtung erst, sobald **IServ in Produktion** ist. **Status Schulserver 2026-10-14:** DNS (Apex+Wildcard) löst auf, `/healthz` antwortet weiter mit Code 000 → Portweiterleitung 80/443 fehlt noch. Zone/Hosting + DNS-API-Token separat für DNS-01 (bis dahin On-Demand-TLS, Budget 50 Zertifikate/Woche) | Netzwerkadmin/Domainverwalter; Betreiber fordert nur Zeilen 1–4 an | [OPERATIONS.md](OPERATIONS.md) §11, [SECURITY.md](SECURITY.md) §9 D-TLS |
 | VM-Backup der Proxmox-VM selbst (vzdump/PBS) um 02:00 einrichten – Lücke zwischen DB-Backup 01:00 und Reboot 03:00; `qemu-guest-agent` braucht den virtio-Channel in der VM; Ziel = anderer Storage/Host (entschieden 2026-10-08, trägt auch die Workspace-Homes und den Offsite-Teil); dabei einmal prüfen, dass die Workspace-Homes wirklich in Docker-Volumes liegen; einmal Restore-aus-VM-Backup testen | Betreiber (Proxmox/PBS-Zugang) | OPERATIONS §7 „Backup"/„Reboot", [SECURITY.md](SECURITY.md) §9, [RESTORE.md](RESTORE.md) |
 | Ersten Test-Workspace und Port-Forwarding vom Schulnetz aus prüfen (Hairpin-NAT, A9); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (B-11: Bei Nicht-Compose-Containern bricht `reset-coder.sh` hart ab, es wird nichts gelöscht) | Betreiber | OPERATIONS §11 Abnahme Schritt 5, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken – entschieden 2026-10-08: erst nach dem Vorführen der konkreten Templates | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
@@ -359,8 +358,8 @@ Details stehen im [CHANGELOG.md](CHANGELOG.md):
 
 | # | Prüfpunkt | Status (Test-Host `2.29.11.30`, Stand 2026-10-08) |
 |---|---|---|
-| 1 | Voll-Lauf auf frischem Debian 13 (Pakete, Images, Erstausstellung) | erledigt 2026-09-29 (RC 0) + Neuaufbau nach `reset-coder.sh` 2026-10-08; Let's-Encrypt-Erstausstellung wartet auf DNS (#9) |
-| 2 | Re-Run/Idempotenz, Drift-Erkennung | erledigt mehrfach 2026-09-30/10-01 (RC 0, Hand-Patch deterministisch regeneriert, 0 Drift) |
+| 1 | Voll-Lauf auf frischem Debian 13 (Pakete, Images, Erstausstellung) | erledigt 2026-09-29 (RC 0) + Neuaufbau nach `reset-coder.sh` 2026-10-08 + **Zielserver-Erstlauf 2026-10-14**; Let's-Encrypt-Erstausstellung wartet auf Portlage (#9) |
+| 2 | Re-Run/Idempotenz, Drift-Erkennung | erledigt mehrfach 2026-09-30/10-01 (RC 0, Hand-Patch deterministisch regeneriert, 0 Drift) und **am Zielserver 2026-10-14** (zweiter Lauf ohne Abweichung) |
 | 3 | Echtes Backup (Cron 01:00, logrotate) | erledigt (Dumps, `gzip -t`, 14er-Rotation); **offen:** volle Platte |
 | 4 | Restore nach [RESTORE.md](RESTORE.md) inkl. Datenprobe/RTO | Pfad A komplett 2026-10-01 (1 min 50 s ohne VM-Boot); **offen:** RTO inkl. VM-Boot + `/healthz` unter echtem DNS |
 | 5 | Reboot/Wiederanlauf, 03:00-Fenster | erledigt 2026-09-30 (6 Container in 51 s, Fenster konfiguriert); **offen:** tatsächlicher Fire um 03:00 |
@@ -369,5 +368,5 @@ Details stehen im [CHANGELOG.md](CHANGELOG.md):
 | 8 | Optionale SSH-Nachhärtung (D-SSH) | entfällt als Skript; manuell nur mit Key-Login + Zweit-Zugang ([SECURITY.md](SECURITY.md) §1) |
 | 9 | Externe Sicht: Ports offen/geschlossen, Wildcard-DNS | teilweise (Ports geprüft; Wildcard/Workspace-Subdomain wartet auf DNS) |
 | 10 | Offsite-Transport: monatlicher verschlüsselter `rsync`-Pull | **offen** (entschieden 2026-10-08) |
-| 11 | Erstkonto `CODER_FIRST_USER_*` + Re-Run | erledigt (Owner angelegt, Re-Run ohne Abbruch) |
+| 11 | Erstkonto `CODER_FIRST_USER_*` + Re-Run | erledigt – am Zielserver 2026-10-14 (`maximilian`), Re-Run ohne Abbruch (1 Konto; zweites Owner-Konto steht noch aus) |
 | 12 | Review-Runde-5-Live-Greps (ACME-Gate, ufw-DENY-Reihenfolge, `DOCKER-USER`, Egress-Unit, qemu-Guest-Agent, node-exporter-Mounts, `sshd -T`) | erledigt 2026-10-08 (Läufe 5+6 RC 0, je 0 `[FEHLER]`/64 `[OK]`; Details CHANGELOG, Eintrag 2026-10-08) |

@@ -7,17 +7,17 @@ verlinkten Abschnitten (OPERATIONS/SECURITY/RESTORE), nicht hier.
 
 ## Am Zielserver (Walkthrough)
 
-- [ ] **Pre-Flight + erster Lauf** – Checkliste durchlaufen, dann
-      `sudo ./setup-coder.sh`; `setup.conf` mit `ACME_EMAIL` vorher
-      anlegen (Pflicht, sonst bricht das Setup ab) –
-      [OPERATIONS §11](OPERATIONS.md) Pre-Flight 1–8
-- [ ] **Erstkonto sofort** nach dem/direkt vor dem zweiten Lauf anlegen
-      (`sudo env CODER_FIRST_USER_* …`, §11 Betreiber Schritt 4), danach
-      **zweites** Owner-Konto (nicht ein Zugang allein)
-- [ ] **Zweiter Lauf + Abnahme** – dann Checks aus
-      [§11 Betreiber Schritt 5](OPERATIONS.md) und [OPERATIONS §5]
-      (Ask-Endpoint muss `ok` liefern); Test-Workspace anlegen, App-URL
-      vom Schulnetz-Client öffnen (Hairpin-NAT + Wildcard, A9)
+- [x] **Pre-Flight + erster Lauf: erledigt 2026-10-14** (lief bis zur
+      Zusammenfassung durch, nur WARNUNG `/healthz` = Portlage offen).
+      `setup.conf` gab es noch nicht – das Gate hat korrekt gehalten,
+      Werte liefen über `sudo env …` ([OPERATIONS §11](OPERATIONS.md))
+- [x] **Erstkonto 2026-10-14 angelegt** (`maximilian`)
+- [ ] **zweites** Owner-Konto anlegen (§11 Betreiber Schritt 4: nicht ein
+      Zugang allein)
+- [ ] **Abnahme** – der zweite Lauf lief 2026-10-14 durch; Checks aus
+      [§11 Schritt 5](OPERATIONS.md)/[OPERATIONS §5], sobald Portlage
+      steht (`/healthz` → 200); Test-Workspace anlegen, App-URL vom
+      Schulnetz-Client öffnen (Hairpin-NAT + Wildcard, A9)
 - [ ] Workspace-Container-Labels prüfen, die `reset-coder.sh` für den
       Cleanup braucht (B-11: ohne sie bricht der Reset hart ab)
 - [ ] Template-Schritt 4 (Limit-Spielraum) je Template abhaken –

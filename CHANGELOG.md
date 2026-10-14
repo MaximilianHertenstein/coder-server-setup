@@ -9,10 +9,72 @@ Format je Eintrag: Datum, Umfang, geänderte Dateien, nachweisbarer Teststand,
 offene Punkte. Ältere Einträge werden nicht umgeschrieben; Korrekturen kommen
 als neuer Eintrag.
 
-Stand: 2026-10-08 · Basisstand dieses Eintrags: `f642359` auf `main`.
+Stand: 2026-10-14 · Basisstand dieses Eintrags: `e48825f` auf `main`.
 Änderungen dieses Eintrags werden mit diesem Commit eingecheckt.
 
 ---
+
+## 2026-10-14 (9) – Erster Zielserver-Lauf ausgewertet: ACME-Gate-Hinweis, caddy-fmt-konforme Caddyfile, Status-Meldung ohne Umbruch, Pre-Flight-Befehle korrigiert
+
+**Basisstand:** `e48825f` (Einträge (1)–(8), u. a. der Doku-Cleanup aus
+Eintrag (8)).
+
+- **Befund:** erster echter Lauf am **Zielserver** (Schule, Host `coder`,
+  Log vom 2026-10-14): Erstlauf und Re-Run liefen bis zur Zusammenfassung
+  durch, je 0 `[FEHLER]`, nur die bekannte WARNUNG `/healthz`
+  (Portweiterleitung offen, Code 000); Erstkonto `maximilian` angelegt;
+  DNS Apex + Wildcard lösen bereits auf. Vorbher brach das ACME-Pflicht-
+  Gate viermal vor jeder Änderung ab (rc 1) – Absicht, aber der Bedienweg
+  war unklar (stattdessen wurde `setup.conf.example` editiert).
+- **Skript-Änderungen:**
+  - **ACME-Gate-Hinweis:** bei fehlendem `setup.conf` nennt der Abbruch
+    jetzt konkret `cp setup.conf.example setup.conf` – das Muster wird
+    nicht gelesen (beobachtet 2026-10-14, vier Fehlversuche).
+  - **Caddyfile caddy-fmt-konform** (Warnung „Caddyfile input is not
+    formatted … line 2" in jedem Lauf): Einrückung im Heredoc von 4
+    Leerzeichen auf Tabs, `acme_ca`- und `email`-Zeile in EINE
+    Variable `CADDY_ACME_LINE` (die leere CA-Heredoc-Zeile hinterließ ein
+    Blank, das `caddy fmt` verwirft; `$()` schluckt Schluss-Newlines –
+    beides im Kommentar festgehalten). Am Testhost gegen `caddy:2.11`
+    nachgebaut: Render mit und ohne `ACME_CA` ist byte-identisch mit
+    `caddy fmt`, `caddy validate` ohne Format-Warnung, rc 0.
+    `tests/t-b1-on-demand-ask.sh` rendert die Zeile jetzt wie das Setup
+    (Extraktion `^CADDY_ACME_LINE=`, gleiche Technik wie die
+    `DOMAIN_CODER_*`-Defs).
+  - **Status-Meldung ohne Zeilenumbruch:** `docker inspect` druckt bei
+    fehlendem Container eine Leerzeile UND rc 1, der alte
+    `|| echo missing`-Anhäng erzeugte `"\nmissing"` in den Meldungen
+    „(Status: ⏎ missing)" (Log 2026-10-14). Jetzt `tr -d '\r\n'` +
+    `:-missing`-Auffüllung für Caddy/Prometheus/Grafana-Status; die
+    beiden Vergleichsstellen (`= "running"`) blieben bewusst unverändert,
+    weil dort der Vergleich ohnehin fehlschlägt.
+- **Doku-Korrekturen (Fehler in Anleitung und Status):**
+  - OPERATIONS §11 Pre-Flight 2: `sudo sshd -T` statt `sshd -T` (ohne
+    sudo ist `/usr/sbin` nicht im PATH; Log: „Kommando nicht gefunden").
+  - OPERATIONS §11 Pre-Flight 3: Statuscode-Checks per GET
+    (`200` Docker Hub, `401` ghcr.io) statt `curl -sI` – HEAD liefert
+    an beiden Endpunkten `405` (Log, am Testhost 2026-10-14 nachgestellt).
+  - README: Zielserver-Lauf in der Status-Tabelle und in der
+    Verifikation (#1, #2, #11), Offene Punkte „Pre-Flight + erster Lauf"
+    entfernt (erledigt), Portlage-Zeile um Status 2026-10-14 ergänzt;
+    TODO: drei Kästchen abgehakt/zerschnitten (zweites Owner-Konto und
+    Abnahme bleiben offen).
+  - `.gitignore`: `log.txt` (Roh-Transkripte roher Server-Läufe gehören
+    nicht ins Repo; Auswertung steht hier).
+- **Geänderte Dateien:** `setup-coder.sh`, `tests/t-b1-on-demand-ask.sh`,
+  `OPERATIONS.md`, `README.md`, `TODO.md`, `.gitignore`, diese Datei.
+- **Teststand (2026-10-14):** lokal 10 Dateien, 329 PASS, 0 FAIL;
+  `bash -n` und `shellcheck -S warning` ohne Befund. Caddyfile-Roundtrip
+  empirisch gegen `caddy:2.11` am Testhost (byte-identisch mit
+  `caddy fmt`, `validate` ohne Format-Warnung, beide ACME_CA-Fälle);
+  Gate-Hinweis getestet (ohne `setup.conf`: rc 1 + `cp`-Befehlzeile);
+  missing-Status als `[missing]` ohne Umbruch. **Zwei voller Setup-Läufe
+  am Testhost nach rsync: rc 0, je 0 `[FEHLER]`, „not formatted"
+  0-mal im Log (zweiter Lauf 64 `[OK]`, wie in README dokumentiert),
+  geschriebene `/opt/coder/caddy/Caddyfile` byte-identisch zu
+  `caddy fmt`.**
+- **Offene Punkte:** unverändert (Portlage80/443, IServ, Proxmox-Backup,
+  Abnahme, Produktionsfreigabe, Push).
 
 ## 2026-10-08 (8) – Doku-Aufräum-Durchgang: Dopplungen raus, veraltete Fakten korrigiert, `show-sources.sh` entfernt
 
