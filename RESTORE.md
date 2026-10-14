@@ -1,39 +1,13 @@
-# RESTORE.md – Wiederherstellungs-Runbook (F-003)
+# RESTORE.md – Wiederherstellungs-Runbook
 
-Stand: 2026-09-30. Status: Verfahrenstiefe 1 (manuell, aber festgelegt).
-**Geprobt am 2026-09-30** auf dem Test-Host `2.29.11.30` in isolierter Form:
-frischer Dump (Sonde `RTO-PROBE-2026-09-30` vor dem Lauf gesetzt) in einen
-eigenen `postgres:15-alpine`-Probencontainer eingespielt – Import exit 0 in
-3,0 s, Datenprobe `1`, 119/119 Tabellen, 937/937 Zeilen, `gzip -t` grün.
-Der laufende Stack wurde **nicht** angefasst (kein `dropdb`, kein `up -d`).
-
-**Zweiter, härterer Beleg am selben Tag: Major-Wechsel 15 → 18 live.**
-Alter Dump vom 2026-09-30 18:23 (Sonde `RTO-PROBE-2026-09-30` drin, `gzip -t`
-grün) nach dem Wechsel des Test-Hosts auf `postgres:18-alpine` (18.6) per
-`dropdb`/`createdb`/`psql -v ON_ERROR_STOP=1` eingespielt: Import exit 0 in
-**2,3 s**, Datenprobe danach **1**, **131/131** Tabellen, **937/937** Zeilen
-(exakt der Vorzustand), `coder` wieder am Start, API erreichbar. Dabei
-bestätigt: ein Major-Wechsel ist Dump/Restore, kein Tag-Wechsel – das 18er-Image
-verweigert sogar das alte Volume-Mount `/var/lib/postgresql/data`
-(docker-library/postgres #1259), siehe `setup-coder.sh` und OPERATIONS §8.
-**Dritter Beleg: Pfad A am 2026-10-01 vollständig auf dem Test-Host.**
-Das Alt-Verzeichnis samt `.env` und Dumps beiseite, DB-/Grafana-/
-Prometheus-Volumes gelöscht (Caddy-Zertifikate behalten), dann wie im
-Runbook: `setup-coder.sh` (RC 0, **58 s**, behält die bereitgelegte
-`.env`, meldet „Noch kein Nutzerkonto"), `coder` stoppen,
-`dropdb`/`createdb`, `zcat | psql -v ON_ERROR_STOP=1` (**RC 0 in 2,3 s**),
-Stack hoch. Datenprobe **`1`**, **119/944** Tabellen/Zeilen,
-`owner` + `prebuilds` zurück da, `SELECT 1` und Coder-API grün.
-Zeitspanne von „Volumen weg" bis „alles verifiziert": **1 min 50 s**
-(ohne VM-Boot und Paketinstallation). **Nicht erfüllbar auf dem
-Test-Host:** der `/healthz`-TLS-Smoke (000, TLS-Alert), solange die
-Domain auf eine fremde IP zeigt und Caddy kein Zertifikat bekommt –
-ein grüner `/healthz` ist damit erst am echten Zielserver belegbar.
-**Weiter offen:** RTO inklusive VM-Boot/Paketinstallation (braucht eine
-frische VM) und Browser-Login am Dashboard (Passwort war bewusst nur
-hostlokal). Nie auf Produktion üben, nur auf isolierter Test-VM
-(T-080–T-083).
-Nie auf Produktion üben, nur auf isolierter Test-VM (T-080–T-083).
+Status: Verfahren festgelegt (Pfad A/B), manuell. **Pfad A ist vollständig
+geprobt** (2026-10-01 auf dem Test-Host `2.29.11.30`): Datenprobe `1`,
+RTO **1 min 50 s** ohne VM-Boot (Details unten „Wiederholungspflicht").
+**Nicht erfüllbar auf dem Test-Host:** der `/healthz`-TLS-Smoke, solange
+die Domain auf eine fremde IP zeigt – ein grüner `/healthz` ist erst am
+echten Zielserver belegbar. **Weiter offen:** RTO inklusive
+VM-Boot/Paketinstallation (braucht eine frische VM) und Browser-Login am
+Dashboard. **Nie auf Produktion üben, nur auf isolierter Test-VM.**
 
 ## Was gesichert wird – und was nicht (P-024, ehrlich)
 
@@ -195,19 +169,19 @@ Ersatz für diesen Ablauf – sie erzeugen keinen Datenstand aus einem Dump.
 Nach jedem Coder-Major-Update und einmal pro Semester auf Test-VM proben,
 RTO-Zahl hier eintragen:
 
-| Datum | Coder-Version | Dump-Alter | RTO | Datenprobe = 1 | Login ok |
-|---|---|---|---|---|---|
-| 2026-09-30 | v2.36.6 (Test-Host) | 3 Min | 3,0 s (nur Dump-Import) | ja (1, im Probencontainer) | – (kein Stack-Neustart) |
-| 2026-09-30 | v2.36.6 (Test-Host) | 5 Std | 2,3 s (Major-Wechsel 15 → 18, live) | ja (1) | ja (API grün) |
-| 2026-10-01 | v2.36.6 (Test-Host, Pfad A komplett) | 10 Std | **1 min 50 s** (ohne VM-Boot: Setup 58 s, Import 2,3 s) | ja (1) | teilweise: `owner` + API grün, kein Browser-Login; `/healthz`-TLS wegen externem DNS 000 |
-| _offen_ (RTO inkl. VM-Boot und Paketinstallation) | – | – | – | – | – |
+| Datum | Coder-Version | RTO | Datenprobe = 1 | Login ok |
+|---|---|---|---|---|
+| 2026-10-01 | v2.36.6 (Test-Host, Pfad A komplett) | **1 min 50 s** (ohne VM-Boot: Setup 58 s, Import 2,3 s) | ja (1) | teilweise: `owner` + API grün, kein Browser-Login; `/healthz`-TLS wegen externem DNS 000 |
+| _offen_ (RTO inkl. VM-Boot und Paketinstallation) | – | – | – | – |
 
-Probe 2026-09-30, Durchführung: Sonde wie oben setzen, `backup.sh` laufen
-lassen, Dump per `zcat | psql -v ON_ERROR_STOP=1` in einen temporären
-Container derselben Image-Version. Achtung beim Warten auf den frischen
-Container: `pg_isready` meldet auch schon während des Temp-Servers des
-Initialisierens – erst wiederholt `SELECT 1` mit den echten Zugangsdaten
-gilt als bereit (sonst bricht der Import mitten in der Initialisierung ab).
+Durchführung: Sonde wie oben setzen, `backup.sh` laufen lassen, Dump per
+`zcat | psql -v ON_ERROR_STOP=1` in einen temporären Container derselben
+Image-Version einspielen (Import exit 0 in ~2–3 s; derselbe Ablauf hat
+auch den Major-Wechsel 15 → 18 live getragen). Achtung beim Warten auf
+den frischen Container: `pg_isready` meldet auch schon während des
+Temp-Servers des Initialisierens – erst wiederholt `SELECT 1` mit den
+echten Zugangsdaten gilt als bereit (sonst bricht der Import mitten in
+der Initialisierung ab).
 
 ## Verwandte Dokumentation
 
@@ -215,7 +189,6 @@ gilt als bereit (sonst bricht der Import mitten in der Initialisierung ab).
 - [OPERATIONS.md](OPERATIONS.md) – Backup-Steckbrief, Logs, Wartung
 - [SECURITY.md](SECURITY.md) – Secrets (`.env`, manuelle Grafana-Rotation)
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) – Abschnitt F (Restore-Fehlerbilder)
-- [CHANGELOG.md](CHANGELOG.md) – Stand dieser Datei und offene Punkte
 
 Diese Datei wird vom Setup nach `/opt/coder/RESTORE.md` kopiert
 (`B-008`), damit Verweise aus `setup-coder.sh` und `reset-coder.sh` auf dem

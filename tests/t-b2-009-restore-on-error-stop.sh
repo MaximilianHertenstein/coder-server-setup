@@ -141,7 +141,7 @@ else
   fail "(2) Pfad B verweist auf dieselbe Verifikation"
 fi
 
-if grep -qF -- '| Datum | Coder-Version | Dump-Alter | RTO | Datenprobe = 1 | Login ok |' "$DOC"; then
+if grep -qF -- '| Datum | Coder-Version | RTO | Datenprobe = 1 | Login ok |' "$DOC"; then
   pass "(2) RTO-Tabelle dokumentiert die Datenprobe"
 else
   fail "(2) RTO-Tabelle dokumentiert die Datenprobe"

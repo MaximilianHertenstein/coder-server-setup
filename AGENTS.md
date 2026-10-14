@@ -146,7 +146,7 @@ Pitfalls learned here:
 
 - `grep -c` exits 1 at zero matches; append `|| true` in assertions.
 - When adding/removing test files or a `write_managed` target, update the
-  counts quoted in README/CHANGELOG/docs in the same change.
+  counts quoted in README/docs in the same change.
 
 ## Documentation
 

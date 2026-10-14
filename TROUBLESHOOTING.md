@@ -1,7 +1,7 @@
 # TROUBLESHOOTING.md – Fehlerbilder, Diagnose, Behebung
 
-Stand: 2026-09-28. Alle Meldungen und Befehle stammen aus dem tatsächlich
-vorliegenden `setup-coder.sh` bzw. den von ihm erzeugten Skripten.
+Alle Meldungen und Befehle stammen aus dem tatsächlich vorliegenden
+`setup-coder.sh` bzw. den von ihm erzeugten Skripten.
 **Erst diagnostizieren, dann ändern.** Kein Problem wird dadurch gelöst,
 dass eine Prüfung abgeschaltet, eine Firewall-Regel dauerhaft entfernt
 oder eine Verifikation übersprungen wird.
@@ -273,7 +273,7 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 |---|---|
 | **Diagnose** | `sudo ufw status verbose`, `grep IPV6 /etc/default/ufw` |
 | **Erwartete Ursache** | Lauf abgebrochen vor Schritt 4, oder Regeln wurden manuell verändert. |
-| **Sichere Behebung** | Setup erneut ausführen (Regeln werden idempotent gesetzt). Die SSH-Regel ist `ufw allow <sshd-Port>/tcp` (Revision 2026-10: kein `limit` mehr – es würde die geteilte Schul-NAT drosseln); eine alte `limit 22/tcp`-Regel eigener Läufe entfernt das Setup automatisch. Vorgefundene Quellregeln bleiben unangetastet (siehe A7 und [SECURITY.md](SECURITY.md)). |
+| **Sichere Behebung** | Setup erneut ausführen (Regeln werden idempotent gesetzt). Die SSH-Regel ist `ufw allow <sshd-Port>/tcp` (kein `limit` – es würde die geteilte Schul-NAT drosseln); eine alte `limit 22/tcp`-Regel eigener Läufe entfernt das Setup automatisch. Vorgefundene Quellregeln bleiben unangetastet (siehe A7 und [SECURITY.md](SECURITY.md)). |
 
 ### E2. `[FEHLER] fail2ban läuft NICHT` / `Jail 'sshd' ist nicht aktiv`
 
@@ -376,8 +376,8 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 | | |
 |---|---|
 | **Diagnose** | `sudo sshd -T \| grep -iE '^(passwordauthentication\|kbdinteractiveauthentication\|permitrootlogin)'` |
-| **Erwartete Ursache** | Passwort-Login ist mit D-SSH (2026-09-30) dauerhaft bewusst aktiv und im Setup-Drop-In `/etc/ssh/sshd_config.d/01-coder.conf` fixiert; der Abschlusscheck meldet ihn als `OK` (Setup-Versionen vor 2026-10-01 warnten hier). Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
-| **Sichere Behebung** | Kein Handlungsbedarf: D-SSH (2026-09-30) lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten und sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Warnung ist nur dann beabsichtigt, wenn `permitrootlogin yes` steht (muss auf `prohibit-password`). Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann kann das Drop-In aus [SECURITY.md](SECURITY.md) Abschnitt 1 bewusst angelegt werden. Siehe [SECURITY.md](SECURITY.md) Abschnitt 1. |
+| **Erwartete Ursache** | Passwort-Login ist bewusst dauerhaft aktiv (Entscheidung D-SSH) und im Setup-Drop-In `/etc/ssh/sshd_config.d/01-coder.conf` fixiert; der Abschlusscheck meldet ihn als `OK`. Die Netzvorgabe beschränkt SSH auf das Schulnetz. |
+| **Sichere Behebung** | Kein Handlungsbedarf: D-SSH lässt Passwort-Login zu. Auf dem Schulserver starkes individuelles Passwort und fail2ban beibehalten, sicherstellen, dass SSH nicht öffentlich weitergeleitet wird. Eine Warnung ist nur bei `permitrootlogin yes` beabsichtigt (muss auf `prohibit-password`). Erst bei gewünschtem Schlüsselzugang: getesteter Key + zweiter Zugang, dann das Drop-In aus [SECURITY.md](SECURITY.md) Abschnitt 1 bewusst anlegen. |
 
 ### G3. Warnung: `ufw-IPv6-Pfad unklar (kein IPV6=yes …)`
 
