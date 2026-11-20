@@ -146,23 +146,26 @@ fi
 # Pin-Regeln: CODER/PROMETHEUS/GRAFANA/NODE_EXPORTER exakt, CADDY bewusst nur
 # minor-gepinnt (z. B. "2.11") – TLS-taugliche Patch-Updates sollen über
 # "docker compose pull" ankommen; postgres:18-alpine analog (Major-Tag).
-# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.37.3). Am 2026-09-28 und
+# WICHTIG: Das ghcr.io-Tag TRÄGT das "v"-Präfix (v2.38.10). Am 2026-09-28 und
 # erneut am 2026-10-03 gegen die Registry geprüft: ghcr.io/coder/coder:2.36.6
 # und :2.37.3 -> HTTP 404, mit "v" (v2.36.6/v2.37.3) -> 200; die Release-
 # Notes nennen das Tag teils ohne "v" (falsch, das bricht Schritt 3 ab).
 # Vor jeder Versionserhöhung IMMER per "docker pull"
 # gegen die Registry belegen, nicht nach dem Wortlaut der Notes. Für einen
 # bit-genauen, reproduzierbaren Pin bräuchte man ein Image-Digest (sha256:...).
-# Stand 2026-10-03 (Upstream-Stable geprüft: releases/latest bzw.
-# prerelease-Flags): Coder v2.37.3 (v2.36.6 war die Vorgängerlinie),
-# Caddy 2.11 (2.11.7 released), Prometheus v3.15.0, Grafana 12.4.12
-# (12.x-Security-Backports; Major 13 bewusst nicht), node-exporter
-# v1.12.1 = aktuell, Postgres 19 nur Beta -> 18-alpine bleibt.
-: "${CODER_VERSION:=v2.37.3}"              # https://github.com/coder/coder/releases prüfen
+# Stand 2026-11-20 (Upstream-Stable geprüft: releases/latest bzw.
+# prerelease-Flags; alle Tags gegen die Registry bestätigt, HTTP 200):
+# Coder v2.38.10, Caddy 2.11 (Patch 2.11.9, Minor-Pin bleibt), Prometheus
+# v3.16.0, Grafana 13.3.1 (Major 13 am 2026-11-20 bewusst freigegeben;
+# Downgrade wäre Manuellearbeit - siehe Abschnitt "Downgrade-Schutz"),
+# node-exporter v1.13.1. Postgres 19 ist inzwischen stabil, bleibt aber
+# bewusst 18-alpine: ein Major-Wechsel ist Dump/Restore im Wartungsfenster
+# (RESTORE.md), kein Pin-Tausch.
+: "${CODER_VERSION:=v2.38.10}"             # https://github.com/coder/coder/releases prüfen
 : "${CADDY_VERSION:=2.11}"                # https://hub.docker.com/_/caddy/tags
-: "${PROMETHEUS_VERSION:=v3.15.0}"        # https://github.com/prometheus/prometheus/releases
-: "${GRAFANA_VERSION:=12.4.12}"           # https://github.com/grafana/grafana/releases
-: "${NODE_EXPORTER_VERSION:=v1.12.1}"     # https://github.com/prometheus/node_exporter/releases
+: "${PROMETHEUS_VERSION:=v3.16.0}"        # https://github.com/prometheus/prometheus/releases
+: "${GRAFANA_VERSION:=13.3.1}"            # https://github.com/grafana/grafana/releases
+: "${NODE_EXPORTER_VERSION:=v1.13.1}"     # https://github.com/prometheus/node_exporter/releases
 # Admin-Adressen, die fail2ban nie sperren darf – NUR echte Admin-Plätze hier
 # eintragen, ausdrücklich NICHT die geteilte Schul-NAT: Rateversuche aus
 # dem Schulnetz sollen nach 5 Fehlversuchen sperren. Bewusst akzeptiert:

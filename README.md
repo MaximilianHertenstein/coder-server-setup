@@ -159,11 +159,11 @@ Repository oder in ein eigenes vorrangiges Drop-In, Details in
 | Dienst | Image (Pin) | Port | Zugang |
 |---|---|---|---|
 | Caddy | `caddy:2.11` (Minor-Pin) | 80/tcp, 443/tcp, 443/udp | öffentlich |
-| Coder | `ghcr.io/coder/coder:v2.37.3` (exakt) | intern 3000 | nur über Caddy |
+| Coder | `ghcr.io/coder/coder:v2.38.10` (exakt) | intern 3000 | nur über Caddy |
 | PostgreSQL | `postgres:18-alpine` | keiner | nur im Compose-Netz |
-| Prometheus | `prom/prometheus:v3.15.0` (exakt) | 127.0.0.1:9090 | lokal |
-| node-exporter | `prom/node-exporter:v1.12.1` (exakt) | 127.0.0.1:9100 | lokal |
-| Grafana | `grafana/grafana:12.4.12` (exakt) | 127.0.0.1:3001 (keine ufw-Regel) | ausschließlich per SSH-Tunnel |
+| Prometheus | `prom/prometheus:v3.16.0` (exakt) | 127.0.0.1:9090 | lokal |
+| node-exporter | `prom/node-exporter:v1.13.1` (exakt) | 127.0.0.1:9100 | lokal |
+| Grafana | `grafana/grafana:13.3.1` (exakt) | 127.0.0.1:3001 (keine ufw-Regel) | ausschließlich per SSH-Tunnel |
 | sshd, ufw, fail2ban, Cron | Debian-Pakete | 22/tcp | ufw `allow` + fail2ban |
 
 Volumes: `postgres_data`, `caddy_data`, `caddy_config`, `prometheus_data`,
@@ -181,11 +181,11 @@ Defaults stehen im Kopf von `setup-coder.sh`, überschreibbar per
 |---|---|---|
 | `DOMAIN_CODER` | `coder.ghse-unterricht.de` | Access-URL und Wildcard `*.…` |
 | `ACME_EMAIL` | **Pflicht** (kein Default) | Let's-Encrypt-Kontaktadresse; ohne Wert bricht das Setup vor jeder Änderung ab |
-| `CODER_VERSION` | `v2.37.3` | exakter Coder-Image-Tag (mit `v`) |
+| `CODER_VERSION` | `v2.38.10` | exakter Coder-Image-Tag (mit `v`) |
 | `CADDY_VERSION` | `2.11` | Minor-Pin, Patch-Updates per `compose pull` |
-| `PROMETHEUS_VERSION` | `v3.15.0` | exakter Pin |
-| `GRAFANA_VERSION` | `12.4.12` | exakter Pin |
-| `NODE_EXPORTER_VERSION` | `v1.12.1` | exakter Pin |
+| `PROMETHEUS_VERSION` | `v3.16.0` | exakter Pin |
+| `GRAFANA_VERSION` | `13.3.1` | exakter Pin |
+| `NODE_EXPORTER_VERSION` | `v1.13.1` | exakter Pin |
 | `CODER_ALLOW_DOWNGRADE` | (leer) | nur `yes` erlaubt ein bewusstes Zurücksetzen einer Version |
 | `ACME_CA` | (leer) | optionaler eigener ACME-Endpunkt, z. B. Let's-Encrypt-Staging |
 | `FAIL2BAN_IGNORE_IP` | `127.0.0.1/8 ::1` | komma-getrennte Admin-Adressen, die fail2ban nicht bannen darf |

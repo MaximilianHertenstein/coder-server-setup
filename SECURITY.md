@@ -229,6 +229,27 @@ sudo iptables-save | grep -i docker | head      # Docker-eigene Regeln sichtbar 
   Digests nicht umgesetzt. Alte Images bleiben als Rollback-Basis (kein
   Auto-Prune).
 
+**php2shell (CVE-2026-109618 / CVE-2026-109619) – nicht betroffen.**
+Die kritischen PHP-RCE-Fehler (CVSS 9.2, gefixt in PHP 8.5.12 / 8.4.27 /
+8.3.36 / 8.2.35, CISA-KEV seit 2026-10-26) betreffen PHP-Dienste, die
+HTTP-Anfragen verarbeiten – die Anfrage wird dort schon vor dem
+Anwendungscode verarbeitet, Authentifizierung in der App hilft also nicht.
+Dieser Stack enthält kein PHP:
+
+```bash
+grep -rin php . --exclude-dir=.git      # muss leer sein
+```
+
+Geprüft am 2026-11-20: Repo ohne Treffer, kein PHP in den
+Workspace-Templates ([templates/allowlist.md](templates/allowlist.md)),
+kein laufender PHP-Dienst (Stack = Caddy, Coder, PostgreSQL, Prometheus,
+Grafana, node-exporter). IServ läuft als separates System und wird von
+diesem Setup nicht verwaltet – dort greift der eigene Patch-Zyklus der
+IServ-Betreuer. Workspace-Nutzer *können* PHP in ihren eigenen
+Containern betreiben; das sind dann ihre Container, keine
+serverseitige Komponente dieses Stacks, und die Egress-Sperre
+(Abschnitt 4) hindert sie ohnehin am Zugriff auf interne Netze.
+
 ## 6. Docker-Netzwerk und Listener
 
 | Dienst | gebunden auf | öffentlich erreichbar? |
