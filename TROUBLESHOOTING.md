@@ -187,6 +187,35 @@ oder den Workspace-Agenten (dann B7).
 | **Erwartete Ursache** | Der Workspace-Agent verbindet sich zur `CODER_ACCESS_URL`. Ist die aus dem Workspace nicht erreichbar, baut der Workspace trotzdem, aber der Agent bleibt getrennt. Typisch: der Testhost zeigt auf die Produktionsdomain, Hairpin-NAT fehlt, oder die Domain zeigt nach einem Umzug auf den falschen Server. |
 | **Sichere Behebung** | Produktion: im Workspace prüfen, ob die Domain erreichbar ist (`curl -s -o /dev/null -w '%{http_code}\n' https://coder.ghse-unterricht.de/healthz`); wenn nicht, im Template einen Host-Eintrag `coder.ghse-unterricht.de` → `10.16.1.13` setzen (Docker-Provider `hosts`). Testhost: `CODER_ACCESS_URL=http://172.17.0.1:3000` und `ports: 172.17.0.1:3000:3000`, coderd neu starten, Workspace neu bauen (Test-Override, wird vom Setup überschrieben). **Nicht** den Agent im Template abschalten. |
 
+**Docker-DNS als Ursache (Schulserver, 2026-11-22):** Bricht der Image-Build
+mit `curl: (6) Could not resolve host` ab, oder können Startskripte und Agent
+externe Namen nicht auflösen, erbt der Container die Resolver-Adresse aus
+systemd-resolved (`127.0.0.53`). Prüfen:
+
+```bash
+docker exec coder-caddy cat /etc/resolv.conf     # zeigt 127.0.0.53?
+docker exec coder-caddy nslookup github.com      # scheitert?
+resolvectl status | grep -A3 'DNS Servers'       # echte Schul-Resolver
+```
+
+Dauerhaft: die Schul-Resolver in `/etc/docker/daemon.json` eintragen,
+Docker neu starten (kurze Unterbrechung, Wartungsfenster), danach die
+Template-Workarounds entfernen:
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "dns": ["<Schul-Resolver-1>", "<Schul-Resolver-2>"]
+}
+```
+
+Öffentliche Resolver (`1.1.1.1`, `8.8.8.8`) nur, wenn die Schule keine
+DNS-Filterung betreibt – sonst umgehen die Workspaces den Filter. Bis zum
+Fix nutzen die neun Templates `network_mode = "host"` beim Build und
+explizite `dns` im Container; beides gehört nach dem Fix wieder raus.
+Details stehen im `coder_templates`-README.
+
 ---
 
 ## C. Stack und Container

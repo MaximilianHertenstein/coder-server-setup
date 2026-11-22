@@ -290,5 +290,10 @@ Fehlerbilder und Gegenmaßnahmen stehen in
   lassen.
 - **Hetzner-Access-URL** ist ein Test-Override und wird vom Setup
   zurückgesetzt.
+- **Docker-DNS auf dem Schulserver:** `127.0.0.53` aus systemd-resolved
+  landet in den Containern; die Templates umgehen das mit
+  `network_mode = "host"` und expliziten Resolvern. Dauerhaft `dns` in
+  `/etc/docker/daemon.json` setzen (Schul-Resolver, keine öffentlichen),
+  dann die Workarounds entfernen ([TROUBLESHOOTING B7](TROUBLESHOOTING.md)).
 - **Caddy auf dem Hetzner** startet nach jedem Setup-Lauf wieder.
 - **Token-Rotation** für den GitHub-Deploy-Token terminieren (90 Tage).

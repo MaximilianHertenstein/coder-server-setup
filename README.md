@@ -56,6 +56,7 @@ Stelle):
 | Zweites Owner-Konto anlegen – die Administration soll nicht an einem Zugang hängen | Betreiber | [SECURITY.md](SECURITY.md) §1, [OPERATIONS.md](OPERATIONS.md) §11 |
 | `template-agent` auf dem Schulserver anlegen (`login_type none`, Rollen `member` + `template-admin`), Deploy-Token als GitHub-Secret hinterlegen und den Workflow für `coder templates push` einrichten | Betreiber | [AGENTEN.md](AGENTEN.md) |
 | Hetzner-Testhost für den Agenten: Access-URL-Override für echte Workspace-Tests, Caddy gestoppt halten, Token-Rotation terminieren | Betreiber | [AGENTEN.md](AGENTEN.md) |
+| Docker-DNS am Schulserver reparieren (Schul-Resolver in `/etc/docker/daemon.json`), danach die Template-Workarounds (`network_mode = "host"`, `dns`) entfernen | Betreiber | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) B7, [AGENTEN.md](AGENTEN.md) |
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken – erst nach dem Vorführen der konkreten Templates | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
 | Alarmweg umsetzen: Grafana-Contact-Point an `hert@ghse.de` über IServ-SMTP, sobald IServ produktiv ist; bis dahin fängt der tägliche BackupStale-Routine-Check den kritischen Fall ab | Betreiber | [OPERATIONS.md](OPERATIONS.md) §6 |
 | Offsite-Transport umsetzen: monatlicher verschlüsselter `rsync`-Pull der Backups auf externe Platte | Betreiber | [OPERATIONS.md](OPERATIONS.md) §8 |

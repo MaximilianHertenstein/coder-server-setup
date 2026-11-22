@@ -43,6 +43,10 @@ verlinkten Abschnitten (OPERATIONS/SECURITY/RESTORE/AGENTEN), nicht hier.
       coderd neu starten, Workspace neu bauen (Test-Override)
 - [ ] Caddy auf dem Hetzner gestoppt halten (kommt nach jedem Setup-Lauf
       zurück); Test-Workspaces mit `--stop-after` anlegen
+- [ ] Docker-DNS am Schulserver reparieren (`dns` in
+      `/etc/docker/daemon.json`, Schul-Resolver statt öffentlicher),
+      danach `network_mode = "host"` und `dns` aus den Templates entfernen
+      ([TROUBLESHOOTING B7](TROUBLESHOOTING.md))
 - [ ] Deploy-Token-Rotation terminieren (90 Tage)
 
 ## Extern klären (braucht andere Leute)
