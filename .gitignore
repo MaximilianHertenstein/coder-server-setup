@@ -5,3 +5,9 @@ session-ses_f0f3.md
 # später evtl. Ausgabe mit Passwörtern; Auswertung gehört in die Doku,
 # nicht roh ins Repo):
 log.txt
+# Secrets (API-Token, Zugangsdaten) – niemals ins Repo, auch nicht in
+# einem privaten. Beispielwerte gehören in .env.example:
+.env
+.env.*
+!.env.example
+*.token

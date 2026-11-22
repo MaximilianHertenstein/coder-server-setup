@@ -1,9 +1,12 @@
 # Template-Allowlist (P-002, Stufe 1 – ohne Host-Umbau)
 
-Stand: 2026-09-30. Status: Regelwerk gilt; Erstinventar (Schritt 1) am
-2026-09-30 durchgeführt, Workspace-Selbsttest (Schritt 2) vom Betreiber
-am 2026-09-30 als gelaufen bestätigt, Schritt 4 nicht separat
-protokolliert. Abhakpflicht pro Template bleibt.
+Stand: 2026-11-22 (Erstinventar 2026-09-30). Status: Regelwerk gilt;
+Erstinventar (Schritt 1) am 2026-09-30 durchgeführt,
+Workspace-Selbsttest (Schritt 2) vom Betreiber am 2026-09-30 als gelaufen
+bestätigt, Schritt 4 nicht separat protokolliert. Abhakpflicht pro Template
+bleibt. Auf dem Hetzner-Testhost liegen seit November 2026 vier reine
+Test-Templates (`pandoc-typst`, `haskell`, `agda`, `python`); sie sind
+nicht Teil des Produktions-Inventars.
 Hintergrund: Der `coder`-Container hält `/var/run/docker.sock` schreibbar
 (Host-root-äquivalent). Jedes Workspace-Template entscheidet damit über die
 Host-Sicherheit. Echte Trennung (Proxy/separater Host) ist BLOCKER B-02
@@ -46,9 +49,9 @@ Quelle der Templates: separates Repository
 Schritt 2 und Schritt 4 – der Betreiber hat den Selbsttest am 2026-09-30
 als gelaufen bestätigt („läuft"), eine getrennte Protokollierung von
 Schritt 4 (Spielraum der Limits im laufenden Workspace) liegt nicht vor.
-Der Selbsttest läuft mit `test-workspaces.sh` aus dem
-Template-Repo; der Test-Host `2.29.11.30` hat (Stand 2026-09-30) **0**
-Templates in der Coder-DB, braucht dafür also erst ein Veröffentlichen.
+Der Selbsttest läuft mit `test-workspaces.sh` aus dem Template-Repo. Der
+Test-Host `2.29.11.30` hat seit November 2026 vier Test-Templates; sie
+werden vor einer Übernahme nach Schritt 1–4 geprüft.
 
 | Datum | Template/Version | Prüfer | Ergebnis |
 |---|---|---|---|

@@ -132,8 +132,8 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 | | |
 |---|---|
 | **Diagnose** | `curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 https://coder.ghse-unterricht.de/healthz`; `getent hosts coder.ghse-unterricht.de`; `sudo docker logs coder-caddy --tail=50`; `sudo docker compose ps` |
-| **Erwartete Ursache** | (1) DNS fehlt → Code `000` und `getent` ohne Ergebnis; (2) Portweiterleitung 80/443 fehlt; (3) Zertifikat noch nicht ausgestellt (On-Demand-Erstverzögerung 5–30 s); (4) Coder-Container down. |
-| **Sichere Behebung** | Ursache 1/2: DNS-Eintrag und Weiterleitung im Schulnetz einrichten, dann Setup erneut ausführen (Kopfprinzip: Stack läuft trotzdem). Ursache 3: `sudo docker logs coder-caddy --since 10m` beobachten, kurz erneut abfragen. Ursache 4: siehe Abschnitt C. **Nicht** TLS-Prüfungen abschalten oder auf `http://` umstellen. |
+| **Erwartete Ursache** | (1) DNS fehlt → Code `000` und `getent` ohne Ergebnis; (2) Portweiterleitung 80/443 fehlt; (3) Zertifikat noch nicht ausgestellt (On-Demand-Erstverzögerung 5–30 s); (4) Coder-Container down; (5) der Schul-Proxy antwortet selbst oder reicht ACME/HTTPS nicht durch. |
+| **Sichere Behebung** | Ursache 1/2: DNS-Eintrag und Weiterleitung im Schulnetz einrichten, dann Setup erneut ausführen (Kopfprinzip: Stack läuft trotzdem). Ursache 3: `sudo docker logs coder-caddy --since 10m` beobachten, kurz erneut abfragen. Ursache 4: siehe Abschnitt C. Ursache 5: am Server direkt prüfen (`curl -H 'Host: coder.ghse-unterricht.de' http://127.0.0.1/healthz` → 308, `curl --resolve coder.ghse-unterricht.de:443:127.0.0.1 https://coder.ghse-unterricht.de/healthz` → 200); kommt von außen etwas anderes, Netzwerkadmin mit dem Caddy-Log aus dem Challenge-Pfad informieren. **Nicht** TLS-Prüfungen abschalten oder auf `http://` umstellen. |
 
 ### B2. `Wildcard-DNS fehlt (*.… löst nicht auf)`
 
@@ -147,9 +147,9 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 | | |
 |---|---|
-| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; Zählung jüngerer Zertifikate: `sudo docker exec caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" \| wc -l` |
+| **Diagnose** | `sudo docker logs coder-caddy --since 1h \| grep -iE 'obtaining\|error\|acme'`; Zählung jüngerer Zertifikate: `sudo docker exec coder-caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" \| wc -l` |
 | **Erwartete Ursache** | On-Demand-TLS: Zertifikat wird erst bei Bedarf ausgestellt. Bei Erschöpfung des Wochenbudgets (50/Domain, geteilt) schlägt die Ausstellung fehl. |
-| **Sichere Behebung** | Abwarten und erneut prüfen; bei Budget-Verdacht die Zählung oben gegen die 50er-Grenze der Domain halten (keine automatische Überwachung). Budget-DoS-Muster: viele junge Zertifikatsdateien + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden, DNS-01 als eigentlichen Fix. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
+| **Sichere Behebung** | Abwarten und erneut prüfen; bei Budget-Verdacht die Zählung oben gegen die 50er-Grenze der Domain halten (keine automatische Überwachung). Budget-DoS-Muster: viele junge Zertifikatsdateien + TLS-Fehler im Unterricht → D-TLS-Eigentümer melden, DNS-01 als Fallback. **Nicht** `ask` entfernen (damit bricht die On-Demand-Ausstellung komplett) und kein zweites Zertifikat-Setup parallel aufsetzen. |
 
 ### B4. SSH-Login schlägt fehl / ich sitze draußen
 
@@ -169,11 +169,23 @@ Privilegienebene); nirgends in Logs, Tickets oder Chats weitergeben.
 
 ### B6. Lokal geht es (mit `--resolve`), von außen/öffentlicher Pfad nicht
 
+Seit 2026-11-22 liefert der öffentliche Pfad 200 (Zertifikat ausgestellt).
+B6 betrifft nur noch Tests **aus dem Schulnetz**, wenn Hairpin-NAT fehlt,
+oder den Workspace-Agenten (dann B7).
+
 | | |
 |---|---|
 | **Diagnose** | Beide Pfade wie in Schritt 7 getrennt testen: lokal `curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' --resolve coder.…:443:127.0.0.1 https://coder.…/healthz`, öffentlich ohne `--resolve` (echter DNS-Weg), zusätzlich von einem externen Netz (Handy-Hotspot) derselben URL. `getent hosts coder.…` zeigt die öffentliche IP. |
 | **Erwartete Ursache** | NAT-Hairpin/Loopback: der Router im Schulnetz erlaubt es LAN-Clients nicht, die eigene öffentliche IP anzusprechen (Verbindung hängt/`000`), während der lokale `--resolve`-Pfad und echte externe Clients einwandfrei laufen. |
 | **Sichere Behebung** | Ergebnis außerhalb des Schulnetzes verifizieren (Hotspot/externes Netz): dort 200 = Betrieb in Ordnung, Hairpin ist nur ein Testeffekt. Hairpin-NAT am Router aktivieren, falls vorhanden und gewünscht; sonst LAN-Tests über den lokalen Pfad dokumentieren und den öffentlichen Pfad nur extern prüfen. **Nicht** Caddy/TLS umkonfigurieren – die Ursache liegt am NAT, nicht am Stack. |
+
+### B7. Workspace baut, aber der Agent verbindet nicht (`coder ssh` hängt, App 502/404)
+
+| | |
+|---|---|
+| **Diagnose** | `coder list` (Status), in der UI „Agent not connected“; `sudo docker logs coder --tail=50 \| grep -i agent`; im Workspace-Container `env \| grep CODER_AGENT_URL` (nur solange er läuft). |
+| **Erwartete Ursache** | Der Workspace-Agent verbindet sich zur `CODER_ACCESS_URL`. Ist die aus dem Workspace nicht erreichbar, baut der Workspace trotzdem, aber der Agent bleibt getrennt. Typisch: der Testhost zeigt auf die Produktionsdomain, Hairpin-NAT fehlt, oder die Domain zeigt nach einem Umzug auf den falschen Server. |
+| **Sichere Behebung** | Produktion: im Workspace prüfen, ob die Domain erreichbar ist (`curl -s -o /dev/null -w '%{http_code}\n' https://coder.ghse-unterricht.de/healthz`); wenn nicht, im Template einen Host-Eintrag `coder.ghse-unterricht.de` → `10.16.1.13` setzen (Docker-Provider `hosts`). Testhost: `CODER_ACCESS_URL=http://172.17.0.1:3000` und `ports: 172.17.0.1:3000:3000`, coderd neu starten, Workspace neu bauen (Test-Override, wird vom Setup überschrieben). **Nicht** den Agent im Template abschalten. |
 
 ---
 

@@ -103,6 +103,11 @@ Workspace-Apps/Port-Forwarding) und proxied nach `coder:3000`.
 Wildcard-Zertifikate sind per HTTP-01 nicht möglich; ohne DNS-API-Token
 nutzt das Setup die von Coder empfohlene Lösung: **On-Demand-TLS**.
 
+**Stand 2026-11-22:** Der Apex läuft über den Schul-Proxy; HTTP-01 und
+TLS-ALPN kommen durch, das Zertifikat ist ausgestellt (gültig bis
+2027-02-20). DNS-01 ist damit nicht nötig, bleibt aber Fallback, falls der
+Proxy die Challenges blockiert oder das geteilte Budget zum Problem wird.
+
 **`ask`-Endpunkt**
 
 `on_demand_tls.permission http` zeigt auf `http://127.0.0.1:9123/ask` –
@@ -138,17 +143,18 @@ Coder-Subdomänen-Muster entspricht, sonst `404`:
   ACME-Fehler in den Caddy-Logs:
 
 ```bash
-sudo docker exec caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" | wc -l
+sudo docker exec coder-caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" | wc -l
 sudo docker logs coder-caddy --tail=200 | grep -iE 'error|acme|limit'
 ```
 
 Erschöpfung fällt als HTTPS-Fehler auf (Diagnose: TROUBLESHOOTING.md B3).
-**Eigentlicher Fix bleibt DNS-01** (Wildcard ohne On-Demand): Zone
-`ghse-unterricht.de` liegt bei **All-Inkl** (KAS-API), dafür existiert
-das Caddy-Modul `caddy-dns/all-inkl`. Die Zugangsdaten liegen beim
-Domainverwalter, nicht beim Betreiber – der hat keinen DNS-Zugang. Die
-Umstellung ist **aufgeschoben**, solange unklar ist, ob die Zone bei
-All-Inkl bleibt und wie 80/443 zum Zielserver kommen.
+**Fallback ist DNS-01** (Wildcard ohne On-Demand): Zone `ghse-unterricht.de`
+liegt bei **All-Inkl** (KAS-API), dafür existiert das Caddy-Modul
+`caddy-dns/all-inkl`. Die Zugangsdaten liegen beim Domainverwalter, nicht
+beim Betreiber – der hat keinen DNS-Zugang. Die Umstellung ist
+**aufgeschoben**: Seit 2026-11-22 stellt der Apex über den Proxy aus; DNS-01
+wird erst nötig, wenn der Proxy die Challenges blockiert oder das Budget
+zum Problem wird.
 
 ## 4. Firewall
 
@@ -315,8 +321,8 @@ ss -tlnp; ss -ulnp | grep 443
 |---|---|---|---|
 | 1 | Docker-Socket im Coder-Container | Kompromittierung eines Workspaces = Kompromittierung des Hosts | entschieden (D-Socket): keine zweite VM, Restrisiko akzeptiert, Allowlist gilt dauerhaft |
 | 2 | SSH-Passwort-Login | Geräte im Schulnetz können trotz ufw/fail2ban Passwörter raten | entschieden (D-SSH): bleibt Standard; Nachhärtung via `00-*.conf` nur auf gesonderten Wunsch (Abschnitt 1) |
-| 3 | On-Demand-`ask` prüft nur das Namensmuster | für muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert; Budget-Schutz bleibt; DNS-01 aufgeschoben (Zone/Hosting/Zuständigkeit unklar) |
-| 4 | Keine automatische TLS-Budget-Überwachung | bei Erschöpfung fällt erst die Zertifikatsausstellung als HTTPS-Fehler auf | manuelle Zählung in Abschnitt 3; DNS-01 bleibt der eigentliche Fix |
+| 3 | On-Demand-`ask` prüft nur das Namensmuster | für muster-taugliche Namen kann ohne Account ein Zertifikat ausgelöst werden, geteiltes Wochenbudget erschöpfbar | `ask` gefiltert; Budget-Schutz bleibt; DNS-01 bleibt Fallback, weil der Proxy ACME jetzt durchlässt |
+| 4 | Keine automatische TLS-Budget-Überwachung | bei Erschöpfung fällt erst die Zertifikatsausstellung als HTTPS-Fehler auf | manuelle Zählung in Abschnitt 3; DNS-01 bleibt der Fallback |
 | 5 | Kein Offsite-Backup | Totalverlust bei Platten-/Hostschaden | Transport entschieden (D-Offsite), Umsetzung offen |
 | 6 | Restore nicht vollständig geprobt, volle RTO unbekannt | der Wiederherstellungsweg mit Stack-Start und Login ist ungeprüft | Pfad A komplett geprobt (Datenprobe = 1, RTO ~2 min ohne VM-Boot); VM-Boot und Browser-Login bleiben offen |
 | 7 | ufw greift für Docker-Published-Ports nicht | „ufw grün" heißt für Container-Ports nicht „geschützt" | `127.0.0.1`-Bindung ist der Schutz der lokalen Dienste |
@@ -324,8 +330,9 @@ ss -tlnp; ss -ulnp | grep 443
 | 9 | Kein Benachrichtigungskanal, keine Digest-Pins | Ausfälle heben keine Alarmierung aus, sie sind nur sichtbar, wer hinsieht | Kanal-Entscheidung D-Monitoring: `hert@ghse.de` über IServ-SMTP, Umsetzung wartet auf IServ |
 | 10 | Template-Schritt 4 (Spielraum der Limits) nicht protokolliert | unbekannte Templates könnten Socket/Privilegien nutzen | Erstinventar ohne Befund, Schritt 2 bestätigt; Schritt 4 offen, siehe [templates/allowlist.md](templates/allowlist.md) |
 | 11 | Coder sieht hinter Caddy nur dessen Container-IP | Audit-Einträge nennen keine Client-IP; vertrauenswürdige Header-Konfiguration wurde **unterlassen** (das ganze Compose-Netz wäre fälschbar) | entschieden: Client-IPs bleiben nicht im Audit; Fällt doch Bedarf: feste IP für `caddy` und `CODER_PROXY_TRUSTED_ORIGINS` **nur** auf diese IP |
-| 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Alternative DNS-01 dokumentiert (Abschnitt 3) |
+| 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Seit 2026-11-22 läuft die Ausstellung durch den Schul-Proxy; DNS-01 bleibt Fallback (Abschnitt 3) |
 | 13 | PostgreSQL-Major-Version braucht Wartung | Major-Wechsel sind nie ein reiner `pull`, sondern Dump/Restore | Support für 18 bis November 2030; bei weiterem Wechsel: Wartungsfenster nach [RESTORE.md](RESTORE.md) |
+| 14 | Agenten-Zugriff | Ein Agent mit Testhost-Root oder Deploy-Token kann Templates und Workspaces ändern | D-Agenten: Testhost wegwerfbar, Produktion nur per GitHub Action mit gescopetem Token, kein Git-Push-/Repo-Admin-Zugang |
 
 ## 9. Entscheidungen (Stand)
 
@@ -342,7 +349,8 @@ DNS-/Netzwerk-Verantwortliche.
 | D-Monitoring | Alarmweg | Empfänger `hert@ghse.de`, Weg Grafana-Mail über IServ-SMTP – Umsetzung wartet auf IServ-Produktiv; bis dahin fängt der tägliche BackupStale-Check den kritischen Fall ab |
 | D-Offsite | Offsite-Kopie der Backups | Transport festgelegt: vzdump/PBS auf anderem Storage/Host + monatlicher verschlüsselter `rsync`-Pull vom Betreiber-Rechner; Umsetzung offen |
 | D-Update-Fenster | Wann manuelle Stack-/Engine-Updates laufen | monatlich, erster Samstag 09:00 (Backup grün → Setup-Rerun → §5-Checks); kritische CVEs ad hoc nach Unterrichtsende |
-| D-TLS | TLS-Robustheit / DNS-01 | On-Demand-TLS mit `ask` bleibt; DNS-01 **aufgeschoben**, bis Zone, Hosting und die Zuständigkeit für DNS/Ports geklärt sind – dann ist der All-Inkl-KAS-Zugang das Einzige, was fehlt |
+| D-TLS | TLS-Robustheit / DNS-01 | On-Demand-TLS mit `ask` bleibt. Seit 2026-11-22 stellt der Apex über den Schul-Proxy (HTTP-01/TLS-ALPN) erfolgreich aus; DNS-01 nur als Fallback, falls der Proxy die Challenges blockiert oder das geteilte Budget zum Problem wird. KAS-Zugang dafür noch nicht angefragt |
+| D-Agenten | Agenten-Zugriff auf Test und Produktion | Testhost: root und selbst geholte Tokens, weil wegwerfbar ohne Produktionsdaten; Produktion: kein Agenten-Zugang, Deploy nur per GitHub Action mit gescopetem Token; Agent ohne Git-Push- und Repo-Admin-Rechte |
 
 Nicht Teil der Liste, weil es Schritte und keine Entscheidungen sind:
 Template-Schritt 4, volle Restore-Probe auf frischer VM, Inbetriebnahme

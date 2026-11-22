@@ -135,6 +135,9 @@ und den Wildcard-DNS. Einen belegten Port meldet `docker compose up` mit
 klarer Portangabe (Diagnose: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)).
 Alles einzeln reproduzierbar:
 
+Seit 2026-11-22 ist der öffentliche Pfad aktiv (DNS, Proxy, TLS); der
+`healthz`-Check muss 200 liefern. Vorher war Code 000 normal.
+
 ```bash
 # Alle sechs Container laufen
 for c in coder-postgres coder coder-caddy coder-prometheus coder-node-exporter coder-grafana; do
@@ -148,6 +151,11 @@ sudo docker exec coder-postgres pg_isready -U coder -d coder
 # Öffentlicher Pfad (DNS + Portweiterleitung + TLS in einem)
 curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 \
   https://coder.ghse-unterricht.de/healthz                          # erwartet: 200
+
+# Apex-Zertifikat: Aussteller und Laufzeit
+echo | openssl s_client -connect coder.ghse-unterricht.de:443 \
+  -servername coder.ghse-unterricht.de 2>/dev/null | \
+  openssl x509 -noout -issuer -dates
 
 # Lokal gebundene Dienste
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9090/-/healthy   # Prometheus
@@ -191,7 +199,7 @@ Konfiguration validieren (ohne Eingriff):
 TLS-Budget sichten (kein automatischer Check, [SECURITY.md](SECURITY.md) §3):
 
 ```bash
-sudo docker exec caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" | wc -l
+sudo docker exec coder-caddy sh -c "find /data/caddy/certificates -name '*.crt' -mtime -7" | wc -l
 ```
 
 Nach dem ersten Workspace zusätzlich im Terminal **dieses** Workspaces die
@@ -449,25 +457,24 @@ Netz braucht, steht in [README.md](README.md), Abschnitt „Wo stehen wir".
 
 ## 11. Inbetriebnahme am Zielserver: wer macht was
 
-Domain bleibt **`ghse-unterricht.de`** (gesamt mit anderen Schuldiensten
-geteilt). Der Zielserver ist ein Schulserver, per SSH nur aus dem Schulnetz
-erreichbar. Bis DNS und Web-Portweiterleitung stehen, startet der Stack
-trotzdem – Caddy holt das Zertifikat dann nach (Skript ist idempotent,
-einfach erneut ausführen).
+Domain bleibt **`ghse-unterricht.de`** (geteilt mit anderen Schuldiensten).
+Der Zielserver ist ein Schulserver (`10.16.1.13`), per SSH nur aus dem
+Schulnetz erreichbar. Seit 2026-11-22 steht der öffentliche Weg: DNS (Apex +
+Wildcard) → `93.240.138.109`, zentraler Proxy → `10.16.1.13`, 80/443 und
+ACME-Challenges durchgereicht. Das Apex-Zertifikat ist ausgestellt,
+`https://coder.ghse-unterricht.de/healthz` liefert 200.
 
-> **Vorab klären (offen):** Der Zielserver ist ein **frisches Debian ohne
-> eigenen Webserver**. **IServ** läuft auf einem anderen zentralen
-> Netzwerkserver, vermutlich samt Reverse-Proxy. Solange unklar ist, wie
-> 80/443 zum Zielserver kommen (DNS direkt oder Durchreichung am zentralen
-> Server) und wer DNS/Wildcard übernimmt, bleibt die TLS-Frage (On-Demand
-> vs. DNS-01) aufgeschoben.
+> **Stand 2026-11-22:** Der Schul-Proxy antwortet nicht selbst, sondern
+> reicht 80/443 und die ACME-Challenges durch; HTTPS läuft als
+> TLS-Passthrough. Der App-Test über eine echte Workspace-URL (Wildcard +
+> On-Demand-TLS + Hairpin) steht noch aus.
 
 ### Pre-Flight vor dem ersten Lauf (Betreiber)
 
 Zehn Minuten am Zielserver, bevor `sudo ./setup-coder.sh` läuft – geordnet
 nach dem, was das Skript **nicht** selbst prüft:
 
-1. **Portlage 80/443 klören.** Kurz nachprüfen, ob am Zielserver schon
+1. **Portlage 80/443 klären.** Kurz nachprüfen, ob am Zielserver schon
    etwas **80/443** hält (sonst kann Caddy die Ports nicht binden):
 
    ```bash
@@ -494,8 +501,9 @@ nach dem, was das Skript **nicht** selbst prüft:
 
 4. **Ressourcen:** `df -h /` (Images, laufende Dumps), `free -h` (Stack +
    Workspaces), `nproc`.
-5. **DNS/Weiterleitung** stehen? Netzwerkadmin-Zeilen 1–4 unten. Fehlen
-   sie, läuft der Stack trotzdem, bekommt aber kein Zertifikat – späterer
+5. **DNS/Weiterleitung** stehen? Netzwerkadmin-Zeilen 1–4 unten; seit
+   2026-11-22 erledigt. Auf einem frischen Server fehlen sie ggf. noch:
+   dann läuft der Stack trotzdem, bekommt aber kein Zertifikat – späterer
    zweiter Lauf genügt.
 6. **Erstkonto vorbereiten:** ohne `CODER_FIRST_USER_*` ist der erste
    Anmeldende Owner. Variablen nur über `sudo env …` übergeben, Beispiel
@@ -508,12 +516,16 @@ nach dem, was das Skript **nicht** selbst prüft:
 
 ### Netzwerkadmin
 
+**Status 2026-11-22:** Zeilen 1–4 sind umgesetzt (DNS, Proxy, ACME,
+Zertifikat). Zeile 6 bleibt Reserve, falls der Proxy die Challenges
+dauerhaft blockiert.
+
 | # | Was | Warum |
 |---|---|---|
-| 1 | A-Record `coder.ghse-unterricht.de` → öffentliche IP des Ziel-**Servers** | sonst keine Weboberfläche |
-| 2 | A-Record Wildcard `*.coder.ghse-unterricht.de` → gleiche IP | **Pflicht**: Coder vergibt Workspace-URLs im Format `<port>--<agent>--<workspace>--<user>.coder.ghse-unterricht.de`; ohne Wildcard laufen nur die Oberfläche und keine Workspace-App/Port-Forwarding |
-| 3 | Firewall/Router: **80/tcp und 443/tcp 1:1 an den Server** weiterleiten (443/udp optional für HTTP/3) | ACME braucht 80 (http-01) und 443 (tls-alpn-01); ohne beides kein Zertifikat |
-| 4 | Falls der zentrale Proxy (vermutlich am IServ-Server) vor dem Zielserver bleibt: `/.well-known/acme-challenge/` durchreichen, HTTPS als TLS-Passthrough (SNI) **und WebSocket-Upgrade** durchreichen (Workspace-Verbindungen laufen über WSS) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft |
+| 1 | A-Record `coder.ghse-unterricht.de` → öffentliche IP des Schul-Gateways (`93.240.138.109`) | sonst keine Weboberfläche; **erledigt** |
+| 2 | A-Record Wildcard `*.coder.ghse-unterricht.de` → gleiche IP | **Pflicht**: Coder vergibt Workspace-URLs im Format `<port>--<agent>--<workspace>--<user>.coder.ghse-unterricht.de`; ohne Wildcard laufen nur die Oberfläche und keine Workspace-App/Port-Forwarding; **erledigt** |
+| 3 | Firewall/Router: **80/tcp und 443/tcp 1:1 an `10.16.1.13`** weiterleiten (443/udp optional für HTTP/3) | ACME braucht 80 (http-01) und 443 (tls-alpn-01); ohne beides kein Zertifikat; **erledigt** |
+| 4 | Der zentrale Proxy bleibt davor: `/.well-known/acme-challenge/` durchreichen, HTTPS als TLS-Passthrough (SNI) **und WebSocket-Upgrade** durchreichen (Workspace-Verbindungen laufen über WSS) | ein Proxy, der selbst antwortet (z. B. mit 404), blockiert die Zertifikatsausstellung dauerhaft; **umgesetzt** |
 | 5 | SSH/22 bleibt ausschließlich aus dem Schulnetz erreichbar; keine öffentliche Weiterleitung | Passwortzugang ist für die erste Inbetriebnahme vorgesehen; ufw + fail2ban begrenzen Fehlversuche zusätzlich |
 | 6 | Nur wenn Zeile 3 dauerhaft nicht geht: KAS-Zugang für DNS-01 (Modul `caddy-dns/all-inkl`) beim Domainverwalter anfordern | Der Betreiber hat **keinen** DNS-Zugang; der Betreiber fordert nur an, was in den Zeilen 1–4 steht |
 
@@ -523,11 +535,16 @@ Challenge; Zone `ghse-unterricht.de` liegt bei **All-Inkl**, dafür existiert
 das Caddy-Modul `caddy-dns/all-inkl`. Das Standard-`caddy`-Image enthält es
 **nicht** – nötig wären ein eigener xcaddy-Build und die KAS-Zugangsdaten in
 einer `600`-Datei auf dem Server, nie im Repository. **Die Umstellung ist
-aufgeschoben**, solange unklar ist, ob die Zone bei All-Inkl bleibt und wer
-DNS/Ports übernimmt. DNS-01 löst nur die ACME-Frage – der Nutzerverkehr
+aufgeschoben:** Zone und Hosting sind geklärt (All-Inkl, DNS beim
+Netzwerkadmin), der Proxy lässt ACME durch. DNS-01 bleibt Fallback, falls
+sich das ändert. DNS-01 löst nur die ACME-Frage – der Nutzerverkehr
 braucht weiterhin 80/443 bis zum Server.
 
 ### Betreiber (Auftraggeber)
+
+**Stand 2026-11-22:** Schritte 1–3 sind erledigt (Erstlauf 2026-10-14,
+Portlage und Zertifikat seit 2026-11-22). Offen sind das zweite Owner-Konto
+(Schritt 4) und die Abnahme (Schritt 5).
 
 1. **Vorab:** `sudo ./setup-coder.sh` am Zielserver ausführen (Warnung zu
    TLS ist bis zu Punkt 3 normal).

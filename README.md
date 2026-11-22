@@ -20,23 +20,28 @@ Repository.
 | Datenbank wiederherstellen | [RESTORE.md](RESTORE.md) |
 | Härtung, SSH, Secrets, TLS, Firewall, Grenzen | [SECURITY.md](SECURITY.md) |
 | Einen Fehler diagnostizieren und sicher beheben | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Agenten: Testen auf dem Hetzner, Deployment über GitHub | [AGENTEN.md](AGENTEN.md) |
 | Was darf ein Workspace-Template? | [templates/allowlist.md](templates/allowlist.md) |
 
 ## Wo stehen wir
 
 - **Das Setup läuft am Zielserver (Schulserver) durch** – Erstlauf und
-  Re-Run ohne Fehler, Erstkonto `maximilian` angelegt. Es fehlt nur noch,
-  was andere liefern müssen: DNS-Portweiterleitung 80/443 und das
-  Proxmox-VM-Backup (siehe „Offene Punkte").
+  Re-Run ohne Fehler, Erstkonto `maximilian` angelegt.
+- **Öffentlicher Zugang steht seit 2026-11-22:** DNS (Apex + Wildcard) zeigt
+  auf `93.240.138.109`, der zentrale Proxy reicht 80/443 und die
+  ACME-Challenges an `10.16.1.13` durch.
+  `https://coder.ghse-unterricht.de/healthz` liefert 200, das
+  Let's-Encrypt-Zertifikat ist ausgestellt (gültig bis 2027-02-20). Offen ist
+  nur noch der App-Test über eine echte Workspace-URL.
 - **Getestet:** alle lokalen Tests (10 Dateien, 329 `PASS`, 0 `FAIL`),
   mehrfache Voll-Läufe auf einer Test-VM (je 0 `[FEHLER]`), Restore-Pfad A
   komplett geprobt (Datenprobe = 1, RTO rund 2 Minuten ohne VM-Boot).
-- **Noch offen vor Freigabe:** RTO inkl. VM-Boot, `/healthz` unter echtem
-  DNS (Portweiterleitung steht noch nicht), Restore-/Reset-Probe unter
-  Last, Offsite-Zugriff proben, Produktionsfreigabe.
-- **Offene Entscheidung nur noch eine:** DNS-01-Zugang beim Domainverwalter
-  (bis dahin On-Demand-TLS). Alle übrigen Entscheidungen sind getroffen:
-  [SECURITY.md](SECURITY.md) §9.
+- **Noch offen vor Freigabe:** RTO inkl. VM-Boot, Restore-/Reset-Probe unter
+  Last, Offsite-Zugriff proben, Wildcard-/Workspace-App-Test,
+  Agenten-Deploy ([AGENTEN.md](AGENTEN.md)), Produktionsfreigabe.
+- **Offene Entscheidung:** DNS-01 nur, falls der Proxy die ACME-Challenges
+  dauerhaft nicht durchlässt; bis dahin On-Demand-TLS. Alle übrigen
+  Entscheidungen stehen in [SECURITY.md](SECURITY.md) §9 (neu: `D-Agenten`).
 
 ## Offene Punkte – wer macht was
 
@@ -45,9 +50,12 @@ Stelle):
 
 | Was | Wer | Wo |
 |---|---|---|
-| DNS/Portlage: A-Record + Wildcard auf die Server-IP, 80/443 dorthin durchreichen (Netzwerkadmin-Zeilen 1–4). **Status 2026-10-14:** DNS (Apex+Wildcard) löst auf, Portweiterleitung fehlt noch – `/healthz` antwortet mit Code 000. Zone/Hosting + DNS-API-Token separat für DNS-01 | Netzwerkadmin/Domainverwalter; Betreiber fordert nur Zeilen 1–4 an | [OPERATIONS.md](OPERATIONS.md) §11 |
+| DNS/Portlage: A-Record + Wildcard auf die öffentliche IP, 80/443 dorthin durchreichen (Netzwerkadmin-Zeilen 1–4). **Status 2026-11-22: erledigt** – Apex + Wildcard → `93.240.138.109`, zentraler Proxy → `10.16.1.13`, 80/443 und ACME-Challenges durchgereicht, Zertifikat ausgestellt. Offen bleibt nur DNS-01 als Fallback (KAS-Zugang bei All-Inkl) | Netzwerkadmin/Domainverwalter | [OPERATIONS.md](OPERATIONS.md) §11 |
 | Proxmox-VM-Backup (vzdump/PBS) um 02:00 einrichten, Ziel = anderer Storage/Host; dabei einmal prüfen, dass die Workspace-Homes wirklich in Docker-Volumes liegen; einmal Restore aus dem VM-Backup testen | Betreiber (Proxmox/PBS-Zugang) | [OPERATIONS.md](OPERATIONS.md) §7, [RESTORE.md](RESTORE.md) |
-| Ersten Test-Workspace anlegen und dessen App-URL vom Schulnetz-Client öffnen (prüft Port-Forwarding + Wildcard-DNS, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) B6); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (ohne sie bricht der Reset hart ab) | Betreiber | [OPERATIONS.md](OPERATIONS.md) §11 |
+| Ersten Test-Workspace anlegen und dessen App-URL vom Schulnetz-Client öffnen (prüft Wildcard-DNS, On-Demand-TLS und Hairpin, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) B6); danach die Workspace-Container-Labels prüfen, die `reset-coder.sh` für den Verzeichnis-Cleanup braucht (ohne sie bricht der Reset hart ab) | Betreiber | [OPERATIONS.md](OPERATIONS.md) §11 |
+| Zweites Owner-Konto anlegen – die Administration soll nicht an einem Zugang hängen | Betreiber | [SECURITY.md](SECURITY.md) §1, [OPERATIONS.md](OPERATIONS.md) §11 |
+| `template-agent` auf dem Schulserver anlegen (`login_type none`, Rollen `member` + `template-admin`), Deploy-Token als GitHub-Secret hinterlegen und den Workflow für `coder templates push` einrichten | Betreiber | [AGENTEN.md](AGENTEN.md) |
+| Hetzner-Testhost für den Agenten: Access-URL-Override für echte Workspace-Tests, Caddy gestoppt halten, Token-Rotation terminieren | Betreiber | [AGENTEN.md](AGENTEN.md) |
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken – erst nach dem Vorführen der konkreten Templates | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
 | Alarmweg umsetzen: Grafana-Contact-Point an `hert@ghse.de` über IServ-SMTP, sobald IServ produktiv ist; bis dahin fängt der tägliche BackupStale-Routine-Check den kritischen Fall ab | Betreiber | [OPERATIONS.md](OPERATIONS.md) §6 |
 | Offsite-Transport umsetzen: monatlicher verschlüsselter `rsync`-Pull der Backups auf externe Platte | Betreiber | [OPERATIONS.md](OPERATIONS.md) §8 |
@@ -56,10 +64,10 @@ Stelle):
 Keine Freigabe für Produktion ist in diesem Repository dokumentiert.
 
 **Zielbetrieb:** ein Schulserver (fresches Debian 13), per SSH nur aus dem
-Schulnetz erreichbar. IServ und der zentrale Reverse-Proxy laufen auf einem
-anderen Server – wie 80/443 zum Zielserver kommen und wer was anfordert,
-steht komplett in [OPERATIONS.md](OPERATIONS.md) §11. Der Betreiber hat
-keinen DNS-Zugang.
+Schulnetz erreichbar. 80/443 kommen über den zentralen Schul-Proxy
+(`93.240.138.109`) und werden an `10.16.1.13` durchgereicht, ACME-Pfad und
+TLS-Passthrough inklusive. Wer was anfordert, steht in
+[OPERATIONS.md](OPERATIONS.md) §11. Der Betreiber hat keinen DNS-Zugang.
 
 ## Voraussetzungen
 
@@ -72,13 +80,16 @@ keinen DNS-Zugang.
       IP des Servers. Prüfung: `getent hosts coder.ghse-unterricht.de` und
       `getent hosts setup-probe-1.coder.ghse-unterricht.de`
 - [ ] Die Schulnetz-Infrastruktur leitet 80/tcp und 443/tcp (443/udp für
-      HTTP/3 optional) an den Server weiter (Standard intern: 10.16.103.13).
+      HTTP/3 optional) an den Server weiter (Standard intern: 10.16.1.13).
       SSH/22 bleibt ausschließlich aus dem Schulnetz erreichbar; keine
       öffentliche SSH-Weiterleitung einrichten.
 - [ ] Ausreichend Platte: Warnung unter 1 GB frei unter `/opt/coder`,
       Backup bricht unter 500 MB frei hart ab. Prüfung: `df -h /opt/coder`
 - [ ] Ein zweiter Zugang (Konsole/Proxmox/iDRAC) existiert, falls du dich
       per SSH aussperrst.
+
+Stand 2026-11-22 sind DNS, Portweiterleitung und TLS erfüllt; die Liste
+bleibt die Prüfliste für einen Neuaufbau.
 
 Fehlt DNS oder Portweiterleitung, startet der Stack **trotzdem**: der
 Abschlusscheck meldet es als WARNUNG. Danach das Skript einfach erneut
@@ -133,6 +144,7 @@ erneutes Ausführen ausgelegt (Re-Run).
 | `scripts/` | Wartungsskripte (`backup.sh`, `reset-coder.sh`, `workspace-egress.sh`); das Setup schreibt sie nach `/opt/coder/` |
 | `setup.conf.example` | Vorlage für `setup.conf` (Domain, ACME-Adresse **Pflicht**, ACME-CA, fail2ban-Ignore-IP); `setup.conf` selbst ist gitignored |
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
+| `AGENTEN.md` | Test- und Deployment-Weg für Agenten: Hetzner → Review → GitHub Action → Schulserver |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
 | `tests/` | 10 lokale Prüfskripte (ohne Docker und ohne Produktion) |
 
@@ -215,10 +227,12 @@ Dump/Restore in einem Wartungsfenster ([RESTORE.md](RESTORE.md)).
   erreichen RFC1918 außerhalb der Docker-Netze nicht (Egress-Sperre).
 - **Secrets**: `.env` mit 600/root, generierte Passwörter hex, kein Secret
   im Repository, Rotation manuell ([OPERATIONS.md](OPERATIONS.md) §7).
-- **TLS**: Caddy On-Demand-TLS mit Wildcard; ein lokaler `ask`-Endpunkt
-  erlaubt nur Coder-App-Subdomänen. Das Let's-Encrypt-Wochenbudget (50/
-  Domain) ist mit allen Schuldiensten geteilt und wird **nicht**
-  automatisch überwacht – Grenzen: [SECURITY.md](SECURITY.md) §3.
+- **TLS**: Apex-Zertifikat über HTTP-01/TLS-ALPN durch den Schul-Proxy
+  (ausgestellt 2026-11-22, gültig bis 2027-02-20), Wildcard per
+  On-Demand-TLS mit lokalem `ask`-Endpunkt, der nur Coder-App-Subdomänen
+  erlaubt. Das Let's-Encrypt-Wochenbudget (50/Domain) ist mit allen
+  Schuldiensten geteilt und wird **nicht** automatisch überwacht – Grenzen:
+  [SECURITY.md](SECURITY.md) §3.
 - **Updates**: Debian-Paketupdates inkl. Reboot um 03:00 (Dauerregel);
   Stack-/Engine-Updates manuell im monatlichen Update-Fenster
   ([OPERATIONS.md](OPERATIONS.md) §7).

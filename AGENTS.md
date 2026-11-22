@@ -155,6 +155,8 @@ single source of truth, not only in the chat: open items with owner in
 README „Offene Punkte – wer macht was", procedures in OPERATIONS/RESTORE,
 decisions in SECURITY.
 
+Agent operation (test host, deploy path, trust boundaries): [AGENTEN.md](AGENTEN.md).
+
 Keep the docs focused and skimmable: current state, decisions, and where
 to act; leave chronicles, chat transcripts, and session exports out.
 

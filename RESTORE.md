@@ -3,11 +3,12 @@
 Status: Verfahren festgelegt (Pfad A/B), manuell. **Pfad A ist vollständig
 geprobt** (2026-10-01 auf dem Test-Host `2.29.11.30`): Datenprobe `1`,
 RTO **1 min 50 s** ohne VM-Boot (Details unten „Wiederholungspflicht").
-**Nicht erfüllbar auf dem Test-Host:** der `/healthz`-TLS-Smoke, solange
-die Domain auf eine fremde IP zeigt – ein grüner `/healthz` ist erst am
-echten Zielserver belegbar. **Weiter offen:** RTO inklusive
-VM-Boot/Paketinstallation (braucht eine frische VM) und Browser-Login am
-Dashboard. **Nie auf Produktion üben, nur auf isolierter Test-VM.**
+**Nicht auf dem Test-Host belegbar:** der `/healthz`-TLS-Smoke über die
+Produktionsdomain, weil die Domain auf den Schulserver zeigt. Am echten
+Zielserver ist er belegt (2026-11-22, Code 200, Let's-Encrypt-Zertifikat).
+**Weiter offen:** RTO inklusive VM-Boot/Paketinstallation (braucht eine
+frische VM) und Browser-Login am Dashboard. **Nie auf Produktion üben, nur
+auf isolierter Test-VM.**
 
 ## Was gesichert wird – und was nicht (P-024, ehrlich)
 
