@@ -125,6 +125,8 @@ test file prints `PASS` lines and exits 0, no `ROT:` line):
 ```bash
 bash -n setup-coder.sh scripts/*.sh tests/*.sh
 shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
+bash -n tools/create-class-accounts.sh
+shellcheck -S warning tools/create-class-accounts.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 

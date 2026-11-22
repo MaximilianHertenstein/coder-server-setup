@@ -21,6 +21,7 @@ Repository.
 | Härtung, SSH, Secrets, TLS, Firewall, Grenzen | [SECURITY.md](SECURITY.md) |
 | Einen Fehler diagnostizieren und sicher beheben | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Agenten: Testen auf dem Hetzner, Deployment über GitHub | [AGENTEN.md](AGENTEN.md) |
+| Klassen-Accounts für den Unterricht anlegen | [tools/README.md](tools/README.md) |
 | Was darf ein Workspace-Template? | [templates/allowlist.md](templates/allowlist.md) |
 
 ## Wo stehen wir
@@ -147,6 +148,7 @@ erneutes Ausführen ausgelegt (Re-Run).
 | `RESTORE.md` | Wiederherstellungs-Runbook (wird auf den Server nach `/opt/coder/RESTORE.md` kopiert) |
 | `AGENTEN.md` | Test- und Deployment-Weg für Agenten: Hetzner → Review → GitHub Action → Schulserver |
 | `templates/allowlist.md` | Regelwerk für Workspace-Templates (Docker-Socket ist host-root-äquivalent) |
+| `tools/` | `create-class-accounts.sh` für Klassenkonten + PDF (läuft beim Betreiber, nicht auf dem Server) |
 | `tests/` | 10 lokale Prüfskripte (ohne Docker und ohne Produktion) |
 
 ## Was das Setup-Skript macht
@@ -259,6 +261,8 @@ Lokal ausführbar (kein Docker, kein Root, keine Produktion):
 ```bash
 bash -n setup-coder.sh scripts/*.sh tests/*.sh
 shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
+bash -n tools/create-class-accounts.sh
+shellcheck -S warning tools/create-class-accounts.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
