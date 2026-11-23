@@ -37,6 +37,15 @@ set -euo pipefail
 # vollständig auf dem Server (git clone, siehe README).
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# IServ-OIDC: Parser/Prüfung liegen in einer eigenen, testbaren Datei.
+# Fehlt sie, ist das Repo unvollständig – Abbruch vor jeder Serveränderung.
+if [ ! -r "${SETUP_DIR}/scripts/lib/oidc-config.sh" ]; then
+  echo "Fehler: ${SETUP_DIR}/scripts/lib/oidc-config.sh fehlt (Repo unvollständig)." >&2
+  exit 1
+fi
+# shellcheck source=scripts/lib/oidc-config.sh
+. "${SETUP_DIR}/scripts/lib/oidc-config.sh"
+
 # Root ist Pflicht – zuerst, vor jeder Prüfung und jeder Änderung: Lock,
 # Rechte und Dateien unter /opt/coder gehören root, und die Wartungsskripte
 # sperren dieselbe Datei. Ohne root würde das Setup scheitern, nachdem es
@@ -186,6 +195,9 @@ fi
 # CODER_ALLOW_DOWNGRADE=yes gesetzt ist (bewusster Rollback, siehe
 # RESTORE.md). Eine Änderung NACH oben (Upgrade) bleibt ohne Rückfrage.
 VERSIONS_FILE="/opt/coder/versions.env"
+# OIDC: Quelle bleibt unangetastet; die Laufzeitdatei wird bei aktivem OIDC
+# aus den geprüften Werten erzeugt (0600, nur der coder-Service liest sie).
+OIDC_ENV_FILE="/opt/coder/oidc.env"
 VERSION_VARS="CODER_VERSION"
 VERSIONS_PREV="$(cat "${VERSIONS_FILE}" 2>/dev/null || true)"
 for _vv in ${VERSION_VARS}; do
@@ -576,6 +588,35 @@ else
   exit 1
 fi
 
+# ---- IServ-OIDC (optional) ------------------------------------------------
+# Die Quelldatei ist root:root/0600 und wird NIEMALS überschrieben; das Setup
+# legt sie nur an, wenn sie fehlt, und korrigiert die Rechte. Ohne vollständige
+# Zugangsdaten bleibt OIDC aus, es werden keine leeren OIDC-Variablen an Coder
+# übergeben, und die lokale Passwort-Anmeldung bleibt unverändert.
+oidc_ensure_file "$OIDC_ENV_FILE" || {
+  echo "Fehler: ${OIDC_ENV_FILE}: ${OIDC_ERROR}" >&2
+  exit 1
+}
+oidc_load_config "$OIDC_ENV_FILE" || {
+  echo "Fehler: ${OIDC_ENV_FILE}: ${OIDC_ERROR}" >&2
+  echo "Reparatur: Datei korrigieren (Vorlage bleibt erhalten), dann Setup erneut." >&2
+  exit 1
+}
+
+OIDC_COMPOSE_BLOCK=""
+if [ "$OIDC_ACTIVE" -eq 1 ]; then
+  # Compose bindet die geschützte Quelldatei direkt als env_file ein; es
+  # entsteht keine zweite Secret-Datei und die Quelle wird nie umgeschrieben.
+  OIDC_COMPOSE_BLOCK=$(oidc_compose_block "$OIDC_ENV_FILE")
+  echo "IServ-OIDC aktiviert (Issuer: ${OIDC_ISSUER_URL}); die lokale Anmeldung bleibt erhalten."
+else
+  if [ "$OIDC_MODE" = "false" ]; then
+    echo "IServ-OIDC deaktiviert (OIDC_ENABLED=false); die lokale Anmeldung bleibt erhalten."
+  else
+    echo "IServ-OIDC deaktiviert (keine vollständigen Zugangsdaten); die lokale Anmeldung bleibt erhalten."
+  fi
+fi
+
 # docker-compose.yml
 # WICHTIG: \${...} bleibt hier absichtlich für Docker Compose stehen (wird aus
 # /opt/coder/.env aufgelöst); ${DOMAIN_CODER} etc. werden dagegen jetzt von
@@ -630,6 +671,7 @@ services:
     # still wirkungslos bleiben. Ein erneuter Setup-Lauf gleicht ihn an.
     group_add:
       - "${DOCKER_GID}"
+${OIDC_COMPOSE_BLOCK}
     environment:
       - CODER_PG_CONNECTION_URL=postgres://coder:\${POSTGRES_PASSWORD}@postgres:5432/coder?sslmode=disable
       - CODER_HTTP_ADDRESS=0.0.0.0:3000
@@ -1198,6 +1240,8 @@ fi
 
 # A2: Compose/Caddyfile/Prometheus wurden in Schritt 2 bereits validiert, BEVOR
 # sie die Live-Platte erreicht haben – hier wird nur noch gestartet.
+# OIDC: Der Inhalt von oidc.env gehört zum Service-Hash; eine Secret-Rotation
+# recreate't den coder-Container hier automatisch.
 docker compose up -d
 
 # Die wirksam
@@ -1732,6 +1776,26 @@ if CODER_GROUPS=$(docker inspect --format '{{json .HostConfig.GroupAdd}}' coder 
   fi
 else
   warn "Socket-Probe nicht möglich (coder-Container nicht inspizierbar)"
+fi
+
+# IServ-OIDC: nur Präsenz der Variablen prüfen, niemals Werte ausgeben.
+# Bei deaktiviertem OIDC darf keine alte OIDC-Variable im Container stehen –
+# sonst wäre die Login-Schaltfläche trotz deaktivierter Quelle sichtbar.
+CODER_STATE=$(docker inspect --type container -f '{{.State.Status}}' coder 2>/dev/null || echo missing)
+if [ "$CODER_STATE" != "running" ]; then
+  warn "IServ-OIDC-Status im Container nicht prüfbar (Coder-Container: ${CODER_STATE})"
+elif [ "$OIDC_ACTIVE" -eq 1 ]; then
+  if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' coder 2>/dev/null \
+      | awk -F= '/^CODER_OIDC_(ISSUER_URL|CLIENT_ID|CLIENT_SECRET)=./ { n++ } END { exit n == 3 ? 0 : 1 }'; then
+    ok "IServ-OIDC im Coder-Container konfiguriert (lokale Anmeldung bleibt aktiv)"
+  else
+    fail "IServ-OIDC ist aktiviert, aber die OIDC-Variablen fehlen im Coder-Container – Compose/Recreate prüfen"
+  fi
+elif docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' coder 2>/dev/null \
+    | awk -F= '/^CODER_OIDC_(ISSUER_URL|CLIENT_ID|CLIENT_SECRET)=./ { n++ } END { exit n == 0 ? 0 : 1 }'; then
+  ok "IServ-OIDC deaktiviert; keine OIDC-Konfiguration im Container, lokale Anmeldung aktiv"
+else
+  fail "IServ-OIDC ist deaktiviert, aber der Coder-Container hat noch OIDC-Variablen – Recreate prüfen"
 fi
 
 # A7: Zwei getrennte Proben, damit ein Misserfolg eindeutig zugeordnet werden

@@ -27,6 +27,7 @@ Datei ab, setzt der Lauf sie ohne Vorwarnung deterministisch neu
 | Pfad | Zweck | `write_managed` |
 |---|---|---|
 | `/opt/coder/.env` | Secrets: `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` (600, root) | nein (bewusst) |
+| `/opt/coder/oidc.env` | IServ-OIDC: Issuer, Client-ID/Secret, Schalter (600, root; wird nie überschrieben). Bei aktivem OIDC bindet Compose sie direkt als `env_file` ein | nein (bewusst) |
 | `/opt/coder/docker-compose.yml` | Stack-Definition, Logs, Ports, Volumes | ja |
 | `/opt/coder/caddy/Caddyfile` | TLS + Reverse Proxy, Apex + Wildcard (Verzeichnis `caddy/` wird vollständig gemountet) | ja |
 | `/opt/coder/prometheus/prometheus.yml` | Scrape-Jobs `coder`, `node`, `rule_files` (Verzeichnis `prometheus/` wird vollständig gemountet) | ja |
@@ -85,6 +86,145 @@ Umgebungsvariablen; Tabelle in [README.md](README.md), Abschnitt
 - Passwort bei Bedarf gezielt abrufen:
   `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`
 - Nie in Tickets, Chats, Logs oder das Repository kopieren.
+
+### IServ-OIDC (vorbereitet, standardmäßig aus)
+
+Coder v2.38.10 kann OIDC. Die Integration ist im Setup enthalten, aber ohne
+Zugangsdaten deaktiviert. Die Quelle ist `/opt/coder/oidc.env`
+(root:root, 0600). Das Setup legt die Vorlage beim ersten Lauf an,
+überschreibt sie **nie** und korrigiert nur die Rechte. Die Compose-Datei
+enthält keine Secrets: Bei aktivem OIDC bekommt nur der `coder`-Service eine
+die geschützte Quelldatei selbst als `env_file` (`/opt/coder/oidc.env`,
+0600); bei deaktiviertem OIDC enthält die Compose-Datei keinen `env_file`-Eintrag.
+
+**Aktivieren**
+
+1. Bei Simon einen OIDC-Client anlegen lassen; Redirect-URI exakt:
+   `https://coder.ghse-unterricht.de/api/v2/users/oidc/callback`.
+2. Client-ID und Secret in die Quelldatei eintragen:
+
+   ```bash
+   sudoedit /opt/coder/oidc.env
+   # OIDC_ENABLED=auto bleibt stehen
+   # CODER_OIDC_CLIENT_ID=<von Simon>
+   # CODER_OIDC_CLIENT_SECRET=<von Simon>
+   ```
+
+   `sudoedit` erhält Modus 600. Die Vorlage setzt die Werte in einfache
+   Anführungszeichen – beim Einsetzen beibehalten, dann werden `$`, `#` und
+   Leerzeichen von Compose nicht als Syntax interpretiert. Ein einfaches
+   Anführungszeichen im Secret selbst wird abgelehnt.
+3. Setup erneut ausführen (validiert, schreibt die Compose-Datei mit
+   `env_file` und recreatet den Coder-Container):
+
+   ```bash
+   cd /root/coder-server-setup   # Repo-Pfad auf dem Server
+   sudo ./setup-coder.sh
+   ```
+
+4. Im Browser `https://coder.ghse-unterricht.de/login` öffnen: Der Button
+   „Mit IServ anmelden“ erscheint, das lokale Passwortformular bleibt.
+
+**Schalter in `oidc.env`**
+
+| `OIDC_ENABLED` | Verhalten |
+|---|---|
+| `auto` (Default) | OIDC an, sobald Client-ID **und** Secret gesetzt sind; beide leer = aus. Nur eine der beiden Angaben ist ein Fehler. |
+| `true` | OIDC an; Client-ID und Secret sind Pflicht. |
+| `false` | OIDC aus, auch wenn Zugangsdaten gesetzt bleiben. |
+
+**Was Coder bekommt**
+
+- Issuer `https://ghse.de`, Scopes `openid,profile,email` (keine weiteren)
+- Benutzername aus `preferred_username`, Anzeigename aus `name`,
+  E-Mail aus `email`
+- `email_verified` wird erzwungen (`CODER_OIDC_IGNORE_EMAIL_VERIFIED=false`);
+  ein fehlendes/falsches Claim verweigert den Login
+- Signups sind erlaubt (neue Konten landen in der Default-Organisation mit
+  Rolle `member`); keine Domain-Einschränkung, keine Gruppen-/Rollensync
+- lokale Passwort-Anmeldung bleibt aktiv (`CODER_DISABLE_PASSWORD_AUTH` wird
+  nicht gesetzt)
+
+Bestehende lokale Konten werden **nicht** automatisch per E-Mail mit IServ
+verknüpft. Ein OIDC-Login mit derselben Adresse kann deshalb scheitern; ist
+nur der Benutzername belegt, vergibt Coder ein Suffix. Für den ersten Test
+ein IServ-Konto ohne bestehendes Coder-Konto verwenden. Ein lokales Konto
+lässt sich bewusst über den Coder-„Convert to OIDC“-Flow umstellen; danach
+ist dessen Passwort-Anmeldung weg – das ist nicht Teil dieses Setups.
+
+**IServ-Kompatibilität**
+
+- `client_secret_post`: Coder nutzt den Go-OAuth2-Client mit
+  Auth-Style-Auto-Erkennung. Der erste Token-Austausch nach einem
+  Coder-Neustart versucht Basic und fällt bei der IServ-Ablehnung auf
+  `client_secret_post` zurück; danach ist der Stil gecacht. Das ist
+  kompatibel, erzeugt aber einen zusätzlichen abgelehnten Request.
+- PKCE `S256`: Coder liest `code_challenge_methods_supported` aus der
+  Discovery und verwendet PKCE automatisch.
+- Signatur `RS256`: wird vom Coder-Verifier unterstützt.
+- `subject_types_supported: pairwise`: Coder verknüpft Konten über
+  Issuer + `sub`. Den Client bei IServ nicht ohne Not neu anlegen – eine neue
+  Client-ID kann neue `sub`-Werte erzeugen und bestehende Verknüpfungen
+  brechen.
+- Der Server braucht ausgehenden HTTPS-Zugriff auf `https://ghse.de`
+  (Discovery, JWKS, Token- und UserInfo-Endpoint). Ist IServ beim Coder-Start
+  nicht erreichbar, startet Coder mit aktivem OIDC nicht (siehe
+  TROUBLESHOOTING C6).
+- Coder hängt an den Authorization-Request zusätzlich `access_type=offline`
+  (Go-OAuth2). IServ muss unbekannte Parameter tolerieren; beim ersten
+  Login prüfen. Es werden dadurch keine zusätzlichen Scopes angefordert.
+
+**Testen**
+
+- Login-Seite: IServ-Button sichtbar, lokales Formular weiterhin da.
+- Mit einem Testkonto (möglichst ohne bestehendes lokales Coder-Konto)
+  anmelden; danach unter Account/Profil Benutzername, Name und E-Mail prüfen.
+- Auf dem Server Discovery und Container-Variablen prüfen (ohne Werte):
+
+  ```bash
+  curl -sS https://ghse.de/.well-known/openid-configuration \
+    | grep -E '"issuer"|token_endpoint_auth_methods_supported|code_challenge_methods_supported'
+  sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' coder \
+    | grep -c '^CODER_OIDC_CLIENT_ID=.'   # erwartet: 1
+  ```
+
+- Coder-Log bei Bedarf: `sudo docker logs coder --tail=100 2>&1 | grep -i oidc`.
+
+**Deaktivieren und lokale Anmeldung wiederherstellen**
+
+```bash
+sudoedit /opt/coder/oidc.env    # OIDC_ENABLED=false
+cd /root/coder-server-setup && sudo ./setup-coder.sh
+```
+
+Die Compose-Datei verweist danach nicht mehr auf `oidc.env`, und Coder wird
+ohne OIDC-Variablen neu erstellt; die lokale Anmeldung funktioniert
+unverändert. Das ist auch der Weg, wenn Coder
+wegen einer nicht erreichbaren IServ-Discovery in einer Restart-Schleife
+hängt: erst `OIDC_ENABLED=false`, Setup laufen lassen, danach Ursache klären.
+Die Zugangsdaten bleiben in `oidc.env` erhalten und können später mit
+`auto`/`true` wieder aktiviert werden.
+
+**Client-Secret rotieren**
+
+1. Neues Secret bei IServ erzeugen (alten Client nicht löschen).
+2. `sudoedit /opt/coder/oidc.env`, nur `CODER_OIDC_CLIENT_SECRET` ersetzen.
+3. `sudo ./setup-coder.sh`; der geänderte `oidc.env`-Inhalt ändert den
+   Compose-Hash, Coder wird neu erstellt.
+4. Login testen, danach das alte Secret bei IServ entwerten.
+5. Neues Secret im Passwort-Manager ablegen. Es steht weder im Repository
+   noch in Logs; nur in `oidc.env` (600, root).
+
+**Dateirechte prüfen**
+
+```bash
+sudo stat -c '%U:%G %a %n' /opt/coder/oidc.env
+# erwartet: root:root 600
+```
+
+`oidc.env` wird nicht in die Backups kopiert. Nach einem Restore die Werte
+aus dem Passwort-Manager erneut eintragen und das Setup laufen lassen
+(RESTORE.md). Fehlerfälle: TROUBLESHOOTING.md C6.
 
 ## 4. Start, Stop, Status
 
@@ -444,16 +584,18 @@ Prüfen: `systemctl is-active cron`, `ls -l /etc/cron.d/`,
 ## 10. Tests
 
 ```bash
-bash -n setup-coder.sh scripts/*.sh tests/*.sh
-shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
+bash -n setup-coder.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
+shellcheck -S warning setup-coder.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
 bash -n tools/*.sh
 shellcheck -S warning tools/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Aktueller Stand: alle 10 Dateien in `tests/` Exit 0, 329 `PASS`, 0 `FAIL`.
+Aktueller Stand: alle 11 Dateien in `tests/` Exit 0, 371 `PASS`, 0 `FAIL`.
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder Root
-noch Docker und berühren keine Produktion. Sie belegen das Verhalten
+noch einen Docker-Daemon und berühren keine Produktion. Die OIDC-Prüfung
+nutzt optional `docker compose config` (nur Konfigurationsauflösung, keine
+Container) und wird ohne Docker übersprungen. Sie belegen das Verhalten
 einzelner Codestellen, **nicht** den Gesamtlauf; was noch VM oder echtes
 Netz braucht, steht in [README.md](README.md), Abschnitt „Wo stehen wir".
 

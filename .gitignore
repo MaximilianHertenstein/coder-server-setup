@@ -11,5 +11,7 @@ log.txt
 .env.*
 !.env.example
 *.token
+# IServ-OIDC (Server: /opt/coder/oidc.env):
+oidc.env
 # Erzeugte Zugangsdaten-PDFs (Klartext-Passwörter):
 coder-zugaenge-*.pdf

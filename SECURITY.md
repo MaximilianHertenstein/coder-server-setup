@@ -88,11 +88,20 @@ Die Nachhärtung selbst ist eine VM-/Produktionshandlung.
   erst `backup.sh`, dann neues Hex-Passwort per STDIN an `grafana cli`
   (nie als `docker exec`-Argument), `.env`-Zeile danach atomar nachziehen.
   `POSTGRES_PASSWORD` bleibt unangetastet.
-- Repository-Hygiene: `.gitignore` schließt `.env`, `*.env`, `*.sql`,
-  `*.sql.gz`, `*.log`, `backups/` aus. Kein Secret liegt im Repository.
+- IServ-OIDC: Client-ID/Secret nur in `/opt/coder/oidc.env` (600,
+  root:root; wird vom Setup nie überschrieben). Bei aktivem OIDC bindet
+  Compose diese Datei direkt als `env_file` ein; in `docker-compose.yml`
+  steht nur der Pfad, kein Secret. Deaktivieren entfernt den `env_file`-Eintrag.
+  Das Secret erscheint nicht in Logs; `docker inspect` zeigt es nur root
+  (Host-Root ist ohnehin vertrauenswürdig). Rotation in
+  [OPERATIONS.md](OPERATIONS.md) §3.
+- Repository-Hygiene: `.gitignore` schließt `.env`, `.env.*`, `*.token`,
+  `oidc.env` und erzeugte Zugangsdaten-PDFs aus.
+  Kein Secret liegt im Repository.
 
 ```bash
-sudo stat -c '%a %U:%G %n' /opt/coder/.env /opt/coder/backups
+sudo stat -c '%a %U:%G %n' /opt/coder/.env /opt/coder/backups \
+  /opt/coder/oidc.env 2>/dev/null
 git status --porcelain | grep -i env               # muss leer sein
 ```
 
@@ -333,6 +342,8 @@ ss -tlnp; ss -ulnp | grep 443
 | 12 | ACME läuft über http-01/tls-alpn-01 statt DNS-01 | Zertifikat braucht 80/443 am Server; Schul-Proxy oder gesperrte Ports blockieren die Ausstellung | Seit 2026-11-22 läuft die Ausstellung durch den Schul-Proxy; DNS-01 bleibt Fallback (Abschnitt 3) |
 | 13 | PostgreSQL-Major-Version braucht Wartung | Major-Wechsel sind nie ein reiner `pull`, sondern Dump/Restore | Support für 18 bis November 2030; bei weiterem Wechsel: Wartungsfenster nach [RESTORE.md](RESTORE.md) |
 | 14 | Agenten-Zugriff | Ein Agent mit Testhost-Root oder Deploy-Token kann Templates und Workspaces ändern | D-Agenten: Testhost wegwerfbar, Produktion nur per GitHub Action mit gescopetem Token, kein Git-Push-/Repo-Admin-Zugang |
+| 15 | IServ als OIDC-IdP | Coder fragt die Discovery beim Start ab; ist `https://ghse.de` dann nicht erreichbar, startet Coder nicht – auch die lokale Anmeldung ist dann weg | OIDC ist vorbereitet, aber aus; Recovery: `OIDC_ENABLED=false`, Setup, Coder startet lokal weiter (TROUBLESHOOTING C6) |
+| 16 | Bestehende lokale Konten und OIDC | Coder verknüpft OIDC nicht automatisch per E-Mail; gleiche Adresse/Benutzername kann zu Konflikt oder Namens-Suffix führen | Neue OIDC-Konten testen; lokale Konten behalten ihren Login. Kontoumstellung nur bewusst (kein `CODER_OIDC_EMAIL_FALLBACK`) |
 
 ## 9. Entscheidungen (Stand)
 
@@ -351,6 +362,7 @@ DNS-/Netzwerk-Verantwortliche.
 | D-Update-Fenster | Wann manuelle Stack-/Engine-Updates laufen | monatlich, erster Samstag 09:00 (Backup grün → Setup-Rerun → §5-Checks); kritische CVEs ad hoc nach Unterrichtsende |
 | D-TLS | TLS-Robustheit / DNS-01 | On-Demand-TLS mit `ask` bleibt. Seit 2026-11-22 stellt der Apex über den Schul-Proxy (HTTP-01/TLS-ALPN) erfolgreich aus; DNS-01 nur als Fallback, falls der Proxy die Challenges blockiert oder das geteilte Budget zum Problem wird. KAS-Zugang dafür noch nicht angefragt |
 | D-Agenten | Agenten-Zugriff auf Test und Produktion | Testhost: root und selbst geholte Tokens, weil wegwerfbar ohne Produktionsdaten; Produktion: kein Agenten-Zugang, Deploy nur per GitHub Action mit gescopetem Token; Agent ohne Git-Push- und Repo-Admin-Rechte |
+| D-OIDC | IServ als Identity Provider | Issuer `https://ghse.de`, Scopes nur `openid,profile,email`, Claims `preferred_username`/`name`/`email`, `email_verified` erzwungen, Signups an, keine Domain-/Gruppen-/Rollensynchronisierung, lokale Passwort-Anmeldung bleibt. Secret nur in `/opt/coder/oidc.env` (600); Compose/Logs secretfrei. Aktivierung erst mit Client-ID/Secret von IServ |
 
 Nicht Teil der Liste, weil es Schritte und keine Entscheidungen sind:
 Template-Schritt 4, volle Restore-Probe auf frischer VM, Inbetriebnahme

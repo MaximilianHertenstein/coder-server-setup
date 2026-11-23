@@ -22,13 +22,19 @@ auf isolierter Test-VM.**
   Grafana-Dashboards (das Setup-Provisioning legt sein Dashboard neu an;
   UI-eigene Dashboards exportieren oder Verlust akzeptieren),
   Prometheus-Historie
-  (15 d, verzichtbar), Workspace-Dateien (Unterrichtsdaten!).
+  (15 d, verzichtbar), Workspace-Dateien (Unterrichtsdaten!),
+  IServ-OIDC-Zugangsdaten (`/opt/coder/oidc.env`; nur im Passwort-Manager).
 - **Was das nach einem Restore heißt:**
   - `caddy_data` (ACME-Kontostand, Zertifikate) fehlt auf frischer VM –
     Caddy stellt automatisch neu aus (Erstverzögerung 5–30 s, B3). Mehrere
     Restore-Versuche hart hintereinander können das Let's-Encrypt-Duplikat-
     Limit (5/Woche) erreichen – Restores nicht probeweise wiederholen,
     vorher kurz `docker logs coder-caddy` prüfen.
+  - IServ-OIDC: `oidc.env` mit Client-ID/Secret aus dem Passwort-Manager
+    wieder anlegen (root:root, 0600), dann Setup. Die OIDC-Verknüpfungen
+    liegen in der Datenbank und bleiben erhalten, solange Issuer und
+    Client-ID unverändert sind; ein neu angelegter IServ-Client kann durch
+    pairwise `sub` neue Verknüpfungen erzeugen.
   - Workspace-Homes/-Dateien stehen **nur** in den Workspace-Volumes der
     Alt-Installation. Bei VM-/Plattenverlust ohne VM-Backup sind sie weg,
     der Dump hilft nicht. **Entschieden 2026-10-08:** die Homes werden über

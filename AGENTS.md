@@ -123,8 +123,8 @@ Commands used in this repo (run all after a change; expected result: every
 test file prints `PASS` lines and exits 0, no `ROT:` line):
 
 ```bash
-bash -n setup-coder.sh scripts/*.sh tests/*.sh
-shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
+bash -n setup-coder.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
+shellcheck -S warning setup-coder.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
 bash -n tools/*.sh
 shellcheck -S warning tools/*.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done

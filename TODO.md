@@ -53,6 +53,11 @@ verlinkten Abschnitten (OPERATIONS/SECURITY/RESTORE/AGENTEN), nicht hier.
 
 - [x] **DNS + Portweiterleitung beim Netzwerkadmin: erledigt 2026-11-22**
       (Zeilen 1–4 in §11)
+- [ ] **IServ-OIDC-Client** bei Simon anlegen lassen (Redirect-URI
+      `https://coder.ghse-unterricht.de/api/v2/users/oidc/callback`),
+      Client-ID/Secret in `/opt/coder/oidc.env` eintragen, Setup erneut,
+      Test-Login mit einem IServ-Konto. Integration ist vorbereitet und aus
+      ([OPERATIONS §3](OPERATIONS.md), [TROUBLESHOOTING C6](TROUBLESHOOTING.md))
 - [ ] **DNS-01 nur als Fallback** – Zone liegt bei All-Inkl, DNS macht der
       Netzwerkadmin. KAS-Zugang erst anfragen, wenn der Proxy die
       ACME-Challenges dauerhaft blockiert oder das geteilte Budget zum
