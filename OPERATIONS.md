@@ -446,8 +446,8 @@ Prüfen: `systemctl is-active cron`, `ls -l /etc/cron.d/`,
 ```bash
 bash -n setup-coder.sh scripts/*.sh tests/*.sh
 shellcheck -S warning setup-coder.sh scripts/*.sh tests/*.sh
-bash -n tools/create-class-accounts.sh
-shellcheck -S warning tools/create-class-accounts.sh
+bash -n tools/*.sh
+shellcheck -S warning tools/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 

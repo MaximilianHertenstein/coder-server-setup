@@ -11,3 +11,5 @@ log.txt
 .env.*
 !.env.example
 *.token
+# Erzeugte Zugangsdaten-PDFs (Klartext-Passwörter):
+coder-zugaenge-*.pdf

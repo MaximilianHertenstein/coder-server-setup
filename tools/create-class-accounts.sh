@@ -12,7 +12,7 @@
 set -euo pipefail
 umask 077
 
-DEFAULT_EMAIL_DOMAIN="schueler.ghse-unterricht.de"
+DEFAULT_EMAIL_DOMAIN="ghse.de"
 PASSWORD_LENGTH=14
 PASSWORD_CHARSET="A-HJ-NP-Za-km-z2-9"
 
@@ -46,7 +46,7 @@ Optionen:
   --class <name>        Klassenname, z. B. 10a (sonst Abfrage)
   --count <n>           Anzahl der Schülerinnen und Schüler (sonst Abfrage)
   --email-domain <d>    Domain der E-Mail-Adressen
-                        (Default: schueler.ghse-unterricht.de)
+                        (Default: ghse.de)
   --reset               Bei vorhandenen Konten ein neues Passwort setzen
                         (ohne --reset werden vorhandene Konten übersprungen)
   --dry-run             Nichts anlegen, nur ein Vorschau-PDF erzeugen
@@ -123,10 +123,13 @@ done
 
 command -v typst > /dev/null 2>&1 \
   || die "typst fehlt (für das PDF). Installation: https://typst.app/"
+
+: "${CODER_URL:=https://coder.ghse-unterricht.de}"
+CODER_URL=${CODER_URL%/}
+
 if [ "$DRY_RUN" -eq 0 ]; then
   command -v curl > /dev/null 2>&1 || die "curl fehlt"
   command -v jq > /dev/null 2>&1 || die "jq fehlt"
-  : "${CODER_URL:=https://coder.ghse-unterricht.de}"
 fi
 
 normalize_class() {
@@ -229,54 +232,107 @@ gen_password() {
   printf '%s' "$pw"
 }
 
+typst_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
 write_typst() {
   local rows=$1 out=$2 banner=$3 n
   n=$(wc -l < "$rows" | tr -d ' ')
+  local esc_url esc_class u e p
+  esc_url=$(typst_escape "$CODER_URL")
+  esc_class=$(typst_escape "$CLASS")
   {
+    printf '#let cls = "%s"\n' "$esc_class"
+    printf '#let url = "%s"\n' "$esc_url"
+    printf '#let datum = "%s"\n' "$(date '+%d.%m.%Y')"
+    printf '#let total = %s\n' "$n"
     cat <<'TYP'
 #set page(
   paper: "a4",
-  margin: (x: 1.7cm, y: 1.6cm),
-  footer: context align(right)[#text(size: 8pt, fill: luma(130))[Seite #counter(page).display()]],
+  margin: (x: 1.4cm, y: 1.2cm),
+  footer: context [
+    #grid(
+      columns: (1fr, auto),
+      align: (left, right),
+      [#text(size: 7pt, fill: luma(120))[Passwort beim ersten Login ändern. Nach dem Verteilen löschen.]],
+      [#text(size: 7.5pt, fill: luma(135))[Seite #counter(page).display()]],
+    )
+  ],
 )
 #set text(font: "DejaVu Sans", size: 9.5pt, hyphenate: false)
 #set par(justify: false)
-#show raw: set text(font: "DejaVu Sans Mono", size: 9pt)
 
 #let accent = rgb("#22456b")
-#let band = rgb("#eef3f8")
-
-#align(center)[
-  #text(size: 19pt, weight: "bold", fill: accent)[Coder-Zugänge]
+#let mono(it, sz: 9pt, wt: "regular", fill-color: black) = text(
+  font: "DejaVu Sans Mono", size: sz, weight: wt, fill: fill-color, it,
+)
+#let cred(u, e, p) = grid(
+  columns: (1fr,),
+  row-gutter: 3pt,
+  [#mono(u, sz: 12.5pt, wt: "bold")],
+  [#mono(e, sz: 8.6pt, fill-color: luma(60))],
+  [#text(size: 6.8pt, fill: luma(110), tracking: 0.4pt)[PASSWORT] #h(4pt) #mono(p, sz: 11.5pt)],
+)
+#let card(u, e, p, stretch: false) = {
+  let body = if stretch {
+    align(center + horizon)[#cred(u, e, p)]
+  } else {
+    cred(u, e, p)
+  }
+  block(
+    width: 100%,
+    height: if stretch { 100% } else { auto },
+    inset: (x: 10pt, y: 11pt),
+    radius: 3pt,
+    stroke: 0.6pt + luma(155),
+  )[#body]
+}
+#let header(total, datum) = [
+  #align(center)[#text(size: 15pt, weight: "bold", fill: accent)[Coder-Zugänge Klasse #cls]]
   #v(2pt)
+  #align(center)[#text(size: 8pt, fill: luma(95))[#total Konten · #datum · #url]]
+]
 TYP
-    printf '  #text(size: 11pt)[Klasse %s]\n' "$CLASS"
-    printf ']\n'
-    printf '#v(4pt)\n'
-    printf '#align(center)[#text(size: 8.5pt, fill: luma(95))[%s Konten · %s]]\n' \
-      "$n" "$(date '+%d.%m.%Y')"
-    if [ -n "${CODER_URL:-}" ]; then
-      printf '#v(2pt)\n#align(center)[#text(size: 8.5pt, fill: luma(95))[#raw("%s")]]\n' \
-        "${CODER_URL%/}"
-    fi
-    if [ "$banner" -eq 1 ]; then
-      printf '#v(4pt)\n#align(center)[#text(fill: rgb("#b00020"), weight: "bold")[VORSCHAU – keine Konten angelegt]]\n'
-    fi
-    printf '#v(12pt)\n'
-    printf '#table(\n  columns: (1fr, 1.9fr, 1fr),\n  inset: (x: 8pt, y: 6.5pt),\n'
-    printf '  stroke: (_, y) => (bottom: 0.4pt + luma(205)),\n'
-    printf '  fill: (_, y) => if calc.odd(y) { band } else { white },\n'
-    printf '  table.header(\n'
-    printf '    table.cell(fill: accent)[#text(fill: white, weight: "bold")[Benutzername]],\n'
-    printf '    table.cell(fill: accent)[#text(fill: white, weight: "bold")[E-Mail]],\n'
-    printf '    table.cell(fill: accent)[#text(fill: white, weight: "bold")[Passwort]],\n'
-    printf '  ),\n'
-    while IFS=$'\t' read -r u e p; do
-      printf '  [#raw("%s")], [#raw("%s")], [#raw("%s")],\n' "$u" "$e" "$p"
-    done < "$rows"
-    printf ')\n'
-    printf '#v(10pt)\n#line(length: 100%%, stroke: 0.5pt + luma(200))\n#v(4pt)\n'
-    printf '#text(size: 8pt, fill: luma(95))[Passwort beim ersten Login ändern. Dieses Blatt enthält Klartext-Passwörter – nach dem Verteilen löschen.]\n'
+    local -a lines=()
+    mapfile -t lines < "$rows"
+    local total_lines=${#lines[@]} start count i per_page=16
+    for ((start = 0; start < total_lines; start += per_page)); do
+      count=$((total_lines - start))
+      [ "$count" -gt "$per_page" ] && count=$per_page
+      if [ "$start" -gt 0 ]; then
+        printf '#pagebreak()\n'
+      fi
+      if [ "$count" -eq "$per_page" ]; then
+        printf '#block(height: 100%%)[\n#grid(\n  rows: (auto, 1fr),\n  [\n'
+        printf '#header(total, datum)\n'
+        if [ "$banner" -eq 1 ]; then
+          printf '#v(4pt)\n#align(center)[#text(size: 8.5pt, fill: rgb("#b00020"), weight: "bold")[VORSCHAU – keine Konten angelegt]]\n'
+        fi
+        printf '#v(8pt)\n  ],\n  [\n#grid(\n  columns: (1fr, 1fr),\n  rows: (1fr,) * 8,\n  column-gutter: 14pt,\n  row-gutter: 16pt,\n'
+      else
+        printf '#header(total, datum)\n'
+        if [ "$banner" -eq 1 ]; then
+          printf '#v(4pt)\n#align(center)[#text(size: 8.5pt, fill: rgb("#b00020"), weight: "bold")[VORSCHAU – keine Konten angelegt]]\n'
+        fi
+        printf '#v(10pt)\n#grid(\n  columns: (1fr, 1fr),\n  column-gutter: 14pt,\n  row-gutter: 18pt,\n'
+      fi
+      for ((i = start; i < start + count; i++)); do
+        IFS=$'\t' read -r u e p <<< "${lines[i]}"
+        if [ "$count" -eq "$per_page" ]; then
+          printf '  card("%s", "%s", "%s", stretch: true),\n' \
+            "$(typst_escape "$u")" "$(typst_escape "$e")" "$(typst_escape "$p")"
+        else
+          printf '  card("%s", "%s", "%s"),\n' \
+            "$(typst_escape "$u")" "$(typst_escape "$e")" "$(typst_escape "$p")"
+        fi
+      done
+      if [ "$count" -eq "$per_page" ]; then
+        printf ')\n  ],\n)\n]\n'
+      else
+        printf ')\n'
+      fi
+    done
   } > "$out"
 }
 
@@ -311,7 +367,7 @@ done
 # Typst vor jedem Serverzugriff testen: ein kaputtes PDF darf nicht erst
 # nach dem Anlegen der Konten auffallen.
 write_typst "$ROWS_ALL" "$TYP" 0
-typst compile "$TYP" "$CHECK_PDF" > /dev/null 2>&1 \
+typst compile "$TYP" "$CHECK_PDF" > /dev/null \
   || die "PDF-Vorschau konnte nicht erzeugt werden (typst)"
 
 ORG=""
@@ -335,6 +391,11 @@ if [ "$DRY_RUN" -eq 0 ]; then
     code=$(api GET "/api/v2/users/$user")
     case "$code" in
       200)
+        actual_email=$(jq -r '.email // empty' "$BODY" 2> /dev/null || true)
+        if [ -n "$actual_email" ] && [ "$actual_email" != "$email" ]; then
+          warn "E-Mail von $user ist $actual_email (gewünscht: $email) – wird nicht geändert"
+          email="$actual_email"
+        fi
         if [ "$RESET" -eq 1 ]; then
           payload=$(jq -n --arg password "$pw" '{password:$password}')
           code=$(api PUT "/api/v2/users/$user/password" "$payload")
@@ -403,7 +464,7 @@ banner=0
 [ "$DRY_RUN" -eq 1 ] && banner=1
 write_typst "$ROWS_OK" "$TYP" "$banner"
 PDF="$OUT_DIR/coder-zugaenge-${CLASS}-$(date '+%Y-%m-%d_%H%M%S').pdf"
-typst compile "$TYP" "$PDF" > /dev/null 2>&1 \
+typst compile "$TYP" "$PDF" > /dev/null \
   || die "PDF konnte nicht erzeugt werden (typst)"
 chmod 600 "$PDF"
 
