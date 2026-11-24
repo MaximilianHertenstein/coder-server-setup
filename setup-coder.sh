@@ -1519,6 +1519,15 @@ for _net in 10.0.0.0/8 192.168.0.0/16; do
     fail "DOCKER-USER sperrt ${_net} NICHT – prüfen mit: sudo iptables -S DOCKER-USER; sudo systemctl status coder-egress-firewall"
   fi
 done
+# B3c: Rückverkehr muss VOR den DROP-Regeln stehen, sonst sind die
+# publizierten Ports 80/443 für alle Clients in 10/8 (Schulnetz, IServ-Proxy)
+# unerreichbar – Ping/SSH gehen weiter, nur die DNAT-Wege brechen.
+if iptables -S DOCKER-USER 2>/dev/null | sed -n '2p' \
+    | grep -q -- '-m conntrack --ctstate .*ESTABLISHED.*-j RETURN'; then
+  ok "DOCKER-USER lässt Rückverkehr (ESTABLISHED,RELATED) vor den DROP-Regeln durch"
+else
+  fail "DOCKER-USER: RETURN-Regel für Rückverkehr fehlt oder steht hinter den DROPs – 80/443 wären aus 10/8 unerreichbar. Prüfen: sudo iptables -S DOCKER-USER"
+fi
 # D-SSH/Policy: Passwort-Login für
 # normale Benutzer ausdrücklich erlaubt, root bleibt bei Schlüssel. Das
 # "von überall" hält die ufw-ALLOW-Regel oben; hier wird die sshd-Seite

@@ -58,6 +58,11 @@ verlinkten Abschnitten (OPERATIONS/SECURITY/RESTORE/AGENTEN), nicht hier.
       Client-ID/Secret in `/opt/coder/oidc.env` eintragen, Setup erneut,
       Test-Login mit einem IServ-Konto. Integration ist vorbereitet und aus
       ([OPERATIONS §3](OPERATIONS.md), [TROUBLESHOOTING C6](TROUBLESHOOTING.md))
+- [ ] **OIDC + Egress-Sperre klären:** Im Schulnetz löst `ghse.de` auf
+      `10.0.0.1` (IServ) auf; der `coder`-Container darf als `NEW`-Verbindung
+      nicht nach `10/8`. Vor der OIDC-Aktivierung Ausnahme nur für den
+      `coder`-Container einplanen und testen
+      ([OPERATIONS §3](OPERATIONS.md) IServ-Kompatibilität)
 - [ ] **DNS-01 nur als Fallback** – Zone liegt bei All-Inkl, DNS macht der
       Netzwerkadmin. KAS-Zugang erst anfragen, wenn der Proxy die
       ACME-Challenges dauerhaft blockiert oder das geteilte Budget zum

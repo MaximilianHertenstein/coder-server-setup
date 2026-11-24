@@ -38,7 +38,7 @@ Datei ab, setzt der Lauf sie ohne Vorwarnung deterministisch neu
 | `/opt/coder/backup.sh` | tägliche Datenbank-Sicherung | ja |
 | `/opt/coder/.maintenance.lock` | gemeinsamer Laufzeit-Lock für Setup, Backup und Reset (600, root) | nein |
 | `/opt/coder/reset-coder.sh` | Komplett-Reset des Coder-Stacks | ja |
-| `/opt/coder/workspace-egress.sh` | Workspace-Egress-Sperre (DOCKER-USER: `10.0.0.0/8` + `192.168.0.0/16` DROP) | ja |
+| `/opt/coder/workspace-egress.sh` | Workspace-Egress-Sperre (DOCKER-USER: `RETURN` für `ESTABLISHED,RELATED` vor `10.0.0.0/8` + `192.168.0.0/16` DROP) | ja |
 | `/opt/coder/RESTORE.md` | Runbook-Kopie (Quelle liegt im Repository) | nein |
 | `/etc/cron.d/coder-backup` | Cron: täglich 01:00 | ja |
 | `/etc/logrotate.d/coder-backup` | Rotation `/var/log/coder-backup.log` | ja |
@@ -170,6 +170,14 @@ ist dessen Passwort-Anmeldung weg – das ist nicht Teil dieses Setups.
   (Discovery, JWKS, Token- und UserInfo-Endpoint). Ist IServ beim Coder-Start
   nicht erreichbar, startet Coder mit aktivem OIDC nicht (siehe
   TROUBLESHOOTING C6).
+- **Achtung Egress-Sperre:** Im Schulnetz löst `ghse.de` auf `10.0.0.1`
+  (IServ) auf. Der `coder`-Container liegt hinter `DOCKER-USER`, neue
+  Verbindungen nach `10/8` werden dort verworfen. Ohne Ausnahme scheitert die
+  Discovery und Coder startet mit aktivem OIDC nicht. Vor der Aktivierung
+  prüfen (`getent hosts ghse.de`); falls intern `10.0.0.1` kommt, eine
+  bewusste Ausnahme **nur für den `coder`-Container** in
+  `scripts/workspace-egress.sh` einplanen – nicht für Workspaces. Offener
+  Punkt in [TODO.md](TODO.md).
 - Coder hängt an den Authorization-Request zusätzlich `access_type=offline`
   (Go-OAuth2). IServ muss unbekannte Parameter tolerieren; beim ersten
   Login prüfen. Es werden dadurch keine zusätzlichen Scopes angefordert.
@@ -331,6 +339,8 @@ Firewall/SSH-Checks:
 sudo ufw status verbose
 sudo fail2ban-client status sshd
 sudo sshd -T | grep -iE '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin)'
+sudo iptables -S DOCKER-USER      # erwartet: zuerst RETURN (RELATED,ESTABLISHED), dann 10/8- und 192.168/16-DROP
+sudo iptables -vnL DOCKER-USER --line-numbers
 ```
 
 Konfiguration validieren (ohne Eingriff):
@@ -591,7 +601,7 @@ shellcheck -S warning tools/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Aktueller Stand: alle 11 Dateien in `tests/` Exit 0, 371 `PASS`, 0 `FAIL`.
+Aktueller Stand: alle 11 Dateien in `tests/` Exit 0, 381 `PASS`, 0 `FAIL`.
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder Root
 noch einen Docker-Daemon und berühren keine Produktion. Die OIDC-Prüfung
 nutzt optional `docker compose config` (nur Konfigurationsauflösung, keine
