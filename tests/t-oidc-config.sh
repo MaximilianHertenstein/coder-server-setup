@@ -49,6 +49,8 @@ fi
 grep -q "^CODER_OIDC_CLIENT_ID=''$" "$CONFIG" \
   && grep -q "^CODER_OIDC_CLIENT_SECRET=''$" "$CONFIG" \
   && pass "Vorlage enthält leere Client-ID/Secret" || fail "Vorlage enthält keine leeren Client-ID/Secret"
+grep -qx '# OIDC_INTERNAL_HOST=10.0.0.1' "$CONFIG" \
+  && pass "Vorlage dokumentiert OIDC_INTERNAL_HOST" || fail "OIDC_INTERNAL_HOST fehlt in der Vorlage"
 if oidc_load_config "$CONFIG" && [ "$OIDC_ACTIVE" -eq 0 ]; then
   pass "Vorlage ist gültig und lässt OIDC ohne Zugangsdaten aus"
 else
@@ -102,6 +104,20 @@ if oidc_load_config "$CONFIG" && [ "$OIDC_ACTIVE" -eq 1 ] && [ "$OIDC_CLIENT_SEC
 else
   fail "Setup-Re-Run hat die OIDC-Konfiguration verändert"
 fi
+printf 'OIDC_INTERNAL_HOST=10.0.0.1\n' >> "$CONFIG"
+if oidc_load_config "$CONFIG" && [ "$OIDC_INTERNAL_HOST" = "10.0.0.1" ]; then
+  pass "OIDC_INTERNAL_HOST akzeptiert eine IPv4-Adresse"
+else
+  fail "OIDC_INTERNAL_HOST: ${OIDC_ERROR:-Wert nicht übernommen}"
+fi
+sed -i 's/^OIDC_INTERNAL_HOST=.*/OIDC_INTERNAL_HOST=10.0.0.999/' "$CONFIG"
+if oidc_load_config "$CONFIG"; then
+  fail "ungültige OIDC_INTERNAL_HOST wurde akzeptiert"
+else
+  pass "ungültige OIDC_INTERNAL_HOST wird abgelehnt"
+fi
+sed -i '/^OIDC_INTERNAL_HOST=/d' "$CONFIG"
+oidc_load_config "$CONFIG" > /dev/null 2>&1 || fail "Fixture nach OIDC_INTERNAL_HOST-Test laedt nicht"
 BLOCK=$(oidc_compose_block "$CONFIG")
 case "$BLOCK" in
   *"env_file:"*"- ${CONFIG}"*) pass "Compose-Block verweist auf die Quelldatei" ;;

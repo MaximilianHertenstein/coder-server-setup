@@ -35,7 +35,7 @@ Repository.
   `https://coder.ghse-unterricht.de/healthz` liefert 200, das
   Let's-Encrypt-Zertifikat ist ausgestellt (gültig bis 2027-02-20). Offen ist
   nur noch der App-Test über eine echte Workspace-URL.
-- **Getestet:** alle lokalen Tests (11 Dateien, 381 `PASS`, 0 `FAIL`),
+- **Getestet:** alle lokalen Tests (11 Dateien, 391 `PASS`, 0 `FAIL`),
   mehrfache Voll-Läufe auf einer Test-VM (je 0 `[FEHLER]`), Restore-Pfad A
   komplett geprobt (Datenprobe = 1, RTO rund 2 Minuten ohne VM-Boot).
 - **IServ-OIDC vorbereitet, aber aus:** Ohne Client-ID/Secret von Simon wird
@@ -272,7 +272,7 @@ shellcheck -S warning tools/*.sh
 for f in tests/*.sh; do bash "$f" || echo "ROT: $f"; done
 ```
 
-Aktueller Stand: alle 11 Testskripte Exit 0 (381 `PASS`, 0 `FAIL`);
+Aktueller Stand: alle 11 Testskripte Exit 0 (391 `PASS`, 0 `FAIL`);
 `bash -n` und `shellcheck -S warning` ohne Befund. Die Tests belegen das
 Verhalten einzelner Codestellen anhand von Fakes und Fixtures – **nicht**
 einen vollständigen Setup-Lauf, echtes ufw/fail2ban/Docker/Caddy-Verhalten

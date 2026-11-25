@@ -114,6 +114,12 @@ die geschützte Quelldatei selbst als `env_file` (`/opt/coder/oidc.env`,
    Anführungszeichen – beim Einsetzen beibehalten, dann werden `$`, `#` und
    Leerzeichen von Compose nicht als Syntax interpretiert. Ein einfaches
    Anführungszeichen im Secret selbst wird abgelehnt.
+
+   Im Schulnetz löst `ghse.de` auf `10.0.0.1` auf. Damit der Coder-Container
+   die Discovery erreicht, in derselben Datei `OIDC_INTERNAL_HOST=10.0.0.1`
+   setzen (die Zeile ist in der Vorlage auskommentiert). Die Egress-Sperre
+   lässt dann nur das Compose-Netz zu diesem Host auf 443 durch;
+   Workspace-Netze bleiben gesperrt.
 3. Setup erneut ausführen (validiert, schreibt die Compose-Datei mit
    `env_file` und recreatet den Coder-Container):
 
@@ -601,7 +607,7 @@ shellcheck -S warning tools/*.sh
 for f in tests/*.sh; do bash "$f"; done
 ```
 
-Aktueller Stand: alle 11 Dateien in `tests/` Exit 0, 381 `PASS`, 0 `FAIL`.
+Aktueller Stand: alle 11 Dateien in `tests/` Exit 0, 391 `PASS`, 0 `FAIL`.
 Die Skripte arbeiten mit Fakes/Fixtures in `/tmp` – sie brauchen weder Root
 noch einen Docker-Daemon und berühren keine Produktion. Die OIDC-Prüfung
 nutzt optional `docker compose config` (nur Konfigurationsauflösung, keine

@@ -1156,6 +1156,14 @@ for _src in "${SETUP_DIR}"/scripts/*.sh; do
   _src_base="$(basename "${_src}")"
   write_managed "/opt/coder/${_src_base}" 755 "${_src_base}" < "${_src}"
 done
+# OIDC: Die DOCKER-USER-Ausnahme muss stehen, BEVOR der coder-Container mit
+# aktivem OIDC startet (Schritt 3). Sonst läuft er in eine Startschleife,
+# bis Schritt 4 die Regel setzt. Auf einer Erstinstallation existiert das
+# Compose-Netz noch nicht; dann ist OIDC ohnehin inaktiv.
+if [ -n "${OIDC_INTERNAL_HOST:-}" ]; then
+  /opt/coder/workspace-egress.sh \
+    || warn "OIDC-Egress-Ausnahme konnte vor dem Stack-Start nicht gesetzt werden"
+fi
 # Alten TLS-Check-Bestand (check-tls.sh, Cron, Metrik, Log) still entfernen –
 # Caddy betreibt ACME selbst, eine eigene Zählung gibt es nicht (D-TLS);
 # jeweils idempotenter No-Op.
@@ -1527,6 +1535,18 @@ if iptables -S DOCKER-USER 2>/dev/null | sed -n '2p' \
   ok "DOCKER-USER lässt Rückverkehr (ESTABLISHED,RELATED) vor den DROP-Regeln durch"
 else
   fail "DOCKER-USER: RETURN-Regel für Rückverkehr fehlt oder steht hinter den DROPs – 80/443 wären aus 10/8 unerreichbar. Prüfen: sudo iptables -S DOCKER-USER"
+fi
+# OIDC: Löst die Schul-DNS den Issuer intern nach RFC1918 auf, braucht das
+# Compose-Netz eine Ausnahme, sonst startet Coder mit aktivem OIDC nicht.
+if [ -n "${OIDC_INTERNAL_HOST:-}" ]; then
+  _compose_subnet="$(docker network inspect coder_default \
+    -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2> /dev/null | head -n1 || true)"
+  if [ -n "${_compose_subnet}" ] && iptables -C DOCKER-USER -s "${_compose_subnet}" \
+      -d "${OIDC_INTERNAL_HOST}/32" -p tcp --dport 443 -j RETURN 2> /dev/null; then
+    ok "OIDC: DOCKER-USER erlaubt dem Compose-Netz den internen Issuer ${OIDC_INTERNAL_HOST}:443"
+  else
+    fail "OIDC: DOCKER-USER-Ausnahme für ${OIDC_INTERNAL_HOST}:443 fehlt – coder-egress-firewall prüfen"
+  fi
 fi
 # D-SSH/Policy: Passwort-Login für
 # normale Benutzer ausdrücklich erlaubt, root bleibt bei Schlüssel. Das

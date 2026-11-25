@@ -67,10 +67,27 @@ case "${cmd}" in
     ;;
   -I)
     shift || true
-    [ "${1:-}" = "1" ] && shift
+    pos="${1:-}"
+    if [[ "${pos}" =~ ^[0-9]+$ ]]; then
+      shift
+    else
+      pos=1
+    fi
     rule="$*"
     [ -f "${st}/${chain}" ] || exit 1
-    { printf '%s\n' "${rule}"; cat "${st}/${chain}"; } > "${st}/${chain}.n"
+    mapfile -t _lines < "${st}/${chain}"
+    : > "${st}/${chain}.n"
+    _i=0
+    while [ "${_i}" -lt "${#_lines[@]}" ]; do
+      if [ $((_i + 1)) -eq "${pos}" ]; then
+        printf '%s\n' "${rule}" >> "${st}/${chain}.n"
+      fi
+      printf '%s\n' "${_lines[_i]}" >> "${st}/${chain}.n"
+      _i=$((_i + 1))
+    done
+    if [ "${pos}" -gt "${#_lines[@]}" ]; then
+      printf '%s\n' "${rule}" >> "${st}/${chain}.n"
+    fi
     mv "${st}/${chain}.n" "${st}/${chain}"
     ;;
   -D)
@@ -88,9 +105,25 @@ esac
 FAKE
 chmod +x "${BIN}/iptables"
 
+# Fake-docker: liefert nur das Compose-Subnetz.
+cat > "${BIN}/docker" <<'FAKE'
+#!/usr/bin/env bash
+if [ "${1:-}" = "network" ] && [ "${2:-}" = "inspect" ] && [ "${3:-}" = "coder_default" ]; then
+  printf '%s\n' "${FAKE_DOCKER_SUBNET:-172.18.0.0/16}"
+  exit 0
+fi
+exit 1
+FAKE
+chmod +x "${BIN}/docker"
+
+: > "${WORK}/oidc.env"
+
 run_script() {
+  local env_file="${1:-${WORK}/oidc.env}" state="${2:-${ST}}"
   rm -f "${CALLS}"
-  FAKE_IPT_STATE="${ST}" FAKE_IPT_CALLS="${CALLS}" \
+  OIDC_ENV_FILE="${env_file}" \
+    FAKE_IPT_STATE="${state}" FAKE_IPT_CALLS="${CALLS}" \
+    FAKE_DOCKER_SUBNET="172.18.0.0/16" \
     PATH="${BIN}:${PATH}" bash "${SCRIPT}"
 }
 
@@ -169,6 +202,49 @@ run_script > "${WORK}/out5.txt" 2>&1 || RC=$?
 [ "$(grep -c '^-I DOCKER-USER 1 -d ' "${CALLS}" || true)" -eq 0 ] \
   && pass "DROP-Regeln bleiben beim Altbestand unangetastet" \
   || fail "DROP-Regeln wurden beim Altbestand neu gesetzt"
+
+# --- OIDC-Ausnahme fuer den internen Issuer --------------------------------
+ST_OIDC="${WORK}/state-oidc"
+mkdir -p "${ST_OIDC}"
+printf 'OIDC_INTERNAL_HOST=10.0.0.1\n' > "${WORK}/oidc-exception.env"
+RC=0
+run_script "${WORK}/oidc-exception.env" "${ST_OIDC}" > "${WORK}/out6.txt" 2>&1 || RC=$?
+[ "${RC}" -eq 0 ] && pass "OIDC-Ausnahme: rc 0" || fail "OIDC-Ausnahme: rc=${RC} ($(cat "${WORK}/out6.txt"))"
+OIDC_RULES="$(cat "${ST_OIDC}/DOCKER-USER" 2>/dev/null || true)"
+[ "$(printf '%s\n' "${OIDC_RULES}" | grep -c . || true)" -eq 4 ] \
+  && pass "OIDC-Ausnahme: 4 Regeln" \
+  || fail "OIDC-Ausnahme: Regeln=$(printf '%s\n' "${OIDC_RULES}" | grep -c . || true) (erwartet 4)"
+[ "$(printf '%s\n' "${OIDC_RULES}" | sed -n '1p')" = "${RETURN_RULE}" ] \
+  && pass "OIDC-Ausnahme: RETURN bleibt auf Position 1" \
+  || fail "OIDC-Ausnahme: RETURN nicht auf Position 1"
+if printf '%s\n' "${OIDC_RULES}" | sed -n '2p' \
+    | grep -Fxq -- "-s 172.18.0.0/16 -d 10.0.0.1/32 -p tcp --dport 443 -j RETURN"; then
+  pass "OIDC-Ausnahme steht auf Position 2"
+else
+  fail "OIDC-Ausnahme fehlt/falsch: $(printf '%s\n' "${OIDC_RULES}" | sed -n '2p')"
+fi
+if printf '%s\n' "${OIDC_RULES}" | sed -n '3p' | grep -q 'DROP'; then
+  pass "DROPs stehen hinter der OIDC-Ausnahme"
+else
+  fail "DROPs nicht hinter der OIDC-Ausnahme"
+fi
+RC=0
+run_script "${WORK}/oidc-exception.env" "${ST_OIDC}" > "${WORK}/out7.txt" 2>&1 || RC=$?
+if [ "${RC}" -eq 0 ] && [ "$(grep -c '^-I DOCKER-USER' "${CALLS}" || true)" -eq 0 ]; then
+  pass "OIDC-Ausnahme: zweiter Lauf ohne -I"
+else
+  fail "OIDC-Ausnahme: -I beim zweiten Lauf oder rc=${RC}"
+fi
+ST_BAD="${WORK}/state-bad"
+mkdir -p "${ST_BAD}"
+printf 'OIDC_INTERNAL_HOST=10.0.0.999\n' > "${WORK}/oidc-bad.env"
+RC=0
+run_script "${WORK}/oidc-bad.env" "${ST_BAD}" > "${WORK}/out8.txt" 2>&1 || RC=$?
+if [ "${RC}" -eq 0 ] && [ "$(grep -c . "${ST_BAD}/DOCKER-USER" 2>/dev/null || true)" -eq 3 ]; then
+  pass "ungueltige OIDC_INTERNAL_HOST erzeugt keine Ausnahme"
+else
+  fail "ungueltige OIDC_INTERNAL_HOST: rc=${RC}, Regeln=$(grep -c . "${ST_BAD}/DOCKER-USER" 2>/dev/null || true)"
+fi
 
 # --- Statische Verankerung --------------------------------------------------
 grep -qF 'coder-egress-firewall.service' "${SETUP}" \

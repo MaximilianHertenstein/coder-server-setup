@@ -11,6 +11,7 @@
 
 OIDC_CONFIG_ALLOWED_KEYS=(
   OIDC_ENABLED
+  OIDC_INTERNAL_HOST
   CODER_OIDC_ISSUER_URL
   CODER_OIDC_CLIENT_ID
   CODER_OIDC_CLIENT_SECRET
@@ -36,6 +37,19 @@ oidc_trim() {
   value=${value#"${value%%[![:space:]]*}"}
   value=${value%"${value##*[![:space:]]}"}
   printf '%s' "$value"
+}
+
+oidc_is_ipv4() {
+  local ip=$1 a b c d o
+  case "$ip" in
+    *[!0-9.]*|'') return 1 ;;
+  esac
+  IFS=. read -r a b c d <<< "$ip"
+  [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ] || return 1
+  for o in "$a" "$b" "$c" "$d"; do
+    [ "$o" -ge 0 ] 2> /dev/null && [ "$o" -le 255 ] 2> /dev/null || return 1
+  done
+  return 0
 }
 
 oidc_read_value() {
@@ -114,9 +128,11 @@ oidc_validate_config() {
 oidc_load_config() {
   local file=$1 mode issuer client_id client_secret scopes sign_in
   local username_field name_field email_field ignore_verified allow_signups
+  local internal_host
 
   OIDC_ACTIVE=0
   OIDC_MODE=auto
+  OIDC_INTERNAL_HOST=""
   OIDC_ISSUER_URL=""
   OIDC_CLIENT_ID=""
   OIDC_CLIENT_SECRET=""
@@ -137,6 +153,12 @@ oidc_load_config() {
   issuer=$(oidc_read_value "$file" CODER_OIDC_ISSUER_URL)
   client_id=$(oidc_read_value "$file" CODER_OIDC_CLIENT_ID)
   client_secret=$(oidc_read_value "$file" CODER_OIDC_CLIENT_SECRET)
+  internal_host=$(oidc_read_value "$file" OIDC_INTERNAL_HOST)
+  if [ -n "$internal_host" ] && ! oidc_is_ipv4 "$internal_host"; then
+    OIDC_ERROR="OIDC_INTERNAL_HOST muss eine IPv4-Adresse sein (z. B. 10.0.0.1)."
+    return 1
+  fi
+  OIDC_INTERNAL_HOST=$internal_host
 
   case "$mode" in
     auto)
@@ -281,6 +303,11 @@ OIDC_ENABLED=auto
 CODER_OIDC_ISSUER_URL='https://ghse.de'
 CODER_OIDC_CLIENT_ID=''
 CODER_OIDC_CLIENT_SECRET=''
+
+# Optional: interner Endpunkt des Issuers, falls die Schul-DNS ghse.de
+# nach RFC1918 auflöst (im Schulnetz: 10.0.0.1). Die Egress-Sperre lässt
+# dann nur das Compose-Netz zu diesem Host auf 443 durch.
+# OIDC_INTERNAL_HOST=10.0.0.1
 
 # Auf die IServ-Discovery abgestimmt. Keine zusätzlichen Scopes:
 CODER_OIDC_SCOPES='openid,profile,email'

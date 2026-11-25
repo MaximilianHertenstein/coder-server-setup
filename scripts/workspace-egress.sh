@@ -40,6 +40,50 @@ case "${_first_rule}" in
     ;;
 esac
 
+# OIDC (optional): Der coder-Container muss den Issuer für Discovery, JWKS
+# und Token erreichen. Löst die Schul-DNS ihn intern nach RFC1918 auf, ist
+# das eine NEW-Verbindung und würde von den DROP-Regeln verworfen. Deshalb
+# eine Ausnahme nur für das Compose-Netz, nur zum konfigurierten Host und
+# nur auf 443. Quelle: OIDC_INTERNAL_HOST in /opt/coder/oidc.env; leer oder
+# ungültig = keine Ausnahme. Workspace-Netze bleiben gesperrt.
+OIDC_ENV_FILE="${OIDC_ENV_FILE:-/opt/coder/oidc.env}"
+
+valid_ipv4() {
+  local ip=$1 a b c d o
+  case "${ip}" in
+    *[!0-9.]*|'') return 1 ;;
+  esac
+  IFS=. read -r a b c d <<< "${ip}"
+  [ -n "${a}" ] && [ -n "${b}" ] && [ -n "${c}" ] && [ -n "${d}" ] || return 1
+  for o in "${a}" "${b}" "${c}" "${d}"; do
+    [ "${o}" -ge 0 ] 2> /dev/null && [ "${o}" -le 255 ] 2> /dev/null || return 1
+  done
+  return 0
+}
+
+_oidc_internal_host=""
+if [ -r "${OIDC_ENV_FILE}" ]; then
+  _oidc_internal_host="$(sed -n 's/^[[:space:]]*OIDC_INTERNAL_HOST[[:space:]]*=[[:space:]]*//p' "${OIDC_ENV_FILE}" | tail -n1)"
+  _oidc_internal_host="${_oidc_internal_host%$'\r'}"
+  _oidc_internal_host="${_oidc_internal_host#\'}"
+  _oidc_internal_host="${_oidc_internal_host%\'}"
+  _oidc_internal_host="${_oidc_internal_host#\"}"
+  _oidc_internal_host="${_oidc_internal_host%\"}"
+  valid_ipv4 "${_oidc_internal_host}" || _oidc_internal_host=""
+fi
+
+if [ -n "${_oidc_internal_host}" ] && command -v docker > /dev/null 2>&1; then
+  _compose_subnet="$(docker network inspect coder_default \
+    -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2> /dev/null | head -n1)"
+  if [ -n "${_compose_subnet}" ]; then
+    if ! iptables -C DOCKER-USER -s "${_compose_subnet}" -d "${_oidc_internal_host}/32" \
+      -p tcp --dport 443 -j RETURN 2> /dev/null; then
+      iptables -I DOCKER-USER 2 -s "${_compose_subnet}" -d "${_oidc_internal_host}/32" \
+        -p tcp --dport 443 -j RETURN
+    fi
+  fi
+fi
+
 # IPv6 bewusst aus: die Compose-Netze laufen mit EnableIPv6=false, Container
 # haben damit keinen v6-Pfad ins Schulnetz.
 exit 0
