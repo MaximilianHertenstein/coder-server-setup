@@ -38,9 +38,10 @@ Repository.
 - **Getestet:** alle lokalen Tests (11 Dateien, 391 `PASS`, 0 `FAIL`),
   mehrfache Voll-Läufe auf einer Test-VM (je 0 `[FEHLER]`), Restore-Pfad A
   komplett geprobt (Datenprobe = 1, RTO rund 2 Minuten ohne VM-Boot).
-- **IServ-OIDC vorbereitet, aber aus:** Ohne Client-ID/Secret von Simon wird
-  keine OIDC-Konfiguration an Coder übergeben; die lokale Anmeldung bleibt
-  unverändert. Aktivierung und Secret-Handling: [OPERATIONS.md](OPERATIONS.md) §3.
+- **IServ-OIDC aktiv seit 2026-11-26:** IServ-Login und lokale Anmeldung
+  funktionieren. Client-ID/Secret liegen nur in `/opt/coder/oidc.env`
+  (600), die Discovery läuft über `OIDC_INTERNAL_HOST=10.0.0.1`.
+  Aktivierung, Deaktivierung und Secret-Rotation: [OPERATIONS.md](OPERATIONS.md) §3.
 - **Noch offen vor Freigabe:** RTO inkl. VM-Boot, Restore-/Reset-Probe unter
   Last, Offsite-Zugriff proben, Wildcard-/Workspace-App-Test,
   Agenten-Deploy ([AGENTEN.md](AGENTEN.md)), Produktionsfreigabe.
@@ -62,7 +63,7 @@ Stelle):
 | `template-agent` auf dem Schulserver anlegen (`login_type none`, Rollen `member` + `template-admin`), Deploy-Token als GitHub-Secret hinterlegen und den Workflow für `coder templates push` einrichten | Betreiber | [AGENTEN.md](AGENTEN.md) |
 | Hetzner-Testhost für den Agenten: Access-URL-Override für echte Workspace-Tests, Caddy gestoppt halten, Token-Rotation terminieren | Betreiber | [AGENTEN.md](AGENTEN.md) |
 | Docker-DNS am Schulserver reparieren (Schul-Resolver in `/etc/docker/daemon.json`), danach die Template-Workarounds (`network_mode = "host"`, `dns`) entfernen | Betreiber | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) B7, [AGENTEN.md](AGENTEN.md) |
-| IServ-OIDC aktivieren, sobald Simon Client-ID/Secret liefert: Werte in `/opt/coder/oidc.env` eintragen, Setup erneut, Test-Login mit einem IServ-Konto ohne bestehendes Coder-Konto. Integration ist vorbereitet und aktuell aus; ein echter IServ-Login wurde noch nicht getestet | Betreiber + IServ-Admin | [OPERATIONS.md](OPERATIONS.md) §3, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) C6 |
+| IServ-OIDC: aktiv seit 2026-11-26, Test-Login erfolgreich. Client nicht neu anlegen (pairwise `sub`), Secret-Rotation nach [OPERATIONS.md](OPERATIONS.md) §3 | Betreiber + IServ-Admin | [OPERATIONS.md](OPERATIONS.md) §3, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) C6 |
 | Template-Schritt 4 (Spielraum der Limits im Workspace) je Template abhaken – erst nach dem Vorführen der konkreten Templates | Betreiber | [templates/allowlist.md](templates/allowlist.md) |
 | Alarmweg umsetzen: Grafana-Contact-Point an `hert@ghse.de` über IServ-SMTP, sobald IServ produktiv ist; bis dahin fängt der tägliche BackupStale-Routine-Check den kritischen Fall ab | Betreiber | [OPERATIONS.md](OPERATIONS.md) §6 |
 | Offsite-Transport umsetzen: monatlicher verschlüsselter `rsync`-Pull der Backups auf externe Platte | Betreiber | [OPERATIONS.md](OPERATIONS.md) §8 |

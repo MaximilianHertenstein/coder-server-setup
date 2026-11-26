@@ -87,15 +87,17 @@ Umgebungsvariablen; Tabelle in [README.md](README.md), Abschnitt
   `sudo sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' /opt/coder/.env`
 - Nie in Tickets, Chats, Logs oder das Repository kopieren.
 
-### IServ-OIDC (vorbereitet, standardmäßig aus)
+### IServ-OIDC (aktiv seit 2026-11-26)
 
-Coder v2.38.10 kann OIDC. Die Integration ist im Setup enthalten, aber ohne
-Zugangsdaten deaktiviert. Die Quelle ist `/opt/coder/oidc.env`
-(root:root, 0600). Das Setup legt die Vorlage beim ersten Lauf an,
-überschreibt sie **nie** und korrigiert nur die Rechte. Die Compose-Datei
-enthält keine Secrets: Bei aktivem OIDC bekommt nur der `coder`-Service eine
-die geschützte Quelldatei selbst als `env_file` (`/opt/coder/oidc.env`,
-0600); bei deaktiviertem OIDC enthält die Compose-Datei keinen `env_file`-Eintrag.
+Coder v2.38.10 kann OIDC. Die Integration ist im Setup enthalten; ohne
+vollständige Zugangsdaten bleibt sie aus. Stand 2026-11-26: aktiv mit IServ,
+IServ-Login und lokale Anmeldung getestet. Die Quelle ist
+`/opt/coder/oidc.env` (root:root, 0600). Das Setup legt die Vorlage beim
+ersten Lauf an, überschreibt sie **nie** und korrigiert nur die Rechte. Die
+Compose-Datei enthält keine Secrets: Bei aktivem OIDC bekommt nur der
+`coder`-Service die geschützte Quelldatei selbst als `env_file`
+(`/opt/coder/oidc.env`, 0600); bei deaktiviertem OIDC enthält die
+Compose-Datei keinen `env_file`-Eintrag.
 
 **Aktivieren**
 

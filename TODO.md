@@ -53,16 +53,13 @@ verlinkten Abschnitten (OPERATIONS/SECURITY/RESTORE/AGENTEN), nicht hier.
 
 - [x] **DNS + Portweiterleitung beim Netzwerkadmin: erledigt 2026-11-22**
       (Zeilen 1–4 in §11)
-- [ ] **IServ-OIDC-Client** bei Simon anlegen lassen (Redirect-URI
-      `https://coder.ghse-unterricht.de/api/v2/users/oidc/callback`),
-      Client-ID/Secret in `/opt/coder/oidc.env` eintragen, Setup erneut,
-      Test-Login mit einem IServ-Konto. Integration ist vorbereitet und aus
-      ([OPERATIONS §3](OPERATIONS.md), [TROUBLESHOOTING C6](TROUBLESHOOTING.md))
-- [ ] **OIDC + Egress-Sperre klären:** Im Schulnetz löst `ghse.de` auf
-      `10.0.0.1` (IServ) auf; der `coder`-Container darf als `NEW`-Verbindung
-      nicht nach `10/8`. Vor der OIDC-Aktivierung Ausnahme nur für den
-      `coder`-Container einplanen und testen
-      ([OPERATIONS §3](OPERATIONS.md) IServ-Kompatibilität)
+- [x] **IServ-OIDC aktiviert und getestet 2026-11-26:** Client von Simon,
+      `OIDC_INTERNAL_HOST=10.0.0.1` in `/opt/coder/oidc.env`, Setup, IServ-
+      Login erfolgreich, lokale Anmeldung weiterhin erfolgreich
+      ([OPERATIONS §3](OPERATIONS.md))
+- [x] **OIDC + Egress-Sperre gelöst 2026-11-26:** Ausnahme nur für das
+      Compose-Netz zu `10.0.0.1:443`; Workspace-Netze bleiben gesperrt
+      ([OPERATIONS §3](OPERATIONS.md), [SECURITY §4](SECURITY.md))
 - [ ] **DNS-01 nur als Fallback** – Zone liegt bei All-Inkl, DNS macht der
       Netzwerkadmin. KAS-Zugang erst anfragen, wenn der Proxy die
       ACME-Challenges dauerhaft blockiert oder das geteilte Budget zum

@@ -15,5 +15,6 @@ log.txt
 oidc.env
 # Server-/Client-Aufzeichnungen (können Session-Token enthalten):
 logs_*/
+coder_log.txt
 # Erzeugte Zugangsdaten-PDFs (Klartext-Passwörter):
 coder-zugaenge-*.pdf
